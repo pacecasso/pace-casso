@@ -1,0 +1,1105 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PaceCasso</title>
+    <link rel="prefetch" href="/create" as="document" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Anton&family=Bebas+Neue&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Permanent+Marker&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg-warm: #f7f4ee;
+        --white: #ffffff;
+        --ink: #0d0d0d;
+        --yellow: #ffb800;
+        --blue: #1d6fd8;
+        --line: #e8e3da;
+        --muted: #666666;
+        --muted-light: #888888;
+        --panel-gallery: #fafaf8;
+        --cta-dark: #0d0d0d;
+        --dot-red: #ef4444;
+        --dot-orange: #f97316;
+        --dot-yellow: #ffb800;
+        --dot-green: #22c55e;
+        --dot-blue: #3b82f6;
+        --dot-purple: #8b5cf6;
+        --font-display: "Anton", Impact, sans-serif;
+        --font-label: "Bebas Neue", sans-serif;
+        --font-marker: "Permanent Marker", cursive;
+        --font-body: "DM Sans", system-ui, sans-serif;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        font-family: var(--font-body);
+        background: var(--bg-warm);
+        color: var(--ink);
+        font-size: 16px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      /* ——— Reveal stagger (page load) ——— */
+      .reveal {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+
+      body.is-ready .reveal {
+        animation: rise 0.75s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        animation-delay: var(--d, 0s);
+      }
+
+      @keyframes rise {
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      /* ——— Nav ——— */
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1.5rem;
+        padding: 1rem clamp(1rem, 4vw, 2.5rem);
+        background: var(--white);
+        border-bottom: 2px solid var(--yellow);
+      }
+
+      .nav__logo-wrap {
+        display: flex;
+        align-items: center;
+        line-height: 0;
+      }
+
+      .nav__logo-img {
+        height: clamp(3rem, 10vw, 4.5rem);
+        width: auto;
+        max-width: min(380px, 82vw);
+        display: block;
+        object-fit: contain;
+        object-position: left center;
+      }
+
+      .nav__logo-img--hide {
+        display: none !important;
+      }
+
+      .nav__logo {
+        font-family: var(--font-label);
+        font-size: clamp(1.75rem, 4vw, 2.25rem);
+        letter-spacing: 0.04em;
+        line-height: 1;
+      }
+
+      .nav__logo--fallback[hidden] {
+        display: none !important;
+      }
+
+      .nav__logo .p {
+        color: var(--yellow);
+      }
+      .nav__logo .ace {
+        color: var(--ink);
+      }
+      .nav__logo .casso {
+        color: var(--blue);
+      }
+
+      .nav__links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: clamp(1rem, 3vw, 2rem);
+        font-family: var(--font-label);
+        font-size: 1.05rem;
+        letter-spacing: 0.12em;
+      }
+
+      .nav__links a {
+        position: relative;
+        transition: color 0.25s ease, transform 0.25s ease;
+      }
+
+      .nav__links a::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        bottom: -4px;
+        width: 0;
+        height: 2px;
+        background: var(--yellow);
+        transition: width 0.3s ease;
+      }
+
+      .nav__links a:hover {
+        color: var(--yellow);
+      }
+
+      .nav__links a:hover::after {
+        width: 100%;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.35rem;
+        font-family: var(--font-label);
+        font-size: 1rem;
+        letter-spacing: 0.14em;
+        padding: 0.75rem 1.35rem;
+        border: none;
+        cursor: pointer;
+        transition: transform 0.25s ease, box-shadow 0.25s ease,
+          background 0.25s ease, color 0.25s ease;
+      }
+
+      .btn:hover {
+        transform: translateY(-2px);
+      }
+
+      .btn--yellow {
+        background: var(--yellow);
+        color: var(--ink);
+        box-shadow: 0 4px 0 rgba(13, 13, 13, 0.12);
+      }
+
+      .btn--yellow:hover {
+        box-shadow: 0 6px 0 rgba(13, 13, 13, 0.15);
+      }
+
+      .btn--ghost {
+        background: transparent;
+        color: var(--ink);
+        border: 2px solid var(--ink);
+      }
+
+      .btn--ghost:hover {
+        background: var(--ink);
+        color: var(--white);
+      }
+
+      .nav__cta {
+        flex-shrink: 0;
+      }
+
+      @media (max-width: 900px) {
+        .nav__links {
+          display: none;
+        }
+      }
+
+      /* ——— Hero ——— */
+      .hero {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        min-height: 86vh;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .hero__left {
+        background: var(--white);
+        padding: clamp(1.5rem, 4vw, 3.5rem);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        border-right: 3px solid var(--yellow);
+        position: relative;
+      }
+
+      .hero__eyebrow {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 1.25rem;
+      }
+
+      .hero__eyebrow-line {
+        width: 28px;
+        height: 4px;
+        background: var(--yellow);
+        flex-shrink: 0;
+      }
+
+      .hero__eyebrow span {
+        font-family: var(--font-label);
+        font-size: 1rem;
+        letter-spacing: 0.28em;
+        color: var(--muted);
+      }
+
+      .palette-row {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1.75rem;
+      }
+
+      .palette-row .dot {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid var(--white);
+        box-shadow: 0 0 0 1px var(--line);
+      }
+
+      .hero__headline {
+        font-family: var(--font-display);
+        font-size: clamp(2.75rem, 6.5vw, 6rem);
+        line-height: 0.95;
+        text-transform: uppercase;
+        margin: 0 0 1.25rem;
+        letter-spacing: -0.02em;
+      }
+
+      .hero__headline .hl-yellow {
+        color: var(--yellow);
+      }
+
+      .hero__headline .hl-outline {
+        -webkit-text-stroke: 2.5px var(--ink);
+        color: transparent;
+        paint-order: stroke fill;
+      }
+
+      .hero__tagline {
+        font-family: var(--font-marker);
+        font-size: clamp(1.1rem, 2.2vw, 1.45rem);
+        color: var(--muted-light);
+        margin: 0 0 2rem;
+        max-width: 28rem;
+        line-height: 1.45;
+      }
+
+      .hero__tagline .accent {
+        color: var(--yellow);
+      }
+
+      .hero__actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.85rem;
+        margin-bottom: 2.5rem;
+      }
+
+      .hero__divider {
+        height: 1px;
+        background: var(--line);
+        width: 100%;
+        max-width: 420px;
+        margin-bottom: 1.5rem;
+      }
+
+      .hero__stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: clamp(1.5rem, 4vw, 3rem);
+      }
+
+      .stat {
+        min-width: 5rem;
+      }
+
+      .stat__num {
+        font-family: var(--font-display);
+        font-size: clamp(2rem, 3.5vw, 2.75rem);
+        color: var(--yellow);
+        line-height: 1;
+        letter-spacing: 0.02em;
+      }
+
+      .stat__label {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: var(--muted);
+        margin-top: 0.35rem;
+      }
+
+      .hero__stats-note {
+        margin-top: 0.85rem;
+        font-size: 0.62rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--muted-light);
+      }
+
+      .hero__right {
+        position: relative;
+        background: var(--bg-warm);
+        background-image: radial-gradient(
+          var(--line) 1px,
+          transparent 1px
+        );
+        background-size: 28px 28px;
+        overflow: hidden;
+        min-height: 420px;
+      }
+
+      .hero__map-inner {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: clamp(1rem, 3vw, 2rem);
+      }
+
+      .hero__svg-wrap {
+        width: min(88%, 520px);
+        aspect-ratio: 1;
+        position: relative;
+      }
+
+      .route-pin {
+        position: absolute;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid var(--white);
+        box-shadow: 0 2px 10px rgba(13, 13, 13, 0.2);
+        animation: route-pin-pulse 1.85s ease-in-out infinite;
+        animation-delay: 3.5s;
+      }
+
+      .route-pin--start {
+        top: 9%;
+        right: 18%;
+        background: var(--yellow);
+      }
+
+      .route-pin--end {
+        bottom: 24%;
+        left: 14%;
+        background: var(--dot-green);
+        animation-delay: 3.65s;
+      }
+
+      @keyframes route-pin-pulse {
+        0%,
+        100% {
+          transform: scale(1);
+        }
+        50% {
+          transform: scale(1.35);
+        }
+      }
+
+      .hero__svg-wrap svg {
+        width: 100%;
+        height: 100%;
+        filter: drop-shadow(0 12px 24px rgba(13, 13, 13, 0.06));
+      }
+
+      .trace-main {
+        fill: none;
+        stroke: var(--yellow);
+        stroke-width: 3.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-dasharray: 2400;
+        stroke-dashoffset: 2400;
+        animation: draw-main 3s ease-in-out forwards;
+      }
+
+      .trace-inner {
+        fill: none;
+        stroke: var(--blue);
+        stroke-width: 2.5;
+        stroke-opacity: 0.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-dasharray: 1200;
+        stroke-dashoffset: 1200;
+        animation: draw-inner 2.5s ease-in-out 0.5s forwards;
+      }
+
+      .trace-red {
+        fill: none;
+        stroke: var(--dot-red);
+        stroke-width: 2.5;
+        stroke-linecap: round;
+        stroke-dasharray: 800;
+        stroke-dashoffset: 800;
+        animation: draw-red 2s ease-in-out 0.3s forwards;
+      }
+
+      @keyframes draw-main {
+        to {
+          stroke-dashoffset: 0;
+        }
+      }
+      @keyframes draw-inner {
+        to {
+          stroke-dashoffset: 0;
+        }
+      }
+      @keyframes draw-red {
+        to {
+          stroke-dashoffset: 0;
+        }
+      }
+
+      .scatter-dot {
+        position: absolute;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 2px solid var(--white);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+      }
+
+      .scatter-dot--tl {
+        top: 8%;
+        left: 6%;
+        background: var(--dot-red);
+      }
+      .scatter-dot--tr {
+        top: 10%;
+        right: 8%;
+        background: var(--dot-purple);
+      }
+      .scatter-dot--br {
+        bottom: 22%;
+        right: 10%;
+        background: var(--dot-green);
+      }
+      .scatter-dot--bl {
+        bottom: 28%;
+        left: 8%;
+        background: var(--dot-blue);
+      }
+      .scatter-dot--far {
+        top: 4%;
+        right: 22%;
+        background: var(--dot-orange);
+      }
+
+      .hero-card {
+        position: absolute;
+        bottom: clamp(1rem, 3vw, 1.75rem);
+        left: clamp(1rem, 3vw, 1.75rem);
+        right: clamp(1rem, 3vw, 1.75rem);
+        max-width: 380px;
+        background: rgba(255, 255, 255, 0.97);
+        border-left: 4px solid var(--yellow);
+        padding: 1rem 1.15rem;
+        box-shadow: 0 8px 32px rgba(13, 13, 13, 0.08);
+      }
+
+      .hero-card__title {
+        font-family: var(--font-label);
+        font-size: 1.1rem;
+        letter-spacing: 0.08em;
+        margin: 0 0 0.25rem;
+      }
+
+      .hero-card__meta {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: var(--muted);
+      }
+
+      @media (max-width: 768px) {
+        .hero {
+          grid-template-columns: 1fr;
+          min-height: unset;
+        }
+
+        .hero__right {
+          order: -1;
+          min-height: 320px;
+          border-bottom: 3px solid var(--yellow);
+        }
+
+        .hero__left {
+          border-right: none;
+        }
+      }
+
+      /* ——— How it works ——— */
+      .section-how {
+        background: var(--white);
+        padding: clamp(3rem, 8vw, 6rem) clamp(1.25rem, 4vw, 2.5rem);
+      }
+
+      .section-how__inner {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+
+      .section-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-family: var(--font-label);
+        font-size: 0.95rem;
+        letter-spacing: 0.22em;
+        color: var(--yellow);
+        margin-bottom: 0.75rem;
+      }
+
+      .section-label::before {
+        content: "";
+        width: 36px;
+        height: 3px;
+        background: var(--yellow);
+      }
+
+      .how__headline {
+        font-family: var(--font-display);
+        font-size: clamp(2.5rem, 5vw, 4.5rem);
+        text-transform: uppercase;
+        line-height: 1;
+        margin: 0 0 3rem;
+        letter-spacing: -0.02em;
+      }
+
+      .how__headline .run {
+        color: var(--yellow);
+      }
+
+      .how__headline .repeat {
+        -webkit-text-stroke: 2px var(--ink);
+        color: transparent;
+      }
+
+      .how__grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: clamp(1rem, 2vw, 1.75rem);
+      }
+
+      .how-card {
+        position: relative;
+        background: var(--white);
+        border: 1px solid var(--line);
+        border-top: 3px solid var(--yellow);
+        padding: 2rem 1.5rem 1.75rem;
+        overflow: hidden;
+      }
+
+      .how-card__wm {
+        position: absolute;
+        top: 0.5rem;
+        right: 0.75rem;
+        font-family: var(--font-display);
+        font-size: 4.5rem;
+        line-height: 1;
+        color: rgba(255, 184, 0, 0.12);
+        pointer-events: none;
+        user-select: none;
+      }
+
+      .how-card__icon {
+        width: 52px;
+        height: 52px;
+        border: 2px solid var(--yellow);
+        background: rgba(255, 184, 0, 0.12);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 1.25rem;
+        font-family: var(--font-label);
+        font-size: 1.25rem;
+        color: var(--ink);
+      }
+
+      .how-card h3 {
+        font-family: var(--font-label);
+        font-size: 1.35rem;
+        letter-spacing: 0.1em;
+        margin: 0 0 0.65rem;
+        text-transform: uppercase;
+      }
+
+      .how-card p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.95rem;
+        line-height: 1.6;
+        max-width: 32ch;
+      }
+
+      @media (max-width: 900px) {
+        .how__grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      /* ——— Gallery ——— */
+      .section-gallery {
+        padding: clamp(3rem, 8vw, 6rem) clamp(1.25rem, 4vw, 2.5rem);
+        background: var(--bg-warm);
+      }
+
+      .section-gallery__inner {
+        max-width: 1280px;
+        margin: 0 auto;
+      }
+
+      .gallery__head {
+        margin-bottom: 2rem;
+      }
+
+      .gallery__head h2 {
+        font-family: var(--font-display);
+        font-size: clamp(2.5rem, 5vw, 4rem);
+        text-transform: uppercase;
+        margin: 0.5rem 0 0;
+        letter-spacing: -0.02em;
+      }
+
+      .gallery__grid {
+        display: grid;
+        grid-template-columns: 2fr 1fr 1fr;
+        grid-template-rows: auto auto;
+        gap: clamp(0.65rem, 1.5vw, 1rem);
+        min-height: 520px;
+      }
+
+      .gallery__cell {
+        position: relative;
+        background: var(--panel-gallery);
+        border: 1px solid var(--line);
+        border-radius: 2px;
+        overflow: hidden;
+        min-height: 200px;
+      }
+
+      .gallery__cell--tall {
+        grid-row: 1 / 3;
+        min-height: 100%;
+      }
+
+      .gallery__cell svg {
+        position: absolute;
+        inset: 12%;
+        width: 76%;
+        height: 76%;
+      }
+
+      .gallery__cell .grid-lines {
+        position: absolute;
+        inset: 0;
+        background-image: linear-gradient(
+            var(--line) 1px,
+            transparent 1px
+          ),
+          linear-gradient(90deg, var(--line) 1px, transparent 1px);
+        background-size: 24px 24px;
+        opacity: 0.35;
+        pointer-events: none;
+      }
+
+      .gallery__caption {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: rgba(255, 255, 255, 0.93);
+        border-left: 3px solid var(--yellow);
+        padding: 0.65rem 0.85rem;
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: var(--muted);
+        line-height: 1.4;
+      }
+
+      .gallery__caption strong {
+        display: block;
+        font-family: var(--font-label);
+        font-size: 0.8rem;
+        letter-spacing: 0.12em;
+        color: var(--ink);
+        margin-bottom: 0.15rem;
+      }
+
+      @media (max-width: 900px) {
+        .gallery__grid {
+          grid-template-columns: 1fr 1fr;
+          grid-template-rows: none;
+        }
+        .gallery__cell--tall {
+          grid-row: span 2;
+          grid-column: 1 / -1;
+          min-height: 280px;
+        }
+      }
+
+      @media (max-width: 600px) {
+        .gallery__grid {
+          grid-template-columns: 1fr;
+        }
+        .gallery__cell--tall {
+          grid-column: 1;
+          grid-row: auto;
+          min-height: 240px;
+        }
+      }
+
+      /* ——— CTA band ——— */
+      .cta-band {
+        background: var(--cta-dark);
+        color: var(--white);
+        padding: clamp(3rem, 7vw, 5rem) clamp(1.25rem, 4vw, 2.5rem);
+        display: grid;
+        grid-template-columns: 1.2fr 1fr;
+        gap: 2rem;
+        align-items: center;
+      }
+
+      .cta-band__eyebrow {
+        font-family: var(--font-label);
+        font-size: 0.85rem;
+        letter-spacing: 0.24em;
+        color: var(--yellow);
+        margin-bottom: 1rem;
+      }
+
+      .cta-band h2 {
+        font-family: var(--font-display);
+        font-size: clamp(2.25rem, 5vw, 4rem);
+        text-transform: uppercase;
+        line-height: 1.02;
+        margin: 0;
+        letter-spacing: -0.02em;
+      }
+
+      .cta-band .gold {
+        color: var(--yellow);
+      }
+
+      .cta-band__actions {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+      }
+
+      .btn--cta {
+        background: var(--yellow);
+        color: var(--ink);
+        font-size: 1.1rem;
+        padding: 1rem 1.75rem;
+        box-shadow: 0 4px 24px rgba(255, 184, 0, 0.35);
+      }
+
+      .btn--cta:hover {
+        filter: brightness(1.05);
+      }
+
+      @media (max-width: 768px) {
+        .cta-band {
+          grid-template-columns: 1fr;
+          text-align: center;
+        }
+        .cta-band__actions {
+          justify-content: center;
+        }
+      }
+
+      footer {
+        padding: 1.5rem;
+        text-align: center;
+        font-size: 0.75rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+        border-top: 1px solid var(--line);
+        background: var(--bg-warm);
+      }
+
+      footer a {
+        color: var(--yellow);
+        text-decoration: none;
+      }
+
+      footer a:hover {
+        color: var(--ink);
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="nav">
+      <a href="/" class="nav__logo-wrap" aria-label="PaceCasso home">
+        <img
+          class="nav__logo-img"
+          src="/pacelogo.png"
+          alt="PaceCasso"
+          width="380"
+          height="90"
+          decoding="async"
+          fetchpriority="high"
+          onerror="this.classList.add('nav__logo-img--hide'); var f=this.nextElementSibling; if(f) f.removeAttribute('hidden');"
+        />
+        <span class="nav__logo nav__logo--fallback" hidden>
+          <span class="p">P</span><span class="ace">ACE</span
+          ><span class="casso">CASSO</span>
+        </span>
+      </a>
+      <div class="nav__links">
+        <a href="#gallery">Gallery</a>
+        <a href="#how">How It Works</a>
+        <a href="#community">Community</a>
+        <a href="/help">Help</a>
+      </div>
+      <div class="nav__cta">
+        <a class="btn btn--yellow" href="/create">Start Creating</a>
+      </div>
+    </nav>
+
+    <section class="hero">
+      <div class="hero__left">
+        <div
+          class="palette-row reveal"
+          style="--d: 0.12s"
+          aria-label="Palette colors"
+        >
+          <span class="dot" style="background: var(--dot-red)"></span>
+          <span class="dot" style="background: var(--dot-orange)"></span>
+          <span class="dot" style="background: var(--dot-yellow)"></span>
+          <span class="dot" style="background: var(--dot-green)"></span>
+          <span class="dot" style="background: var(--dot-blue)"></span>
+          <span class="dot" style="background: var(--dot-purple)"></span>
+        </div>
+        <h1 class="hero__headline reveal" style="--d: 0.24s">
+          <span class="hl-yellow">Your</span><br />
+          City Is<br />
+          Your<br />
+          <span class="hl-outline">Canvas</span>
+        </h1>
+        <p class="hero__tagline reveal" style="--d: 0.36s">
+          Where <span class="accent">miles make</span> masterpieces.
+        </p>
+        <div class="hero__actions reveal" style="--d: 0.48s">
+          <a class="btn btn--yellow" href="/create">Design Your First Run</a>
+          <a class="btn btn--ghost" href="#gallery">See the Gallery</a>
+        </div>
+        <div class="hero__divider reveal" style="--d: 0.54s" aria-hidden="true"></div>
+        <div class="hero__stats reveal" style="--d: 0.6s">
+          <div class="stat">
+            <div class="stat__num">12K+</div>
+            <div class="stat__label">Artworks</div>
+          </div>
+          <div class="stat">
+            <div class="stat__num">847</div>
+            <div class="stat__label">Cities</div>
+          </div>
+          <div class="stat">
+            <div class="stat__num">2.1M</div>
+            <div class="stat__label">Miles</div>
+          </div>
+        </div>
+        <p class="hero__stats-note reveal" style="--d: 0.64s">
+          Illustrative numbers
+        </p>
+      </div>
+
+      <div class="hero__right">
+        <span class="scatter-dot scatter-dot--tl" aria-hidden="true"></span>
+        <span class="scatter-dot scatter-dot--tr" aria-hidden="true"></span>
+        <span class="scatter-dot scatter-dot--br" aria-hidden="true"></span>
+        <span class="scatter-dot scatter-dot--bl" aria-hidden="true"></span>
+        <span class="scatter-dot scatter-dot--far" aria-hidden="true"></span>
+        <div class="hero__map-inner">
+          <div class="hero__svg-wrap reveal" style="--d: 0.2s">
+            <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <defs>
+                <pattern id="streetGrid" width="20" height="20" patternUnits="userSpaceOnUse">
+                  <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#e8e3da" stroke-width="0.5" opacity="0.5"/>
+                </pattern>
+              </defs>
+              <rect width="400" height="400" fill="url(#streetGrid)" opacity="0.6"/>
+              <path
+                class="trace-inner"
+                transform="translate(200,200) scale(0.52) translate(-200,-200)"
+                d="M200.00,30.00 L232.54,132.43 L332.91,94.01 L273.12,183.31 L365.74,237.83 L258.64,246.76 L273.76,353.16 L200.00,275.00 L126.24,353.16 L141.36,246.76 L34.26,237.83 L126.88,183.31 L67.09,94.01 L167.46,132.43 Z"
+              />
+              <path
+                class="trace-main"
+                d="M200.00,30.00 L232.54,132.43 L332.91,94.01 L273.12,183.31 L365.74,237.83 L258.64,246.76 L273.76,353.16 L200.00,275.00 L126.24,353.16 L141.36,246.76 L34.26,237.83 L126.88,183.31 L67.09,94.01 L167.46,132.43 Z"
+              />
+              <path
+                class="trace-red"
+                d="M 35 340 Q 120 310 200 325 T 365 318"
+                fill="none"
+              />
+            </svg>
+            <span class="route-pin route-pin--start" aria-hidden="true"></span>
+            <span class="route-pin route-pin--end" aria-hidden="true"></span>
+          </div>
+        </div>
+        <div class="hero-card reveal" style="--d: 0.66s">
+          <p class="hero-card__title">Central Park Mandala — NYC</p>
+          <p class="hero-card__meta">
+            by @RunnerMike · Strava verified
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-how" id="how">
+      <div class="section-how__inner">
+        <div class="section-label">Process</div>
+        <h2 class="how__headline">
+          Design. <span class="run">RUN.</span>
+          <span class="repeat">Repeat.</span>
+        </h2>
+        <div class="how__grid">
+          <article class="how-card">
+            <span class="how-card__wm" aria-hidden="true">01</span>
+            <div class="how-card__icon">01</div>
+            <h3>Design Your Route</h3>
+            <p>
+              Sketch on the map or trace a shape. We snap your line to real
+              streets so every mile is runnable. Export it to your watch and get
+              running!
+            </p>
+          </article>
+          <article class="how-card">
+            <span class="how-card__wm" aria-hidden="true">02</span>
+            <div class="how-card__icon">02</div>
+            <h3>Go Run It</h3>
+            <p>
+              Your watch records the art, pace, and distance! Then a new
+              masterpiece has been run.
+            </p>
+          </article>
+          <article class="how-card">
+            <span class="how-card__wm" aria-hidden="true">03</span>
+            <div class="how-card__icon">03</div>
+            <h3>Share Your Art</h3>
+            <p>
+              Post the map, inspire the crew. Your run is the paintbrush; the
+              city is the canvas.<br />
+              DESIGN. RUN. REPEAT!
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-gallery" id="gallery">
+      <div class="section-gallery__inner">
+        <div class="gallery__head">
+          <div class="section-label">Featured</div>
+          <h2>Route Gallery</h2>
+        </div>
+        <div class="gallery__grid">
+          <div class="gallery__cell gallery__cell--tall">
+            <div class="grid-lines" aria-hidden="true"></div>
+            <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M100 20 L130 85 L200 90 L145 135 L160 200 L100 165 L40 200 L55 135 L0 90 L70 85 Z" stroke="#ffb800" stroke-width="2.2" stroke-linejoin="round"/>
+            </svg>
+            <div class="gallery__caption">
+              <strong>Harbor Star</strong>
+              San Francisco · 18.4 km
+            </div>
+          </div>
+          <div class="gallery__cell">
+            <div class="grid-lines" aria-hidden="true"></div>
+            <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M20 100 C40 40 80 20 120 40 C160 60 180 100 160 140 C140 180 80 190 40 160 C20 140 15 120 20 100" stroke="#1d6fd8" stroke-width="2"/>
+            </svg>
+            <div class="gallery__caption">
+              <strong>Dragon Loop</strong>
+              Seattle · 22.1 km
+            </div>
+          </div>
+          <div class="gallery__cell">
+            <div class="grid-lines" aria-hidden="true"></div>
+            <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M100 30 Q140 80 100 130 Q60 80 100 30" stroke="#ef4444" stroke-width="2"/>
+            </svg>
+            <div class="gallery__caption">
+              <strong>Teardrop</strong>
+              Austin · 9.2 km
+            </div>
+          </div>
+          <div class="gallery__cell">
+            <div class="grid-lines" aria-hidden="true"></div>
+            <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M10 100 Q50 60 90 100 T170 100" stroke="#22c55e" stroke-width="2"/>
+              <path d="M10 120 Q50 160 90 120 T170 120" stroke="#22c55e" stroke-width="2"/>
+            </svg>
+            <div class="gallery__caption">
+              <strong>Double Wave</strong>
+              Miami · 14.0 km
+            </div>
+          </div>
+          <div class="gallery__cell">
+            <div class="grid-lines" aria-hidden="true"></div>
+            <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M100 30 L115 75 L160 75 L125 105 L140 150 L100 125 L60 150 L75 105 L40 75 L85 75 Z" stroke="#8b5cf6" stroke-width="2"/>
+            </svg>
+            <div class="gallery__caption">
+              <strong>Burst</strong>
+              Chicago · 11.3 km
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta-band" id="community">
+      <div>
+        <p class="cta-band__eyebrow">JOIN THE MOVEMENT</p>
+        <h2>
+          WHERE MILES MAKE<br />
+          <span class="gold">Masterpieces</span>
+        </h2>
+      </div>
+      <div class="cta-band__actions">
+        <a class="btn btn--cta" href="/create">Start creating →</a>
+      </div>
+    </section>
+
+    <footer>
+      © PaceCasso ·
+      <a href="/help">Help</a> ·
+      <a href="/privacy">Privacy</a> ·
+      <a href="/contact">Contact</a>
+      · Design. Run. Repeat.
+    </footer>
+
+    <script>
+      (function () {
+        function ready() {
+          document.body.classList.add("is-ready");
+        }
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", ready);
+        } else {
+          ready();
+        }
+      })();
+    </script>
+  </body>
+</html>

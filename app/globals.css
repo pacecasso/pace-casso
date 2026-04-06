@@ -1,0 +1,439 @@
+@import "tailwindcss";
+@config "../tailwind.config.cjs";
+
+@font-face {
+  font-family: "Great Vibes";
+  src: url("/fonts/GreatVibes-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Oswald";
+  src: url("/fonts/Oswald-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/*
+ * Design system — mirrors public/landing.html :root
+ * Use these variables everywhere; --pace-* aliases match app / Tailwind theme.
+ */
+:root {
+  --bg-warm: #f7f4ee;
+  --white: #ffffff;
+  --ink: #0d0d0d;
+  --yellow: #ffb800;
+  --blue: #1d6fd8;
+  --line: #e8e3da;
+  --muted: #666666;
+  --muted-light: #888888;
+  --panel-gallery: #fafaf8;
+
+  --pace-cream: var(--bg-warm);
+  --pace-ink: var(--ink);
+  --pace-yellow: var(--yellow);
+  --pace-blue: var(--blue);
+  --pace-blue-bright: var(--blue);
+  --pace-line: var(--line);
+  --pace-white: var(--white);
+  --pace-panel: var(--panel-gallery);
+  --pace-muted: var(--muted);
+  --pace-orange: var(--yellow);
+  --pace-red: #dc2626;
+
+  /* Font stacks (Anton / Bebas / Marker from next/font on <html>; body = DM Sans) */
+  --font-display: var(--font-anton), "Anton", Impact, sans-serif;
+  --font-label: var(--font-bebas), "Bebas Neue", sans-serif;
+  --font-accent: var(--font-marker), "Permanent Marker", cursive;
+  --font-body: var(--font-dm-sans), "DM Sans", system-ui, sans-serif;
+
+  /* Create page: sticky header + step bar — map steps fill below (taller on small screens: mobile tagline line) */
+  --pace-create-chrome-height: 9.75rem;
+}
+
+@media (min-width: 1024px) {
+  :root {
+    --pace-create-chrome-height: 9rem;
+  }
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--bg-warm);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Typographic logo fallback when PNG is missing (optional script + block) */
+.pace-wordmark-script {
+  font-family: "Great Vibes", cursive;
+  font-size: clamp(2.25rem, 6vw, 3rem);
+  line-height: 0.9;
+  color: var(--pace-ink);
+  letter-spacing: 0.02em;
+  text-shadow:
+    0 0 0.5px #fff,
+    0 0 1px #fff,
+    1px 0 #fff,
+    -1px 0 #fff,
+    0 1px #fff,
+    0 -1px #fff,
+    1px 1px #fff,
+    -1px -1px #fff,
+    1px -1px #fff,
+    -1px 1px #fff;
+}
+
+.pace-wordmark-block {
+  font-family: "Oswald", sans-serif;
+  font-weight: 700;
+  font-size: clamp(1.65rem, 4.5vw, 2.25rem);
+  line-height: 1;
+  color: var(--pace-blue-bright);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-shadow:
+    0 0 0.5px #fff,
+    0 0 1px #fff,
+    1px 0 #fff,
+    -1px 0 #fff,
+    0 1px #fff,
+    0 -1px #fff,
+    1px 1px #fff,
+    -1px -1px #fff,
+    1px -1px #fff,
+    -1px 1px #fff;
+}
+
+.pace-tagline-primary {
+  font-family: var(--font-label);
+  font-weight: 400;
+  letter-spacing: 0.2em;
+  color: var(--yellow);
+}
+
+.pace-tagline-secondary {
+  font-family: var(--font-accent);
+  font-weight: 400;
+  color: var(--ink);
+}
+
+/* Display headlines — Anton (landing .hero__headline / .how__headline) */
+.font-pace-heading {
+  font-family: var(--font-display);
+  font-weight: 400;
+}
+
+/* Labels — Bebas */
+.font-pace-label {
+  font-family: var(--font-label);
+}
+
+/* Section vertical rhythm — landing .section-how / .section-gallery */
+.pace-section-y {
+  padding-top: clamp(3rem, 8vw, 6rem);
+  padding-bottom: clamp(3rem, 8vw, 6rem);
+  padding-left: clamp(1.25rem, 4vw, 2.5rem);
+  padding-right: clamp(1.25rem, 4vw, 2.5rem);
+}
+
+/* Primary nav row — landing .nav */
+.pace-app-nav {
+  background: var(--white);
+  border-bottom: 2px solid var(--yellow);
+  padding: 1rem clamp(1rem, 4vw, 2.5rem);
+}
+
+/* Yellow left accent — highlighted / callout blocks */
+.pace-highlight {
+  border-left: 4px solid var(--yellow);
+  padding-left: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .pace-highlight {
+    padding-left: 1rem;
+  }
+}
+
+/* Leaflet divIcon: remove default white box so custom HTML markers show */
+.leaflet-container .pace-waypoint-icon {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* ——— Create flow (matches public landing.html rhythm) ——— */
+/** Full-width map step shell: fixed viewport slice so the map column can use remaining height */
+.pace-map-step-root {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: calc(100dvh - var(--pace-create-chrome-height));
+  max-height: calc(100dvh - var(--pace-create-chrome-height));
+}
+
+@media (min-width: 1024px) {
+  .pace-map-step-root {
+    flex-direction: row;
+    align-items: stretch;
+  }
+}
+
+.pace-create-surface {
+  flex: 1 1 0%;
+  min-height: 0;
+  color: var(--ink);
+  background-color: var(--bg-warm);
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    rgba(29, 111, 216, 0.055) 1px,
+    transparent 0
+  );
+  background-size: 22px 22px;
+}
+
+.pace-section-label {
+  margin-bottom: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-family: var(--font-label);
+  font-size: 0.95rem;
+  letter-spacing: 0.22em;
+  color: var(--yellow);
+}
+
+.pace-section-label::before {
+  content: "";
+  width: 2.25rem;
+  height: 3px;
+  flex-shrink: 0;
+  background: var(--yellow);
+}
+
+.pace-link-back {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 5px;
+  transition: color 0.2s ease;
+}
+
+.pace-link-back:hover {
+  color: var(--ink);
+}
+
+/* Marketing nav + create flow: comfortable taps on phones */
+.pace-nav-link {
+  display: inline-flex;
+  align-items: center;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .pace-nav-link {
+    min-height: 2.75rem;
+    padding: 0.25rem 0.65rem;
+    margin: -0.25rem -0.65rem;
+  }
+
+  .pace-link-back {
+    display: inline-flex;
+    min-height: 2.75rem;
+    align-items: center;
+    padding: 0.35rem 0.5rem;
+    margin-left: -0.5rem;
+  }
+
+  .pace-btn-primary {
+    min-height: 2.75rem;
+    padding: 0.85rem 1.5rem;
+  }
+
+  .pace-btn-primary--sm {
+    min-height: 2.75rem;
+    padding: 0.55rem 1.15rem;
+  }
+
+  .pace-btn-ghost {
+    min-height: 2.75rem;
+    padding: 0.85rem 1.35rem;
+  }
+
+  .pace-btn-ghost--sm {
+    min-height: 2.75rem;
+    padding: 0.55rem 1rem;
+  }
+
+  .pace-toolbar-btn,
+  .pace-toolbar-btn-primary {
+    min-height: 2.75rem;
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .pace-start-over-header {
+    min-height: 2.75rem;
+    padding: 0.35rem 0.5rem;
+    display: inline-flex;
+    align-items: center;
+  }
+}
+
+/* Primary CTA — landing .btn.btn--yellow */
+.pace-btn-primary {
+  font-family: var(--font-label);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  border: none;
+  cursor: pointer;
+  background: var(--yellow);
+  color: var(--ink);
+  padding: 0.75rem 1.35rem;
+  font-size: 1rem;
+  letter-spacing: 0.14em;
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease,
+    background 0.25s ease,
+    color 0.25s ease;
+  box-shadow: 0 4px 0 rgba(13, 13, 13, 0.12);
+}
+
+.pace-btn-primary:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 rgba(13, 13, 13, 0.15);
+}
+
+.pace-btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 4px 0 rgba(13, 13, 13, 0.12);
+}
+
+.pace-btn-primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Slightly smaller primary CTA (same landing yellow style) */
+.pace-btn-primary--sm {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  letter-spacing: 0.12em;
+}
+
+/* Secondary — landing .btn--ghost */
+.pace-btn-ghost {
+  font-family: var(--font-label);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  border: 2px solid var(--ink);
+  background: transparent;
+  padding: 0.75rem 1.35rem;
+  font-size: 1rem;
+  letter-spacing: 0.14em;
+  color: var(--ink);
+  cursor: pointer;
+  transition:
+    background 0.25s ease,
+    color 0.25s ease,
+    transform 0.25s ease;
+}
+
+.pace-btn-ghost:hover {
+  background: var(--ink);
+  color: var(--white);
+}
+
+.pace-btn-ghost--sm {
+  padding: 0.5rem 0.85rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+}
+
+/* Content card — white on warm base; yellow left accent (landing editorial) */
+.pace-card-editorial {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--yellow);
+  border-radius: 0;
+  box-shadow: 0 4px 24px rgba(13, 13, 13, 0.06);
+}
+
+/* Plain white block on warm (no accent) */
+.pace-card {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: 0 2px 12px rgba(13, 13, 13, 0.04);
+}
+
+.pace-toolbar-btn {
+  font-family: var(--font-label);
+  letter-spacing: 0.06em;
+  border: 1px solid var(--line);
+  background: var(--white);
+  padding: 0.375rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgba(13, 13, 13, 0.05);
+  transition: background 0.2s ease;
+  cursor: pointer;
+}
+
+.pace-toolbar-btn:hover {
+  background: var(--panel-gallery);
+}
+
+/* Toolbar primary CTA — same yellow lift as landing .btn--yellow, compact */
+.pace-toolbar-btn-primary {
+  font-family: var(--font-label);
+  letter-spacing: 0.1em;
+  border: none;
+  cursor: pointer;
+  background: var(--yellow);
+  padding: 0.375rem 1rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--ink);
+  box-shadow: 0 4px 0 rgba(13, 13, 13, 0.12);
+  transition:
+    transform 0.25s ease,
+    box-shadow 0.25s ease,
+    filter 0.2s ease;
+}
+
+.pace-toolbar-btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 5px 0 rgba(13, 13, 13, 0.14);
+}
+
+.pace-toolbar-btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 4px 0 rgba(13, 13, 13, 0.12);
+}
+
+.pace-toolbar-btn-primary:disabled {
+  cursor: not-allowed;
+  background: #e2e8f0;
+  color: #94a3b8;
+  box-shadow: none;
+  transform: none;
+}
