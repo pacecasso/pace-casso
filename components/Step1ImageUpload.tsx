@@ -10,6 +10,10 @@ import {
 } from "react";
 import * as d3 from "d3-contour";
 import * as turf from "@turf/turf";
+import {
+  medianMinDistBetweenRings,
+  stitchNestedHoleRingsInPlace,
+} from "../lib/contourRingStitch";
 import { fillLineMaskPrimaryPlusEnclosedHoles } from "../lib/inkMaskUnionEnclosed";
 
 export type NormalizedPoint = { x: number; y: number };
@@ -270,28 +274,6 @@ function sortContourRingsByInkEdges(
   }
 }
 
-/** Median min distance from samples on `a` to any vertex on `b` (px). */
-function medianMinDistBetweenRings(
-  a: [number, number][],
-  b: [number, number][],
-): number {
-  const step = Math.max(1, Math.floor(a.length / 90));
-  const ds: number[] = [];
-  for (let i = 0; i < a.length; i += step) {
-    const p = a[i]!;
-    let md = Infinity;
-    for (let j = 0; j < b.length; j++) {
-      const q = b[j]!;
-      const d = Math.hypot(p[0] - q[0], p[1] - q[1]);
-      if (d < md) md = d;
-    }
-    ds.push(md);
-  }
-  if (!ds.length) return Infinity;
-  ds.sort((x, y) => x - y);
-  return ds[Math.floor(ds.length / 2)]!;
-}
-
 /**
  * Marching squares on thick ink often yields two almost-parallel iso-loops
  * (inner vs outer edge of the same brush). Keep one ring per such pair.
@@ -306,7 +288,7 @@ function dedupeNearlyParallelContourRings(rings: [number, number][][]): void {
       const med = medianMinDistBetweenRings(r, k2);
       const ar = ringAreaAbs(r) / Math.max(1, ringAreaAbs(k2));
       const ar2 = ringAreaAbs(k2) / Math.max(1, ringAreaAbs(r));
-      if (med < 2.4 && (ar > 0.38 || ar2 > 0.38)) {
+      if (med < 1.85 && (ar > 0.46 || ar2 > 0.46)) {
         if (ringPolylineLength(r) >= ringPolylineLength(k2)) {
           keep[k] = r;
         }
@@ -320,11 +302,9 @@ function dedupeNearlyParallelContourRings(rings: [number, number][][]): void {
   for (const r of keep) rings.push(r);
 }
 
-function simplifyRingPx(
-  ring: [number, number][],
-  tolerancePx: number,
-): [number, number][] {
+function simplifyRingPx(ring: [number, number][]): [number, number][] {
   if (ring.length < 5) return ring;
+  const tolerancePx = ring.length > 900 ? 0.62 : 0.36;
   const ls = turf.lineString(ring.map(([x, y]) => [x, y]));
   const out = turf.simplify(ls, {
     tolerance: tolerancePx,
@@ -349,6 +329,7 @@ function computeSortedContourRings(
   const field = maskToFloatField(mask);
   const rings = extractAllRingsFromField(field, level);
   dedupeNearlyParallelContourRings(rings);
+  stitchNestedHoleRingsInPlace(rings);
   if (rings.length > 1) {
     sortContourRingsByInkEdges(mask, rings, w, h);
   }
@@ -531,7 +512,7 @@ export default function Step1ImageUpload({
       const ri = Math.min(lineRingIndex, Math.max(0, rings.length - 1));
       const ring = rings[ri] ?? null;
       if (ring === null || ring.length < 4) return null;
-      const smoothed = simplifyRingPx(ring, 1.05);
+      const smoothed = simplifyRingPx(ring);
       const target = Math.min(
         200,
         Math.max(120, Math.floor(smoothed.length / 3)),
@@ -897,8 +878,9 @@ export default function Step1ImageUpload({
         threshold slightly. Extra ink drawn{" "}
         <em className="not-italic">inside</em> a letter (a separate blob) is
         kept automatically when it sits in a closed hole of the main shape.
-        After you bridge or add detail, if the outline looks wrong, try{" "}
-        <span className="whitespace-nowrap">Route outline</span> (other rings)
+        When we detect a letter hole (inner loop much smaller than the outer
+        loop), we stitch it into one path automatically. If the outline still
+        looks wrong, try <span className="whitespace-nowrap">Route outline</span>{" "}
         below.
       </p>
 
