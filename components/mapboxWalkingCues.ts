@@ -1,4 +1,10 @@
 import { MAPBOX_PUBLIC_TOKEN } from "../lib/mapboxToken";
+import {
+  annotateOutAndBackSpurs,
+  assignAlongRouteMeters,
+  stripAlongRouteMeters,
+  type CueLike,
+} from "../lib/outAndBackSpurHints";
 
 /**
  * Fetch Mapbox walking step instructions for export (GPX waypoints, cue sheet).
@@ -39,7 +45,40 @@ export type WalkingCue = {
   lng: number;
   instruction: string;
   street: string | null;
+  /** Mapbox step distance (m), summed when cues are merged. */
+  stepDistanceM?: number;
+  stepDurationS?: number;
+  maneuverType?: string;
+  maneuverModifier?: string;
 };
+
+function sumOptionalStepMeta(
+  parts: WalkingCue[],
+): Pick<
+  WalkingCue,
+  "stepDistanceM" | "stepDurationS" | "maneuverType" | "maneuverModifier"
+> {
+  let dSum = 0;
+  let tSum = 0;
+  let hasD = false;
+  let hasT = false;
+  for (const p of parts) {
+    if (p.stepDistanceM != null) {
+      dSum += p.stepDistanceM;
+      hasD = true;
+    }
+    if (p.stepDurationS != null) {
+      tSum += p.stepDurationS;
+      hasT = true;
+    }
+  }
+  return {
+    stepDistanceM: hasD ? dSum : undefined,
+    stepDurationS: hasT ? tSum : undefined,
+    maneuverType: parts[0]?.maneuverType,
+    maneuverModifier: parts[0]?.maneuverModifier,
+  };
+}
 
 function haversineMeters(
   a: [number, number],
@@ -125,6 +164,19 @@ function isCardinalOnlyWalkInst(inst: string): boolean {
   );
 }
 
+const CARDINAL_WALK_ON_STREET =
+  /^walk\s+(north|south|east|west|northeast|northwest|southeast|southwest)\s+on\s+(.+?)(?:\.|\s*—|\s*$)/i;
+
+function isCardinalWalkOnNamedStreet(inst: string): boolean {
+  return CARDINAL_WALK_ON_STREET.test(inst.trim());
+}
+
+function cardinalWalkStreetFromInstruction(inst: string): string | null {
+  const m = inst.trim().match(CARDINAL_WALK_ON_STREET);
+  if (!m) return null;
+  return normalizeStreetToken(m[2]);
+}
+
 function modifierPhrase(mod?: string): string {
   if (!mod) return "";
   const map: Record<string, string> = {
@@ -149,6 +201,8 @@ type MapboxStepParsed = {
   };
   name?: string;
   ref?: string;
+  distance?: number;
+  duration?: number;
 };
 
 function pickReadableWayName(step: MapboxStepParsed): string | null {
@@ -314,7 +368,25 @@ async function fetchCuesForSlice(
       const [lng, lat] = loc;
       const instruction = buildInstructionFromStep(step, m);
       const street = pickReadableWayName(step);
-      cues.push({ lat, lng, instruction, street });
+      const stepDistanceM =
+        typeof step.distance === "number" && Number.isFinite(step.distance)
+          ? step.distance
+          : undefined;
+      const stepDurationS =
+        typeof step.duration === "number" && Number.isFinite(step.duration)
+          ? step.duration
+          : undefined;
+      cues.push({
+        lat,
+        lng,
+        instruction,
+        street,
+        stepDistanceM,
+        stepDurationS,
+        maneuverType: typeof m.type === "string" ? m.type : undefined,
+        maneuverModifier:
+          typeof m.modifier === "string" ? m.modifier : undefined,
+      });
     }
   }
   return cues;
@@ -902,6 +974,55 @@ function mergeAnonymousCorridorRuns(cues: WalkingCue[]): WalkingCue[] {
   return out;
 }
 
+/**
+ * Mapbox often emits two "Walk southwest / Walk southeast on Same Avenue" steps
+ * along one straight corridor (sidewalk jog). mergeConsecutiveSameStreetRuns keeps
+ * both when they are > MIN_PAIR_SEPARATION — fix that here and catch any other pairs.
+ */
+function mergeAdjacentCardinalWalksSameStreet(cues: WalkingCue[]): WalkingCue[] {
+  const MAX_MERGE_SPAN_M = 1200;
+  const out: WalkingCue[] = [];
+
+  for (let i = 0; i < cues.length; i++) {
+    const c = cues[i];
+    const next = cues[i + 1];
+    if (!next) {
+      out.push(c);
+      continue;
+    }
+    if (
+      !isCardinalWalkOnNamedStreet(c.instruction) ||
+      !isCardinalWalkOnNamedStreet(next.instruction)
+    ) {
+      out.push(c);
+      continue;
+    }
+    const st0 = cardinalWalkStreetFromInstruction(c.instruction);
+    const st1 = cardinalWalkStreetFromInstruction(next.instruction);
+    if (!st0 || st0 !== st1) {
+      out.push(c);
+      continue;
+    }
+    const d = haversineMeters([c.lat, c.lng], [next.lat, next.lng]);
+    if (d > MAX_MERGE_SPAN_M) {
+      out.push(c);
+      continue;
+    }
+    const streetDisplay = pickDisplayStreet([c, next], st0);
+    out.push(
+      finalizeCue({
+        lat: c.lat,
+        lng: c.lng,
+        instruction: `Continue on ${streetDisplay}`,
+        street: streetDisplay,
+        ...sumOptionalStepMeta([c, next]),
+      }),
+    );
+    i++;
+  }
+  return out;
+}
+
 /** Opposite "Walk …" micro-steps on the same block → one Continue on … */
 function mergeTightSameStreetWalkPairs(cues: WalkingCue[]): WalkingCue[] {
   const MAX_D = 260;
@@ -935,6 +1056,7 @@ function mergeTightSameStreetWalkPairs(cues: WalkingCue[]): WalkingCue[] {
             lng: c.lng,
             instruction: `Continue on ${street}`,
             street,
+            ...sumOptionalStepMeta([c, next]),
           }),
         );
         i += 2;
@@ -1032,7 +1154,16 @@ function mergeConsecutiveSameStreetRuns(cues: WalkingCue[]): WalkingCue[] {
         const along0 = isAlongStreetLine(chunk[0].instruction);
         const along1 = isAlongStreetLine(chunk[1].instruction);
         const bothAlong = along0 && along1;
-        if (bothAlong && d > MIN_PAIR_SEPARATION_ALONG_ONLY_M) {
+        const bothCardinalSameStreet =
+          isCardinalWalkOnNamedStreet(chunk[0].instruction) &&
+          isCardinalWalkOnNamedStreet(chunk[1].instruction) &&
+          cardinalWalkStreetFromInstruction(chunk[0].instruction) ===
+            cardinalWalkStreetFromInstruction(chunk[1].instruction);
+        if (
+          bothAlong &&
+          d > MIN_PAIR_SEPARATION_ALONG_ONLY_M &&
+          !bothCardinalSameStreet
+        ) {
           out.push(finalizeCue(chunk[0]));
           out.push(finalizeCue(chunk[1]));
         } else {
@@ -1046,6 +1177,7 @@ function mergeConsecutiveSameStreetRuns(cues: WalkingCue[]): WalkingCue[] {
             lng: chunk[0].lng,
             instruction,
             street: streetDisplay,
+            ...sumOptionalStepMeta(chunk),
           });
         }
       } else {
@@ -1059,6 +1191,7 @@ function mergeConsecutiveSameStreetRuns(cues: WalkingCue[]): WalkingCue[] {
           lng: chunk[0].lng,
           instruction,
           street: streetDisplay,
+          ...sumOptionalStepMeta(chunk),
         });
       }
       start = end;
@@ -1070,11 +1203,17 @@ function mergeConsecutiveSameStreetRuns(cues: WalkingCue[]): WalkingCue[] {
   return out;
 }
 
+export type FetchWalkingTurnCuesOptions = {
+  /** Final route polyline [lat,lng][] — used to label short out-and-back spurs. */
+  referenceLine?: [number, number][];
+};
+
 /**
  * Returns ordered turn-by-turn cues for the given path (chunked for Mapbox limits).
  */
 export async function fetchWalkingTurnCues(
   waypoints: [number, number][],
+  options?: FetchWalkingTurnCuesOptions,
 ): Promise<WalkingCue[]> {
   if (waypoints.length < 2) return [];
 
@@ -1105,6 +1244,7 @@ export async function fetchWalkingTurnCues(
   merged = collapseRedundantCues(merged);
   merged = dedupeNearDuplicates(merged);
   merged = mergeConsecutiveSameStreetRuns(merged);
+  merged = mergeAdjacentCardinalWalksSameStreet(merged);
   merged = fillFromNeighborStreets(merged);
   merged = collapseBareTurnBetweenWalkways(merged);
   merged = collapseBareTurnBetweenWalkways(merged);
@@ -1112,12 +1252,21 @@ export async function fetchWalkingTurnCues(
   merged = mergeAnonymousCorridorRuns(merged);
   merged = mergeAnonymousCorridorRuns(merged);
   merged = polishOntoRepeats(merged);
+  merged = mergeAdjacentCardinalWalksSameStreet(merged);
   merged = mergeTightSameStreetWalkPairs(merged);
   merged = merged.map((c) => ({
     ...c,
     instruction: stripRedundantEmDashSuffix(c.instruction),
   }));
   merged = dedupeNearDuplicates(merged);
+
+  const ref = options?.referenceLine;
+  if (ref && ref.length >= 2) {
+    assignAlongRouteMeters(merged as CueLike[], ref);
+  }
+  merged = stripAlongRouteMeters(
+    annotateOutAndBackSpurs(merged as CueLike[]),
+  ) as WalkingCue[];
 
   return merged;
 }

@@ -10,6 +10,8 @@ import {
   waypointsForDirectionsQuery,
 } from "./mapboxWalkingCues";
 import MapChunkFallback from "./MapChunkFallback";
+import { getShareTwitterHandle } from "../lib/siteConfig";
+import { getSiteUrl } from "../lib/siteUrl";
 
 const Step5PreviewMap = dynamic(() => import("./Step5PreviewMap"), {
   ssr: false,
@@ -21,6 +23,7 @@ const Step5PreviewMap = dynamic(() => import("./Step5PreviewMap"), {
 type Props = {
   route: RouteLineString;
   anchorLocation: AnchorLocation;
+  routeSource: "image" | "freehand";
   onBackToFineTune: () => void;
   onStartOver: () => void;
 };
@@ -132,13 +135,23 @@ function triggerDownload(filename: string, mime: string, body: string) {
 export default function Step5RouteComplete({
   route,
   anchorLocation,
+  routeSource,
   onBackToFineTune,
   onStartOver,
 }: Props) {
-  const [showArtOnMap, setShowArtOnMap] = useState(true);
+  const showArtControls = routeSource === "image";
+  const [showArtOnMap, setShowArtOnMap] = useState(showArtControls);
   const [turnCues, setTurnCues] = useState<WalkingCue[]>([]);
   const [cuesLoading, setCuesLoading] = useState(false);
   const [cuesError, setCuesError] = useState<string | null>(null);
+  const [shareHint, setShareHint] = useState<string | null>(null);
+  const [canNativeShare, setCanNativeShare] = useState(false);
+
+  useEffect(() => {
+    setCanNativeShare(
+      typeof navigator !== "undefined" && typeof navigator.share === "function",
+    );
+  }, []);
 
   const routeLine = useMemo(
     () => (route.coordinates ?? []) as [number, number][],
@@ -167,7 +180,7 @@ export default function Step5RouteComplete({
     setCuesLoading(true);
     setCuesError(null);
 
-    fetchWalkingTurnCues(queryWps)
+    fetchWalkingTurnCues(queryWps, { referenceLine: coords })
       .then((c) => {
         if (!cancelled) setTurnCues(c);
       })
@@ -223,6 +236,38 @@ export default function Step5RouteComplete({
       : null;
   const waypointCount = route.blockWaypoints?.length ?? 0;
   const pathVertices = routeLine.length;
+
+  const shareBlurb = useMemo(() => {
+    const base = getSiteUrl();
+    const kmBit =
+      distanceKm != null ? `${distanceKm} km` : "a route";
+    const handle = getShareTwitterHandle();
+    return `I designed a ${kmBit} street route with PaceCasso — turn your city into art. Try it: ${base}/create\n\n@${handle}`;
+  }, [distanceKm]);
+
+  const copyShareBlurb = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(shareBlurb);
+      setShareHint("Copied!");
+      window.setTimeout(() => setShareHint(null), 2200);
+    } catch {
+      setShareHint("Couldn’t copy — select and copy manually.");
+      window.setTimeout(() => setShareHint(null), 3500);
+    }
+  }, [shareBlurb]);
+
+  const nativeShare = useCallback(async () => {
+    if (!navigator.share) return;
+    try {
+      await navigator.share({
+        title: "PaceCasso",
+        text: shareBlurb,
+        url: `${getSiteUrl()}/create`,
+      });
+    } catch {
+      /* user dismissed or cancelled */
+    }
+  }, [shareBlurb]);
 
   return (
     <div className="mx-auto flex min-h-[calc(100dvh-14rem)] w-full max-w-6xl flex-col">
@@ -356,6 +401,42 @@ export default function Step5RouteComplete({
                   Cues (.txt)
                 </button>
               </div>
+
+              <span className="mt-4 font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
+                Share
+              </span>
+              <p className="text-[10px] leading-snug text-pace-muted">
+                Copy a short blurb for social — your route stays on your device;
+                this only shares text and a link to PaceCasso.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={copyShareBlurb}
+                  className="pace-toolbar-btn-primary px-3 py-2"
+                >
+                  Copy share text
+                </button>
+                {canNativeShare ? (
+                  <button
+                    type="button"
+                    onClick={nativeShare}
+                    className="pace-toolbar-btn px-3 py-2"
+                  >
+                    Share…
+                  </button>
+                ) : null}
+              </div>
+              {shareHint ? (
+                <p
+                  className="text-[10px] font-medium text-pace-blue"
+                  role="status"
+                  aria-live="polite"
+                >
+                  {shareHint}
+                </p>
+              ) : null}
+
               <p className="text-[10px] leading-snug text-pace-muted">
                 GPX embeds{" "}
                 <code className="rounded bg-pace-panel px-1 text-pace-ink ring-1 ring-pace-line">
@@ -396,7 +477,7 @@ export default function Step5RouteComplete({
               </div>
             </div>
 
-            {hasArt ? (
+            {showArtControls && hasArt ? (
               <div className="mt-4 flex items-center justify-between gap-3 border-t border-pace-line pt-4">
                 <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
                   Show art on map
@@ -440,11 +521,11 @@ export default function Step5RouteComplete({
         </div>
 
         <div className="min-h-[min(520px,58vh)] flex-1 lg:min-h-[calc(100dvh-12rem)]">
-          {pathVertices >= 2 || (showArtOnMap && hasArt) ? (
+          {pathVertices >= 2 || (showArtControls && showArtOnMap && hasArt) ? (
             <Step5PreviewMap
               routeLine={routeLine}
               originalArt={originalArt}
-              showOriginalArt={showArtOnMap && hasArt}
+              showOriginalArt={showArtControls && showArtOnMap && hasArt}
             />
           ) : (
             <div className="flex h-full min-h-[280px] items-center justify-center rounded-xl border border-dashed border-pace-line bg-pace-panel text-sm text-pace-muted">

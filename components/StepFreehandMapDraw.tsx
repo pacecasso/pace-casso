@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import type { LatLngExpression } from "leaflet";
+import { flattenStrokesForSnap } from "../lib/flattenFreehandStrokes";
 import {
   centroidLatLng,
   latLngPathToNormalizedContour,
@@ -23,6 +24,10 @@ const TileLayer = dynamic(
 );
 const Polyline = dynamic(
   () => import("react-leaflet").then((m) => m.Polyline),
+  { ssr: false },
+);
+const CircleMarker = dynamic(
+  () => import("react-leaflet").then((m) => m.CircleMarker),
   { ssr: false },
 );
 
@@ -48,14 +53,6 @@ function haversineM(a: [number, number], b: [number, number]): number {
 
 function countPoints(strokes: [number, number][][]): number {
   return strokes.reduce((n, s) => n + s.length, 0);
-}
-
-function flattenStrokes(strokes: [number, number][][]): [number, number][] {
-  const out: [number, number][] = [];
-  for (const s of strokes) {
-    if (s.length >= 2) out.push(...s);
-  }
-  return out;
 }
 
 function downsampleLatLng(
@@ -145,6 +142,25 @@ export default function StepFreehandMapDraw({
     finalizeOpenStroke();
   }, [finalizeOpenStroke]);
 
+  /** Double-click in draw mode: forced vertex (no MIN_POINT_M), extends last stroke or starts a singleton. */
+  const onDoubleClickAnchor = useCallback((lat: number, lng: number) => {
+    const p: [number, number] = [lat, lng];
+    setStrokes((prev) => {
+      if (countPoints(prev) >= MAX_POINTS_TOTAL) return prev;
+      if (!prev.length) {
+        lastInStrokeRef.current = p;
+        return [[p]];
+      }
+      const copy = prev.slice();
+      const lastStroke = copy[copy.length - 1]!;
+      const cur = lastStroke.slice();
+      cur.push(p);
+      copy[copy.length - 1] = cur;
+      lastInStrokeRef.current = p;
+      return copy;
+    });
+  }, []);
+
   const handleUndo = useCallback(() => {
     setStrokes((prev) => {
       if (!prev.length) return prev;
@@ -168,10 +184,10 @@ export default function StepFreehandMapDraw({
     setStrokes([]);
   }, []);
 
-  const flatForExport = flattenStrokes(strokes);
+  const flatForExport = flattenStrokesForSnap(strokes);
 
   const handleDone = useCallback(() => {
-    const flat = flattenStrokes(strokes);
+    const flat = flattenStrokesForSnap(strokes);
     if (flat.length < 2) return;
     const anchorLatLngs = downsampleLatLng(flat, MAX_POINTS_TOTAL);
     const center = centroidLatLng(anchorLatLngs);
@@ -193,9 +209,13 @@ export default function StepFreehandMapDraw({
             </span>
             <span className="font-dm text-[11px] leading-snug text-pace-muted">
               <strong className="text-pace-ink">Move map</strong> to pan/zoom.{" "}
-              <strong className="text-pace-ink">Draw</strong> to sketch. Each
-              drag is one stroke — connect corners yourself if you need one
-              continuous path.
+              <strong className="text-pace-ink">Draw</strong> to sketch.{" "}
+              <strong className="text-pace-ink">Double-click</strong> to drop a
+              corner anchor, or <strong className="text-pace-ink">
+                Shift+click
+              </strong>{" "}
+              if double-click still zooms your browser. Each drag is one stroke —
+              connect corners yourself if you need one continuous path.
             </span>
           </div>
 
@@ -230,7 +250,7 @@ export default function StepFreehandMapDraw({
             }`}
           >
             {mode === "draw"
-              ? "Drawing on — sketch on the map. Switch to Move map to pan."
+              ? "Drawing on — sketch or double-click anchors. Switch to Move map to pan."
               : "Move mode — pan the map. Switch to Draw when you’re ready."}
           </p>
 
@@ -281,7 +301,19 @@ export default function StepFreehandMapDraw({
             <LeafletInvalidateOnResize />
             <TileLayer attribution={OSM_TILE_ATTRIBUTION} url={OSM_TILE_URL} />
             {strokes.map((stroke, i) =>
-              stroke.length > 1 ? (
+              stroke.length === 1 ? (
+                <CircleMarker
+                  key={`anchor-dot-${i}`}
+                  center={stroke[0] as LatLngExpression}
+                  radius={5}
+                  pathOptions={{
+                    color: "#16a34a",
+                    fillColor: "#16a34a",
+                    fillOpacity: 0.95,
+                    weight: 2,
+                  }}
+                />
+              ) : stroke.length > 1 ? (
                 <Polyline
                   key={i}
                   positions={stroke as LatLngExpression[]}
@@ -300,6 +332,7 @@ export default function StepFreehandMapDraw({
               onStrokeStart={onStrokeStart}
               onStrokePoint={onStrokePoint}
               onStrokeEnd={onStrokeEnd}
+              onDoubleClickAnchor={onDoubleClickAnchor}
             />
           </MapContainer>
         </div>

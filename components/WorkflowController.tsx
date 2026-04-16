@@ -9,6 +9,8 @@ import {
   useRef,
   useState,
 } from "react";
+
+const CREATE_INTRO_STORAGE_KEY = "pacecasso-create-intro-dismissed-v1";
 import type { RouteLineString } from "../lib/routeTypes";
 import {
   clearCreateDraft,
@@ -32,6 +34,7 @@ import StepCityGate from "./StepCityGate";
 import StepFreehandMapDraw from "./StepFreehandMapDraw";
 import StepSourceChoice from "./StepSourceChoice";
 import BrandLogo from "./BrandLogo";
+import SocialLinks from "./SocialLinks";
 
 type StepNum = DisplayStepNum;
 
@@ -63,6 +66,7 @@ export default function WorkflowController() {
   const [editedRoute, setEditedRoute] = useState<RouteLineString | null>(null);
   const [finalRoute, setFinalRoute] = useState<RouteLineString | null>(null);
   const [draftHydrated, setDraftHydrated] = useState(false);
+  const [showCreateIntro, setShowCreateIntro] = useState(false);
   const stepTitleRef = useRef<HTMLHeadingElement>(null);
 
   useLayoutEffect(() => {
@@ -93,6 +97,26 @@ export default function WorkflowController() {
       setFinalRoute(d.finalRoute);
     }
     setDraftHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    try {
+      setShowCreateIntro(
+        typeof window !== "undefined" &&
+          window.localStorage.getItem(CREATE_INTRO_STORAGE_KEY) !== "1",
+      );
+    } catch {
+      setShowCreateIntro(true);
+    }
+  }, []);
+
+  const dismissCreateIntro = useCallback(() => {
+    try {
+      window.localStorage.setItem(CREATE_INTRO_STORAGE_KEY, "1");
+    } catch {
+      /* ignore quota / private mode */
+    }
+    setShowCreateIntro(false);
   }, []);
 
   useEffect(() => {
@@ -240,19 +264,19 @@ export default function WorkflowController() {
             aria-label="Marketing links"
           >
             <Link
-              href="/landing.html#gallery"
+              href="/gallery"
               className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
             >
               Gallery
             </Link>
             <Link
-              href="/landing.html#how"
+              href="/how"
               className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
             >
               How it works
             </Link>
             <Link
-              href="/landing.html#community"
+              href="/community"
               className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
             >
               Community
@@ -335,6 +359,58 @@ export default function WorkflowController() {
       </header>
 
       <section className="pace-create-surface flex flex-1 flex-col">
+        {draftHydrated &&
+        currentStep === 0 &&
+        showCreateIntro ? (
+          <div
+            className="border-b-2 border-pace-yellow/50 bg-pace-white px-[clamp(1rem,4vw,2.5rem)] py-4 shadow-sm"
+            role="region"
+            aria-label="Getting started"
+          >
+            <div className="mx-auto flex max-w-5xl flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+              <div className="min-w-0 flex-1">
+                <p className="font-bebas text-base tracking-[0.12em] text-pace-ink">
+                  First time here?
+                </p>
+                <ul className="mt-2 space-y-1.5 pl-4 text-xs leading-relaxed text-pace-muted [list-style-type:disc]">
+                  <li>
+                    Pick a city preset, then choose{" "}
+                    <strong className="text-pace-ink">trace a photo</strong> or{" "}
+                    <strong className="text-pace-ink">draw freehand</strong> on
+                    the map.
+                  </li>
+                  <li>
+                    We snap your shape to runnable streets—you can refine
+                    waypoints before you export.
+                  </li>
+                  <li>
+                    Progress saves in{" "}
+                    <strong className="text-pace-ink">this browser</strong> until
+                    you use{" "}
+                    <strong className="text-pace-ink">START OVER</strong> in the
+                    header.
+                  </li>
+                </ul>
+                <p className="mt-3 text-xs text-pace-muted">
+                  <Link
+                    href="/help"
+                    className="font-semibold text-pace-blue underline-offset-2 hover:underline"
+                  >
+                    Help
+                  </Link>{" "}
+                  covers exports, Mapbox issues, and draft storage.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={dismissCreateIntro}
+                className="shrink-0 rounded-lg border border-pace-line bg-pace-warm px-4 py-2 font-bebas text-sm tracking-[0.12em] text-pace-ink transition hover:border-pace-yellow hover:bg-pace-white"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        ) : null}
         {currentStep === 0 && (
           <StepCityGate
             selectedCityId={selectedCityId}
@@ -404,6 +480,7 @@ export default function WorkflowController() {
         {currentStep === 4 && anchorLocation && (
           <Step3StreetSnap
             anchorLocation={anchorLocation}
+            routeSource={sourceKind === "freehand" ? "freehand" : "image"}
             onBack={() => {
               if (sourceKind === "freehand") {
                 setSnappedRoute(null);
@@ -425,6 +502,7 @@ export default function WorkflowController() {
           <Step4RouteEditor
             anchorLocation={anchorLocation}
             snappedRoute={snappedRoute}
+            routeSource={sourceKind === "freehand" ? "freehand" : "image"}
             onBack={() => {
               setSnappedRoute(null);
               setCurrentStep(4);
@@ -442,6 +520,7 @@ export default function WorkflowController() {
             <Step5RouteComplete
               route={finalRoute ?? editedRoute!}
               anchorLocation={anchorLocation}
+              routeSource={sourceKind === "freehand" ? "freehand" : "image"}
               onBackToFineTune={() => setCurrentStep(5)}
               onStartOver={handleStartOver}
             />
@@ -489,6 +568,7 @@ export default function WorkflowController() {
         >
           Contact
         </Link>
+        <SocialLinks />
         <span aria-hidden> · </span>
         Design. Run. Repeat.
       </footer>

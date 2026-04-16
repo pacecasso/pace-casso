@@ -373,6 +373,8 @@ function distancePointToLegMeters(
 type Props = {
   anchorLocation: AnchorLocation;
   snappedRoute: RouteLineString;
+  /** Photo trace shows sketch overlay + match bar; freehand omits them. */
+  routeSource: "image" | "freehand";
   onBack: () => void;
   onComplete: (route: RouteLineString) => void;
 };
@@ -456,16 +458,20 @@ function initialWaypoints(route: RouteLineString): Waypoint[] {
 export default function Step4RouteEditor({
   anchorLocation,
   snappedRoute,
+  routeSource,
   onBack,
   onComplete,
 }: Props) {
+  const showArtControls = routeSource === "image";
+
   const [waypoints, setWaypoints] = useState<Waypoint[]>(() =>
     initialWaypoints(snappedRoute),
   );
-  const [showOriginalArt, setShowOriginalArt] = useState(true);
+  /** Image: on by default (contour vs streets). Freehand: unused (overlay hidden). */
+  const [showOriginalArt, setShowOriginalArt] = useState(showArtControls);
   /** When off, hide full Mapbox polyline so stray tails past your waypoints disappear. */
   const [showFullSnapReference, setShowFullSnapReference] = useState(false);
-  /** When off, hide orange waypoint handles to preview the final red route (and green art) only. */
+  /** When off, hide orange waypoint handles to preview the final red route only. */
   const [showWaypointDots, setShowWaypointDots] = useState(true);
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<
     number | null
@@ -524,6 +530,58 @@ export default function Step4RouteEditor({
     () => buildSequentialLegSlices(streetLine, waypoints),
     [streetLine, waypoints],
   );
+
+  /** When polyline slicing fails (common near T-junctions), fetch real walking legs instead of straight chords. */
+  useEffect(() => {
+    if (waypoints.length < 2 || streetLine.length < 2) return;
+    const legs = buildSequentialLegSlices(streetLine, waypoints);
+    const weakIndices: number[] = [];
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      if (!legs[i] || legs[i].length < 2) weakIndices.push(i);
+    }
+    if (!weakIndices.length) return;
+
+    let cancelled = false;
+    const wpSnap = waypoints.map((p) => [p[0], p[1]] as Waypoint);
+
+    void (async () => {
+      const fetched: (Waypoint[] | null)[] = new Array(
+        wpSnap.length - 1,
+      ).fill(null);
+      for (const i of weakIndices) {
+        if (cancelled) return;
+        const a = wpSnap[i];
+        const b = wpSnap[i + 1];
+        if (!a || !b) continue;
+        try {
+          const line = await mapboxWalkingPolyline(a, b);
+          if (line.length >= 2) fetched[i] = line;
+        } catch {
+          /* keep null */
+        }
+      }
+      if (cancelled) return;
+      setLegOverrides((prev) => {
+        const n = waypointsRef.current.length - 1;
+        if (n < 1) return prev;
+        const out = prev.slice(0, n);
+        while (out.length < n) out.push(null);
+        let changed = false;
+        for (let i = 0; i < n; i++) {
+          if (out[i] != null) continue;
+          if (fetched[i] != null) {
+            out[i] = fetched[i];
+            changed = true;
+          }
+        }
+        return changed ? out : prev;
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [waypoints, streetLine]);
 
   const legPolylines = useMemo(() => {
     if (waypoints.length < 2) return [];
@@ -1010,27 +1068,29 @@ export default function Step4RouteEditor({
           <div className="mt-5 flex flex-col gap-4 border-t border-pace-line pt-4 text-sm">
             <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-4">
-                <div className="flex items-center gap-3">
-                  <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
-                    Your art
-                  </span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={showOriginalArt}
-                    aria-label="Toggle original artwork overlay"
-                    onClick={() => setShowOriginalArt((v) => !v)}
-                    className={`relative h-7 w-12 shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
-                      showOriginalArt ? "bg-emerald-500" : "bg-pace-line"
-                    }`}
-                  >
-                    <span
-                      className={`absolute top-1 left-1 block h-5 w-5 rounded-full bg-pace-white shadow transition-transform ${
-                        showOriginalArt ? "translate-x-5" : "translate-x-0"
+                {showArtControls ? (
+                  <div className="flex items-center gap-3">
+                    <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
+                      Your art
+                    </span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={showOriginalArt}
+                      aria-label="Toggle original artwork overlay"
+                      onClick={() => setShowOriginalArt((v) => !v)}
+                      className={`relative h-7 w-12 shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
+                        showOriginalArt ? "bg-emerald-500" : "bg-pace-line"
                       }`}
-                    />
-                  </button>
-                </div>
+                    >
+                      <span
+                        className={`absolute top-1 left-1 block h-5 w-5 rounded-full bg-pace-white shadow transition-transform ${
+                          showOriginalArt ? "translate-x-5" : "translate-x-0"
+                        }`}
+                      />
+                    </button>
+                  </div>
+                ) : null}
                 <div className="flex items-center gap-3">
                   <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
                     Full snap
@@ -1074,23 +1134,34 @@ export default function Step4RouteEditor({
                   </button>
                 </div>
               </div>
-              <div className="min-w-0 w-full">
-                <div className="mb-1 flex items-center justify-between gap-2 font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
-                  <span>Match to art</span>
-                  <span className="tabular-nums text-pace-ink">
-                    {routeMatchPct}%
-                  </span>
-                </div>
-                <div
-                  className="h-2 overflow-hidden rounded-full bg-pace-line"
-                  title="How closely the street route follows your outline."
-                >
+              {showArtControls ? (
+                <p className="font-dm text-[10px] leading-snug text-pace-muted">
+                  Dashed <span className="text-emerald-600">green</span> is your
+                  traced outline (vs the red street route). It can cut across
+                  blocks where streets go around — not a second route. Toggle{" "}
+                  <strong className="text-pace-ink">Your art</strong> off for a
+                  clean view.
+                </p>
+              ) : null}
+              {showArtControls ? (
+                <div className="min-w-0 w-full">
+                  <div className="mb-1 flex items-center justify-between gap-2 font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
+                    <span>Match to art</span>
+                    <span className="tabular-nums text-pace-ink">
+                      {routeMatchPct}%
+                    </span>
+                  </div>
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-pace-yellow via-emerald-400 to-emerald-500 transition-[width] duration-300"
-                    style={{ width: `${routeMatchPct}%` }}
-                  />
+                    className="h-2 overflow-hidden rounded-full bg-pace-line"
+                    title="How closely the street route follows your outline."
+                  >
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-pace-yellow via-emerald-400 to-emerald-500 transition-[width] duration-300"
+                      style={{ width: `${routeMatchPct}%` }}
+                    />
+                  </div>
                 </div>
-              </div>
+              ) : null}
             </div>
 
             <div className="flex flex-wrap items-center gap-2 text-[11px]">
@@ -1195,7 +1266,7 @@ export default function Step4RouteEditor({
             showFaintFullStreet={showFaintFullStreet}
             activeRouteLine={activeRouteLine}
             originalArt={originalArt}
-            showOriginalArt={showOriginalArt}
+            showOriginalArt={showArtControls && showOriginalArt}
             legPolylines={legPolylines}
             showWaypoints={showWaypointDots}
             waypoints={waypoints}

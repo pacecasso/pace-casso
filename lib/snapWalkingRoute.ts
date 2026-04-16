@@ -224,6 +224,47 @@ function mergeAndOrderWaypoints(
   );
 }
 
+/**
+ * Order Mapbox maneuver handles by travel order along the **user sketch** first.
+ * At T-junctions, projecting onto the snapped polyline alone can pick the wrong
+ * branch; draw order disambiguates.
+ */
+function mergeAndOrderWaypointsAlongUserPath(
+  userPath: [number, number][],
+  stitched: [number, number][],
+  candidates: [number, number][],
+  minSepM = 12,
+): [number, number][] {
+  const uniq: [number, number][] = [];
+  for (const p of candidates) {
+    let dup = false;
+    for (const u of uniq) {
+      if (haversineMeters(p, u) < 2) {
+        dup = true;
+        break;
+      }
+    }
+    if (!dup) uniq.push(p);
+  }
+
+  const primary = userPath.length >= 2 ? userPath : stitched;
+  const scored = uniq.map((p) => ({
+    p,
+    su: distanceAlongLineToPoint(primary, p),
+    ss: distanceAlongLineToPoint(stitched, p),
+  }));
+
+  scored.sort((a, b) => {
+    if (Math.abs(a.su - b.su) > 8) return a.su - b.su;
+    return a.ss - b.ss;
+  });
+
+  return dedupeWaypoints(
+    scored.map((x) => x.p),
+    minSepM,
+  );
+}
+
 function collectBlockWaypointsFromLegs(
   routes: MapboxDirectionsRoute[],
   stitchedLine: [number, number][],
@@ -415,7 +456,7 @@ function fallbackWaypointsFromLine(
 const CHUNK_SIZE = 20;
 
 /** If chunk geometries don’t meet, Leaflet draws a chord through blocks — bridge with a 2-point walking request. */
-const CHUNK_JOIN_GAP_BRIDGE_M = 14;
+const CHUNK_JOIN_GAP_BRIDGE_M = 28;
 
 function appendDedupedStitch(
   target: [number, number][],
@@ -556,9 +597,15 @@ function finalizeBlockWaypoints(
   stitched: [number, number][],
   totalDist: number,
   routePayloads: MapboxDirectionsRoute[],
+  userAnchorPath: [number, number][],
 ): RouteLineString {
   const maneuverPts = collectBlockWaypointsFromLegs(routePayloads, stitched);
-  let blockWaypoints = mergeAndOrderWaypoints(stitched, maneuverPts, 26);
+  let blockWaypoints = mergeAndOrderWaypointsAlongUserPath(
+    userAnchorPath,
+    stitched,
+    maneuverPts,
+    26,
+  );
 
   const needsLobe = routeNeedsLobeWaypoints(stitched, totalDist);
   if (!needsLobe) {
@@ -669,6 +716,7 @@ export async function snapWalkingRoute(
       one.stitched,
       one.totalDist,
       one.routePayloads,
+      anchorLatLngs,
     );
   })();
 

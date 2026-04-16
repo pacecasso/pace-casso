@@ -11,7 +11,7 @@ const LOGO_URLS = [
 ] as const;
 
 const DEFAULT_CLASS =
-  "h-[clamp(3rem,10vw,4.5rem)] w-auto max-w-[min(380px,82vw)] object-contain object-left";
+  "h-[clamp(4rem,14vw,6.5rem)] w-auto max-w-[min(480px,90vw)] object-contain object-left";
 
 type Props = {
   className?: string;
@@ -24,7 +24,7 @@ type Props = {
 function TypographicLockup({ className }: { className?: string }) {
   return (
     <span
-      className={`font-bebas inline-flex items-baseline text-[clamp(1.75rem,4vw,2.25rem)] leading-none tracking-[0.04em] ${className ?? ""}`}
+      className={`font-bebas inline-flex items-baseline text-[clamp(2rem,5vw,2.75rem)] leading-none tracking-[0.04em] ${className ?? ""}`}
       aria-label="PaceCasso"
     >
       <span className="text-pace-yellow">P</span>
@@ -48,8 +48,8 @@ export default function BrandLogo({ className }: Props) {
       src={LOGO_URLS[index]}
       alt="PaceCasso"
       className={imgClass}
-      width={380}
-      height={90}
+      width={480}
+      height={114}
       priority
       onError={() => setIndex((i) => i + 1)}
     />

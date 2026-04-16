@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="pace-plausible-domain" content="" />
     <title>PaceCasso</title>
     <link rel="prefetch" href="/create" as="document" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -83,10 +84,10 @@
         position: sticky;
         top: 0;
         z-index: 100;
-        display: flex;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
         align-items: center;
-        justify-content: space-between;
-        gap: 1.5rem;
+        gap: 1rem 1.5rem;
         padding: 1rem clamp(1rem, 4vw, 2.5rem);
         background: var(--white);
         border-bottom: 2px solid var(--yellow);
@@ -99,9 +100,9 @@
       }
 
       .nav__logo-img {
-        height: clamp(3rem, 10vw, 4.5rem);
+        height: clamp(4rem, 14vw, 6.5rem);
         width: auto;
-        max-width: min(380px, 82vw);
+        max-width: min(480px, 90vw);
         display: block;
         object-fit: contain;
         object-position: left center;
@@ -113,7 +114,7 @@
 
       .nav__logo {
         font-family: var(--font-label);
-        font-size: clamp(1.75rem, 4vw, 2.25rem);
+        font-size: clamp(2rem, 5vw, 2.75rem);
         letter-spacing: 0.04em;
         line-height: 1;
       }
@@ -135,10 +136,63 @@
       .nav__links {
         display: flex;
         flex-wrap: wrap;
+        justify-content: center;
         gap: clamp(1rem, 3vw, 2rem);
         font-family: var(--font-label);
         font-size: 1.05rem;
         letter-spacing: 0.12em;
+      }
+
+      .nav__end {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.65rem;
+      }
+
+      .nav__toggle {
+        display: none;
+        flex-direction: column;
+        justify-content: center;
+        gap: 5px;
+        width: 44px;
+        height: 44px;
+        padding: 0;
+        border: 2px solid var(--ink);
+        border-radius: 4px;
+        background: var(--white);
+        cursor: pointer;
+        transition: border-color 0.2s ease, background 0.2s ease;
+      }
+
+      .nav__toggle:hover {
+        border-color: var(--yellow);
+      }
+
+      .nav__toggle:focus-visible {
+        outline: 2px solid var(--yellow);
+        outline-offset: 2px;
+      }
+
+      .nav__toggle-bar {
+        display: block;
+        width: 20px;
+        height: 2px;
+        margin: 0 auto;
+        background: var(--ink);
+        transition: transform 0.2s ease, opacity 0.2s ease;
+      }
+
+      .nav--open .nav__toggle-bar:nth-child(1) {
+        transform: translateY(7px) rotate(45deg);
+      }
+
+      .nav--open .nav__toggle-bar:nth-child(2) {
+        opacity: 0;
+      }
+
+      .nav--open .nav__toggle-bar:nth-child(3) {
+        transform: translateY(-7px) rotate(-45deg);
       }
 
       .nav__links a {
@@ -210,8 +264,49 @@
       }
 
       @media (max-width: 900px) {
+        .nav {
+          grid-template-columns: minmax(0, 1fr) auto;
+          grid-template-rows: auto auto;
+        }
+
+        .nav__logo-wrap {
+          grid-column: 1;
+          grid-row: 1;
+          min-width: 0;
+        }
+
+        .nav__end {
+          grid-column: 2;
+          grid-row: 1;
+        }
+
+        .nav__toggle {
+          display: inline-flex;
+        }
+
         .nav__links {
           display: none;
+          grid-column: 1 / -1;
+          grid-row: 2;
+          flex-direction: column;
+          align-items: stretch;
+          gap: 0.35rem;
+          padding-top: 0.5rem;
+          border-top: 1px solid var(--line);
+        }
+
+        .nav__links a {
+          padding: 0.65rem 0.25rem;
+          border-radius: 4px;
+        }
+
+        .nav__links a:focus-visible {
+          outline: 2px solid var(--yellow);
+          outline-offset: 2px;
+        }
+
+        .nav.nav--open .nav__links {
+          display: flex;
         }
       }
 
@@ -765,6 +860,87 @@
         }
       }
 
+      /* ——— Community ——— */
+      .section-community {
+        background: var(--white);
+        padding: clamp(3rem, 8vw, 6rem) clamp(1.25rem, 4vw, 2.5rem);
+        border-top: 1px solid var(--line);
+      }
+
+      .section-community__inner {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+
+      .community__headline {
+        font-family: var(--font-display);
+        font-size: clamp(2.25rem, 5vw, 4rem);
+        text-transform: uppercase;
+        line-height: 1.05;
+        margin: 0.5rem 0 1rem;
+        letter-spacing: -0.02em;
+      }
+
+      .community__headline .gold {
+        color: var(--yellow);
+      }
+
+      .community__lead {
+        margin: 0 0 2.25rem;
+        max-width: 52ch;
+        color: var(--muted);
+        font-size: 1.05rem;
+        line-height: 1.65;
+      }
+
+      .community__grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: clamp(1rem, 2vw, 1.75rem);
+      }
+
+      .community-card {
+        position: relative;
+        background: var(--bg-warm);
+        border: 1px solid var(--line);
+        border-top: 3px solid var(--blue);
+        padding: 2rem 1.5rem 1.75rem;
+      }
+
+      .community-card h3 {
+        font-family: var(--font-label);
+        font-size: 1.25rem;
+        letter-spacing: 0.1em;
+        margin: 0 0 0.65rem;
+        text-transform: uppercase;
+      }
+
+      .community-card p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.95rem;
+        line-height: 1.6;
+      }
+
+      .community__footer {
+        margin-top: 2.5rem;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 1rem;
+      }
+
+      .community__footer .btn--ghost {
+        border-color: var(--ink);
+      }
+
+      @media (max-width: 900px) {
+        .community__grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
       /* ——— CTA band ——— */
       .cta-band {
         background: var(--cta-dark);
@@ -847,14 +1023,14 @@
     </style>
   </head>
   <body>
-    <nav class="nav">
+    <nav class="nav" id="site-nav" aria-label="Site">
       <a href="/" class="nav__logo-wrap" aria-label="PaceCasso home">
         <img
           class="nav__logo-img"
           src="/pacelogo.png"
           alt="PaceCasso"
-          width="380"
-          height="90"
+          width="480"
+          height="114"
           decoding="async"
           fetchpriority="high"
           onerror="this.classList.add('nav__logo-img--hide'); var f=this.nextElementSibling; if(f) f.removeAttribute('hidden');"
@@ -864,14 +1040,28 @@
           ><span class="casso">CASSO</span>
         </span>
       </a>
-      <div class="nav__links">
-        <a href="#gallery">Gallery</a>
-        <a href="#how">How It Works</a>
-        <a href="#community">Community</a>
+      <div class="nav__links" id="nav-menu">
+        <a href="/gallery">Gallery</a>
+        <a href="/how">How It Works</a>
+        <a href="/community">Community</a>
         <a href="/help">Help</a>
       </div>
-      <div class="nav__cta">
-        <a class="btn btn--yellow" href="/create">Start Creating</a>
+      <div class="nav__end">
+        <button
+          type="button"
+          class="nav__toggle"
+          id="nav-toggle"
+          aria-controls="nav-menu"
+          aria-expanded="false"
+          aria-label="Open menu"
+        >
+          <span class="nav__toggle-bar" aria-hidden="true"></span>
+          <span class="nav__toggle-bar" aria-hidden="true"></span>
+          <span class="nav__toggle-bar" aria-hidden="true"></span>
+        </button>
+        <div class="nav__cta">
+          <a class="btn btn--yellow" href="/create">Start Creating</a>
+        </div>
       </div>
     </nav>
 
@@ -900,7 +1090,7 @@
         </p>
         <div class="hero__actions reveal" style="--d: 0.48s">
           <a class="btn btn--yellow" href="/create">Design Your First Run</a>
-          <a class="btn btn--ghost" href="#gallery">See the Gallery</a>
+          <a class="btn btn--ghost" href="/gallery">See the Gallery</a>
         </div>
         <div class="hero__divider reveal" style="--d: 0.54s" aria-hidden="true"></div>
         <div class="hero__stats reveal" style="--d: 0.6s">
@@ -1068,12 +1258,52 @@
       </div>
     </section>
 
-    <section class="cta-band" id="community">
+    <section class="section-community" id="community">
+      <div class="section-community__inner">
+        <div class="section-label">Community</div>
+        <h2 class="community__headline">
+          Where miles make <span class="gold">masterpieces</span>
+        </h2>
+        <p class="community__lead">
+          Runners turning streets into art—share your line, steal ideas from the
+          gallery, and help build the crew as PaceCasso grows.
+        </p>
+        <div class="community__grid">
+          <article class="community-card">
+            <h3>Share your line</h3>
+            <p>
+              Export GPX, hit the pavement, then post the map. Your run is the
+              brush; the city is the canvas.
+            </p>
+          </article>
+          <article class="community-card">
+            <h3>Inspire &amp; learn</h3>
+            <p>
+              Browse featured routes and bold shapes that snap clean to real
+              roads—then make your own twist.
+            </p>
+          </article>
+          <article class="community-card">
+            <h3>What&apos;s ahead</h3>
+            <p>
+              Profiles, saved routes across devices, and spotlights are on the
+              roadmap. For now, drafts stay in your browser—see Help for details.
+            </p>
+          </article>
+        </div>
+        <div class="community__footer">
+          <a class="btn btn--ghost" href="/community">Community hub →</a>
+          <a class="btn btn--yellow" href="/create">Start creating</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta-band">
       <div>
         <p class="cta-band__eyebrow">JOIN THE MOVEMENT</p>
         <h2>
-          WHERE MILES MAKE<br />
-          <span class="gold">Masterpieces</span>
+          READY TO<br />
+          <span class="gold">Draw your line?</span>
         </h2>
       </div>
       <div class="cta-band__actions">
@@ -1083,6 +1313,9 @@
 
     <footer>
       © PaceCasso ·
+      <a href="/gallery">Gallery</a> ·
+      <a href="/how">How it works</a> ·
+      <a href="/community">Community</a> ·
       <a href="/help">Help</a> ·
       <a href="/privacy">Privacy</a> ·
       <a href="/contact">Contact</a>
@@ -1099,6 +1332,55 @@
         } else {
           ready();
         }
+      })();
+
+      (function () {
+        var meta = document.querySelector('meta[name="pace-plausible-domain"]');
+        var domain = meta && meta.getAttribute("content");
+        domain = domain ? domain.trim() : "";
+        if (!domain) {
+          return;
+        }
+        var s = document.createElement("script");
+        s.defer = true;
+        s.setAttribute("data-domain", domain);
+        s.src = "https://plausible.io/js/script.js";
+        document.head.appendChild(s);
+      })();
+
+      (function () {
+        var nav = document.getElementById("site-nav");
+        var toggle = document.getElementById("nav-toggle");
+        var menu = document.getElementById("nav-menu");
+        if (!nav || !toggle || !menu) return;
+
+        function setOpen(open) {
+          nav.classList.toggle("nav--open", open);
+          toggle.setAttribute("aria-expanded", open ? "true" : "false");
+          toggle.setAttribute(
+            "aria-label",
+            open ? "Close menu" : "Open menu",
+          );
+        }
+
+        toggle.addEventListener("click", function () {
+          setOpen(!nav.classList.contains("nav--open"));
+        });
+
+        menu.querySelectorAll("a").forEach(function (link) {
+          link.addEventListener("click", function () {
+            if (window.matchMedia("(max-width: 900px)").matches) {
+              setOpen(false);
+            }
+          });
+        });
+
+        window.addEventListener("keydown", function (e) {
+          if (e.key === "Escape" && nav.classList.contains("nav--open")) {
+            setOpen(false);
+            toggle.focus();
+          }
+        });
       })();
     </script>
   </body>

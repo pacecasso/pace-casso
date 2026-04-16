@@ -42,12 +42,15 @@ const Polyline = dynamic(
 
 type Step3StreetSnapProps = {
   anchorLocation: AnchorLocation;
+  /** Photo trace: show original contour vs snapped line. Freehand: hide (same sketch as input). */
+  routeSource: "image" | "freehand";
   onBack: () => void;
   onComplete: (route: RouteLineString) => void;
 };
 
 export default function Step3StreetSnap({
   anchorLocation,
+  routeSource,
   onBack,
   onComplete,
 }: Step3StreetSnapProps) {
@@ -221,7 +224,7 @@ export default function Step3StreetSnap({
             <LeafletInvalidateOnResize />
             <TileLayer attribution={OSM_TILE_ATTRIBUTION} url={OSM_TILE_URL} />
 
-            {originalPolyline.length > 0 && (
+            {routeSource === "image" && originalPolyline.length > 0 && (
               <Polyline
                 positions={originalPolyline}
                 pathOptions={{
