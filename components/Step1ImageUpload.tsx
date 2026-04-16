@@ -9,12 +9,6 @@ import {
   useState,
 } from "react";
 import * as d3 from "d3-contour";
-import { clampInkThreshold, otsuInkThreshold01 } from "../lib/autoInkThreshold";
-import { morphCloseBinary255 } from "../lib/morphBinaryMask";
-import {
-  likelyStrokeSandwichRings,
-  mergeStrokeMidlineRing,
-} from "../lib/strokeMidlineFromRings";
 
 export type NormalizedPoint = { x: number; y: number };
 
@@ -291,7 +285,6 @@ export default function Step1ImageUpload({
   const lineUndoIndexRef = useRef(-1);
   const lastPhotoSeedKeyRef = useRef<string>("");
   const prevContourBuiltRef = useRef(false);
-  const morphScratchRef = useRef<Uint8Array | null>(null);
 
   const bumpLineMaskVersion = useCallback(() => {
     setLineMaskVersion((v) => v + 1);
@@ -366,18 +359,6 @@ export default function Step1ImageUpload({
       const field = buildBlurredFieldFromLineMask();
       if (!field) return null;
       const rings = extractAllRingsFromField(field, level);
-      if (rings.length >= 2) {
-        const outer = rings[0]!;
-        const inner = rings[1]!;
-        if (likelyStrokeSandwichRings(outer, inner)) {
-          const mid = mergeStrokeMidlineRing(outer, inner, 168);
-          const sampled = curvatureAdaptiveSample(mid, 120);
-          return sampled.map(([x, y]) => ({
-            x: x / BOX_SIZE,
-            y: y / BOX_SIZE,
-          }));
-        }
-      }
       const ri = Math.min(lineRingIndex, Math.max(0, rings.length - 1));
       const ring = rings[ri] ?? null;
       if (ring === null || ring.length < 4) return null;
@@ -486,12 +467,7 @@ export default function Step1ImageUpload({
       const hiData = octx.getImageData(0, 0, LUM_SAMPLE_PX, LUM_SAMPLE_PX);
       const lum = buildLuminanceMinPool2x2(hiData, LUM_SAMPLE_PX);
       luminanceRef.current = lum;
-
-      if (!morphScratchRef.current) {
-        morphScratchRef.current = new Uint8Array(BOX_SIZE * BOX_SIZE);
-      }
-      const autoT = clampInkThreshold(otsuInkThreshold01(lum));
-      setThreshold(autoT);
+      setThreshold(0.5);
 
       imageCtx.imageSmoothingEnabled = false;
       const scale = Math.min(BOX_SIZE / iw, BOX_SIZE / ih);
@@ -541,10 +517,6 @@ export default function Step1ImageUpload({
       const want = entries[idx].label;
       for (let i = 0; i < lineMask.length; i++) {
         lineMask[i] = labels[i] === want ? 255 : 0;
-      }
-      const scratch = morphScratchRef.current;
-      if (scratch) {
-        morphCloseBinary255(lineMask, BOX_SIZE, BOX_SIZE, 1, scratch);
       }
     }
     lineArtDirtyRef.current = false;
@@ -623,10 +595,6 @@ export default function Step1ImageUpload({
       const want = entries[0].label;
       for (let i = 0; i < lineMask.length; i++) {
         lineMask[i] = labels[i] === want ? 255 : 0;
-      }
-      const scratch = morphScratchRef.current;
-      if (scratch) {
-        morphCloseBinary255(lineMask, BOX_SIZE, BOX_SIZE, 1, scratch);
       }
     }
     replaceLineUndoWithCurrent();
@@ -723,14 +691,7 @@ export default function Step1ImageUpload({
     if (!contourBuilt) return 0;
     const field = buildBlurredFieldFromLineMask();
     if (!field) return 0;
-    const rings = extractAllRingsFromField(field, contourLevel);
-    if (
-      rings.length >= 2 &&
-      likelyStrokeSandwichRings(rings[0]!, rings[1]!)
-    ) {
-      return 1;
-    }
-    return rings.length;
+    return extractAllRingsFromField(field, contourLevel).length;
   }, [contourBuilt, contourLevel, lineMaskVersion, buildBlurredFieldFromLineMask]);
 
   const columnTitleClass =
@@ -748,9 +709,9 @@ export default function Step1ImageUpload({
 
       <p className="mb-1 max-w-xl text-center font-dm text-[10px] leading-snug text-pace-muted sm:mb-1.5 sm:text-[11px]">
         Your photo is traced in the browser—we don’t upload the image to our
-        servers. High-contrast logos get an auto{" "}
-        <span className="whitespace-nowrap">photo threshold</span> and outline
-        strokes can merge to a single centerline when we detect parallel edges.
+        servers. Use <span className="whitespace-nowrap">Photo threshold</span>{" "}
+        so the letter hole stays clear; if the loop fills in, raise the
+        threshold slightly.
       </p>
 
       <div className="pace-card mb-1 w-full max-w-4xl p-1.5 sm:p-2">
