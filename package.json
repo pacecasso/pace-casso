@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test:unit": "npx --yes tsx lib/outAndBackSpurHints.test.ts",
+    "test:unit": "npx --yes tsx lib/outAndBackSpurHints.test.ts && npx --yes tsx lib/inkMaskUnionEnclosed.test.ts",
     "test:e2e": "playwright test"
   },
   "keywords": [],

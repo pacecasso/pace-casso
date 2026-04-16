@@ -9,10 +9,14 @@ import {
   useState,
 } from "react";
 import * as d3 from "d3-contour";
+import { fillLineMaskPrimaryPlusEnclosedHoles } from "../lib/inkMaskUnionEnclosed";
 
 export type NormalizedPoint = { x: number; y: number };
 
 const BOX_SIZE = 300;
+/** Weak blur keeps hole counters as separate iso-rings for d3-contour. */
+const LINE_MASK_CONTOUR_BLUR_PASSES = 1;
+const LINE_MASK_CONTOUR_BLUR_RADIUS = 1;
 /** Supersample factor for luminance (2×2 min-pool preserves hole counters vs AA blur). */
 const LUM_SAMPLE_SUPER = 2;
 const LUM_SAMPLE_PX = BOX_SIZE * LUM_SAMPLE_SUPER;
@@ -347,8 +351,13 @@ export default function Step1ImageUpload({
     for (let i = 0; i < field.length; i++) {
       field[i] = lineMask[i] / 255;
     }
-    for (let pass = 0; pass < 3; pass++) {
-      field = boxBlurFloat(field, BOX_SIZE, BOX_SIZE, 2) as Float32Array;
+    for (let pass = 0; pass < LINE_MASK_CONTOUR_BLUR_PASSES; pass++) {
+      field = boxBlurFloat(
+        field,
+        BOX_SIZE,
+        BOX_SIZE,
+        LINE_MASK_CONTOUR_BLUR_RADIUS,
+      ) as Float32Array;
     }
     return field;
   }, []);
@@ -514,10 +523,14 @@ export default function Step1ImageUpload({
     if (nComp === 0) {
       lineMask.fill(0);
     } else {
-      const want = entries[idx].label;
-      for (let i = 0; i < lineMask.length; i++) {
-        lineMask[i] = labels[i] === want ? 255 : 0;
-      }
+      fillLineMaskPrimaryPlusEnclosedHoles(
+        labels,
+        entries,
+        idx,
+        lineMask,
+        BOX_SIZE,
+        BOX_SIZE,
+      );
     }
     lineArtDirtyRef.current = false;
     setLineArtDirty(false);
@@ -592,10 +605,14 @@ export default function Step1ImageUpload({
     if (entries.length === 0) {
       lineMask.fill(0);
     } else {
-      const want = entries[0].label;
-      for (let i = 0; i < lineMask.length; i++) {
-        lineMask[i] = labels[i] === want ? 255 : 0;
-      }
+      fillLineMaskPrimaryPlusEnclosedHoles(
+        labels,
+        entries,
+        0,
+        lineMask,
+        BOX_SIZE,
+        BOX_SIZE,
+      );
     }
     replaceLineUndoWithCurrent();
     bumpLineMaskVersion();
@@ -711,7 +728,9 @@ export default function Step1ImageUpload({
         Your photo is traced in the browser—we don’t upload the image to our
         servers. Use <span className="whitespace-nowrap">Photo threshold</span>{" "}
         so the letter hole stays clear; if the loop fills in, raise the
-        threshold slightly.
+        threshold slightly. Extra ink drawn{" "}
+        <em className="not-italic">inside</em> a letter (a separate blob) is
+        kept automatically when it sits in a closed hole of the main shape.
       </p>
 
       <div className="pace-card mb-1 w-full max-w-4xl p-1.5 sm:p-2">
