@@ -14,9 +14,6 @@ import { fillLineMaskPrimaryPlusEnclosedHoles } from "../lib/inkMaskUnionEnclose
 export type NormalizedPoint = { x: number; y: number };
 
 const BOX_SIZE = 300;
-/** Weak blur keeps hole counters as separate iso-rings for d3-contour. */
-const LINE_MASK_CONTOUR_BLUR_PASSES = 1;
-const LINE_MASK_CONTOUR_BLUR_RADIUS = 1;
 /** Supersample factor for luminance (2×2 min-pool preserves hole counters vs AA blur). */
 const LUM_SAMPLE_SUPER = 2;
 const LUM_SAMPLE_PX = BOX_SIZE * LUM_SAMPLE_SUPER;
@@ -175,6 +172,115 @@ function extractAllRingsFromField(
   const rings = groups.flat();
   rings.sort((a, b) => ringAreaAbs(b) - ringAreaAbs(a));
   return rings.slice(0, MAX_RINGS_LISTED);
+}
+
+function maskToFloatField(mask: Uint8Array): Float32Array {
+  const field = new Float32Array(mask.length);
+  for (let i = 0; i < mask.length; i++) {
+    field[i] = mask[i] / 255;
+  }
+  return field;
+}
+
+/** Ink pixels that touch background (true boundary of the line art). */
+function buildInkEdgeMap(mask: Uint8Array, w: number, h: number): Uint8Array {
+  const edge = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (mask[i] <= 127) continue;
+      const up = y > 0 ? mask[i - w] : 0;
+      const dn = y < h - 1 ? mask[i + w] : 0;
+      const lf = x > 0 ? mask[i - 1] : 0;
+      const rt = x < w - 1 ? mask[i + 1] : 0;
+      if (up <= 127 || dn <= 127 || lf <= 127 || rt <= 127) {
+        edge[i] = 1;
+      }
+    }
+  }
+  return edge;
+}
+
+function ringPolylineLength(ring: [number, number][]): number {
+  const n = ring.length;
+  if (n < 2) return 0;
+  let len = 0;
+  for (let i = 0; i < n; i++) {
+    const a = ring[i]!;
+    const b = ring[(i + 1) % n]!;
+    len += Math.hypot(b[0] - a[0], b[1] - a[1]);
+  }
+  return len;
+}
+
+function ringInkBoundaryScore(
+  edgeMap: Uint8Array,
+  ring: [number, number][],
+  w: number,
+  h: number,
+): number {
+  let hits = 0;
+  const step = Math.max(1, Math.floor(ring.length / 600));
+  for (let k = 0; k < ring.length; k += step) {
+    const xr = Math.round(ring[k]![0]);
+    const yr = Math.round(ring[k]![1]);
+    let seen = false;
+    for (let dy = -2; dy <= 2 && !seen; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const x = xr + dx;
+        const y = yr + dy;
+        if (x < 0 || y < 0 || x >= w || y >= h) continue;
+        if (edgeMap[y * w + x] !== 0) {
+          seen = true;
+          break;
+        }
+      }
+    }
+    if (seen) hits++;
+  }
+  return hits;
+}
+
+/**
+ * d3 iso-rings on a blurred field favor a smooth “outer shell” and can miss
+ * narrow bridges. On the binary mask, re-rank rings so index 0 follows real
+ * ink edges (bridges, inner loops) before area alone.
+ */
+function sortContourRingsByInkEdges(
+  mask: Uint8Array,
+  rings: [number, number][][],
+  w: number,
+  h: number,
+): void {
+  if (rings.length < 2) return;
+  const edge = buildInkEdgeMap(mask, w, h);
+  const scored = rings.map((ring) => ({
+    ring,
+    s: ringInkBoundaryScore(edge, ring, w, h),
+    len: ringPolylineLength(ring),
+  }));
+  scored.sort((a, b) => {
+    if (b.s !== a.s) return b.s - a.s;
+    return b.len - a.len;
+  });
+  rings.length = 0;
+  for (const row of scored) {
+    rings.push(row.ring);
+  }
+}
+
+function computeSortedContourRings(
+  mask: Uint8Array,
+  level: number,
+  w: number,
+  h: number,
+): [number, number][][] {
+  const field = maskToFloatField(mask);
+  const rings = extractAllRingsFromField(field, level);
+  if (rings.length > 1) {
+    sortContourRingsByInkEdges(mask, rings, w, h);
+  }
+  return rings;
 }
 
 /** 4-connected foreground components (label 1…n, 0 = background). */
@@ -344,40 +450,23 @@ export default function Step1ImageUpload({
     setUndoCount(lineUndoIndexRef.current);
   }, []);
 
-  const buildBlurredFieldFromLineMask = useCallback((): Float32Array | null => {
-    const lineMask = lineMaskRef.current;
-    if (!lineMask) return null;
-    let field: Float32Array = new Float32Array(BOX_SIZE * BOX_SIZE);
-    for (let i = 0; i < field.length; i++) {
-      field[i] = lineMask[i] / 255;
-    }
-    for (let pass = 0; pass < LINE_MASK_CONTOUR_BLUR_PASSES; pass++) {
-      field = boxBlurFloat(
-        field,
-        BOX_SIZE,
-        BOX_SIZE,
-        LINE_MASK_CONTOUR_BLUR_RADIUS,
-      ) as Float32Array;
-    }
-    return field;
-  }, []);
-
   const contourPointsFromLineMask = useCallback(
     (level: number): NormalizedPoint[] | null => {
       void lineMaskVersion;
-      const field = buildBlurredFieldFromLineMask();
-      if (!field) return null;
-      const rings = extractAllRingsFromField(field, level);
+      const mask = lineMaskRef.current;
+      if (!mask) return null;
+      const rings = computeSortedContourRings(mask, level, BOX_SIZE, BOX_SIZE);
       const ri = Math.min(lineRingIndex, Math.max(0, rings.length - 1));
       const ring = rings[ri] ?? null;
       if (ring === null || ring.length < 4) return null;
-      const sampled = curvatureAdaptiveSample(ring, 120);
+      const target = Math.min(200, Math.max(120, Math.floor(ring.length / 3)));
+      const sampled = curvatureAdaptiveSample(ring, target);
       return sampled.map(([x, y]) => ({
         x: x / BOX_SIZE,
         y: y / BOX_SIZE,
       }));
     },
-    [buildBlurredFieldFromLineMask, lineRingIndex, lineMaskVersion],
+    [lineRingIndex, lineMaskVersion],
   );
 
   const drawContourPreview = useCallback((points: NormalizedPoint[]) => {
@@ -569,17 +658,15 @@ export default function Step1ImageUpload({
   }, [contourBuilt]);
 
   useEffect(() => {
-    if (!contourBuilt) return;
-    const field = buildBlurredFieldFromLineMask();
-    if (!field) return;
-    const rings = extractAllRingsFromField(field, contourLevel);
+    if (!contourBuilt || !lineMaskRef.current) return;
+    const rings = computeSortedContourRings(
+      lineMaskRef.current,
+      contourLevel,
+      BOX_SIZE,
+      BOX_SIZE,
+    );
     setLineRingIndex((i) => Math.min(i, Math.max(0, rings.length - 1)));
-  }, [
-    contourBuilt,
-    contourLevel,
-    lineMaskVersion,
-    buildBlurredFieldFromLineMask,
-  ]);
+  }, [contourBuilt, contourLevel, lineMaskVersion]);
 
   function handleDone() {
     setContourBuilt(true);
@@ -705,11 +792,14 @@ export default function Step1ImageUpload({
 
   const contourRingCount = useMemo(() => {
     void lineMaskVersion;
-    if (!contourBuilt) return 0;
-    const field = buildBlurredFieldFromLineMask();
-    if (!field) return 0;
-    return extractAllRingsFromField(field, contourLevel).length;
-  }, [contourBuilt, contourLevel, lineMaskVersion, buildBlurredFieldFromLineMask]);
+    if (!contourBuilt || !lineMaskRef.current) return 0;
+    return computeSortedContourRings(
+      lineMaskRef.current,
+      contourLevel,
+      BOX_SIZE,
+      BOX_SIZE,
+    ).length;
+  }, [contourBuilt, contourLevel, lineMaskVersion]);
 
   const columnTitleClass =
     "mb-0.5 flex w-full flex-col items-center justify-center text-center";
@@ -731,6 +821,9 @@ export default function Step1ImageUpload({
         threshold slightly. Extra ink drawn{" "}
         <em className="not-italic">inside</em> a letter (a separate blob) is
         kept automatically when it sits in a closed hole of the main shape.
+        After you bridge or add detail, if the outline looks wrong, try{" "}
+        <span className="whitespace-nowrap">Route outline</span> (other rings)
+        below.
       </p>
 
       <div className="pace-card mb-1 w-full max-w-4xl p-1.5 sm:p-2">
@@ -999,41 +1092,6 @@ export default function Step1ImageUpload({
       </div>
     </div>
   );
-}
-
-function boxBlurFloat(
-  src: Float32Array,
-  w: number,
-  h: number,
-  r: number,
-): Float32Array {
-  const out = new Float32Array(w * h);
-  const tmp = new Float32Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let sum = 0;
-      let n = 0;
-      for (let dx = -r; dx <= r; dx++) {
-        const xx = Math.min(w - 1, Math.max(0, x + dx));
-        sum += src[y * w + xx];
-        n++;
-      }
-      tmp[y * w + x] = sum / n;
-    }
-  }
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let sum = 0;
-      let n = 0;
-      for (let dy = -r; dy <= r; dy++) {
-        const yy = Math.min(h - 1, Math.max(0, y + dy));
-        sum += tmp[yy * w + x];
-        n++;
-      }
-      out[y * w + x] = sum / n;
-    }
-  }
-  return out;
 }
 
 function curvatureAdaptiveSample(
