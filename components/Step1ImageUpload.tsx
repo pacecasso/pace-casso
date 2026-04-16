@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import * as d3 from "d3-contour";
+import * as turf from "@turf/turf";
 import { fillLineMaskPrimaryPlusEnclosedHoles } from "../lib/inkMaskUnionEnclosed";
 
 export type NormalizedPoint = { x: number; y: number };
@@ -269,6 +270,76 @@ function sortContourRingsByInkEdges(
   }
 }
 
+/** Median min distance from samples on `a` to any vertex on `b` (px). */
+function medianMinDistBetweenRings(
+  a: [number, number][],
+  b: [number, number][],
+): number {
+  const step = Math.max(1, Math.floor(a.length / 90));
+  const ds: number[] = [];
+  for (let i = 0; i < a.length; i += step) {
+    const p = a[i]!;
+    let md = Infinity;
+    for (let j = 0; j < b.length; j++) {
+      const q = b[j]!;
+      const d = Math.hypot(p[0] - q[0], p[1] - q[1]);
+      if (d < md) md = d;
+    }
+    ds.push(md);
+  }
+  if (!ds.length) return Infinity;
+  ds.sort((x, y) => x - y);
+  return ds[Math.floor(ds.length / 2)]!;
+}
+
+/**
+ * Marching squares on thick ink often yields two almost-parallel iso-loops
+ * (inner vs outer edge of the same brush). Keep one ring per such pair.
+ */
+function dedupeNearlyParallelContourRings(rings: [number, number][][]): void {
+  if (rings.length < 2) return;
+  const keep: [number, number][][] = [];
+  for (const r of rings) {
+    let merged = false;
+    for (let k = 0; k < keep.length; k++) {
+      const k2 = keep[k]!;
+      const med = medianMinDistBetweenRings(r, k2);
+      const ar = ringAreaAbs(r) / Math.max(1, ringAreaAbs(k2));
+      const ar2 = ringAreaAbs(k2) / Math.max(1, ringAreaAbs(r));
+      if (med < 2.4 && (ar > 0.38 || ar2 > 0.38)) {
+        if (ringPolylineLength(r) >= ringPolylineLength(k2)) {
+          keep[k] = r;
+        }
+        merged = true;
+        break;
+      }
+    }
+    if (!merged) keep.push(r);
+  }
+  rings.length = 0;
+  for (const r of keep) rings.push(r);
+}
+
+function simplifyRingPx(
+  ring: [number, number][],
+  tolerancePx: number,
+): [number, number][] {
+  if (ring.length < 5) return ring;
+  const ls = turf.lineString(ring.map(([x, y]) => [x, y]));
+  const out = turf.simplify(ls, {
+    tolerance: tolerancePx,
+    highQuality: true,
+  });
+  const coords = out.geometry.coordinates as [number, number][];
+  if (coords.length < 3) return ring;
+  const first = coords[0]!;
+  const last = coords[coords.length - 1]!;
+  if (Math.hypot(first[0] - last[0], first[1] - last[1]) > 0.6) {
+    return [...coords, first];
+  }
+  return coords;
+}
+
 function computeSortedContourRings(
   mask: Uint8Array,
   level: number,
@@ -277,6 +348,7 @@ function computeSortedContourRings(
 ): [number, number][][] {
   const field = maskToFloatField(mask);
   const rings = extractAllRingsFromField(field, level);
+  dedupeNearlyParallelContourRings(rings);
   if (rings.length > 1) {
     sortContourRingsByInkEdges(mask, rings, w, h);
   }
@@ -459,8 +531,12 @@ export default function Step1ImageUpload({
       const ri = Math.min(lineRingIndex, Math.max(0, rings.length - 1));
       const ring = rings[ri] ?? null;
       if (ring === null || ring.length < 4) return null;
-      const target = Math.min(200, Math.max(120, Math.floor(ring.length / 3)));
-      const sampled = curvatureAdaptiveSample(ring, target);
+      const smoothed = simplifyRingPx(ring, 1.05);
+      const target = Math.min(
+        200,
+        Math.max(120, Math.floor(smoothed.length / 3)),
+      );
+      const sampled = curvatureAdaptiveSample(smoothed, target);
       return sampled.map(([x, y]) => ({
         x: x / BOX_SIZE,
         y: y / BOX_SIZE,
