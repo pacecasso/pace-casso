@@ -424,16 +424,10 @@ export default function Step1ImageUpload({
     NormalizedPoint[] | null
   >(null);
   const [undoCount, setUndoCount] = useState(0);
-  /** Which disconnected shape (polygon) from the photo seeds line art. */
-  const [photoShapeIndex, setPhotoShapeIndex] = useState(0);
-  const [photoShapeCount, setPhotoShapeCount] = useState(0);
   /** Which ring from the blurred line mask becomes the final route. */
   const [lineRingIndex, setLineRingIndex] = useState(0);
   /** Bumps when line mask bytes change so contour preview can refresh. */
   const [lineMaskVersion, setLineMaskVersion] = useState(0);
-  /** Mirrors lineArtDirtyRef for UI (ring picker disabled after edits). */
-  const [lineArtDirty, setLineArtDirty] = useState(false);
-
   const imageCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lineArtCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const contourCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -446,7 +440,6 @@ export default function Step1ImageUpload({
 
   const lineUndoStackRef = useRef<Uint8Array[]>([]);
   const lineUndoIndexRef = useRef(-1);
-  const lastPhotoSeedKeyRef = useRef<string>("");
   const prevContourBuiltRef = useRef(false);
 
   const bumpLineMaskVersion = useCallback(() => {
@@ -571,7 +564,6 @@ export default function Step1ImageUpload({
     const prev = lineUndoStackRef.current[idx - 1];
     lineMaskRef.current?.set(prev);
     lineArtDirtyRef.current = true;
-    setLineArtDirty(true);
     drawLineMaskToCanvas();
     setUndoCount(lineUndoIndexRef.current);
     if (contourBuilt) {
@@ -656,37 +648,25 @@ export default function Step1ImageUpload({
     const lineMask = lineMaskRef.current;
     const { labels, entries } = buildPhotoComponents(lum, threshold);
     const nComp = entries.length;
-    setPhotoShapeCount(nComp);
-    const key = `${threshold}|${uploadedImage?.url ?? ""}`;
-    const keyChanged = lastPhotoSeedKeyRef.current !== key;
-    lastPhotoSeedKeyRef.current = key;
-    const idx = keyChanged
-      ? 0
-      : Math.min(photoShapeIndex, Math.max(0, nComp - 1));
-    if (keyChanged && photoShapeIndex !== 0) {
-      setPhotoShapeIndex(0);
-    }
     if (nComp === 0) {
       lineMask.fill(0);
     } else {
       fillLineMaskPrimaryPlusEnclosedHoles(
         labels,
         entries,
-        idx,
+        0,
         lineMask,
         BOX_SIZE,
         BOX_SIZE,
       );
     }
     lineArtDirtyRef.current = false;
-    setLineArtDirty(false);
     replaceLineUndoWithCurrent();
     bumpLineMaskVersion();
     requestAnimationFrame(() => drawLineMaskToCanvas());
   }, [
     threshold,
     imageReady,
-    photoShapeIndex,
     uploadedImage?.url,
     replaceLineUndoWithCurrent,
     bumpLineMaskVersion,
@@ -738,14 +718,10 @@ export default function Step1ImageUpload({
     setContourLevel(DEFAULT_CONTOUR_LEVEL);
     setLineRingIndex(0);
     lineArtDirtyRef.current = false;
-    setLineArtDirty(false);
-    setPhotoShapeIndex(0);
-    lastPhotoSeedKeyRef.current = "";
     const lum = luminanceRef.current;
     const lineMask = lineMaskRef.current;
     if (!lum || !lineMask) return;
     const { labels, entries } = buildPhotoComponents(lum, threshold);
-    setPhotoShapeCount(entries.length);
     if (entries.length === 0) {
       lineMask.fill(0);
     } else {
@@ -770,7 +746,6 @@ export default function Step1ImageUpload({
     const lineMask = lineMaskRef.current;
     if (!lineMask) return;
     lineArtDirtyRef.current = true;
-    setLineArtDirty(true);
     strokeDirtyRef.current = true;
     const r = brushRadius;
     const r2 = r * r;
@@ -873,15 +848,13 @@ export default function Step1ImageUpload({
 
       <p className="mb-1 max-w-xl text-center font-dm text-[10px] leading-snug text-pace-muted sm:mb-1.5 sm:text-[11px]">
         Your photo is traced in the browser—we don’t upload the image to our
-        servers. Use <span className="whitespace-nowrap">Photo threshold</span>{" "}
-        so the letter hole stays clear; if the loop fills in, raise the
-        threshold slightly. Extra ink drawn{" "}
-        <em className="not-italic">inside</em> a letter (a separate blob) is
-        kept automatically when it sits in a closed hole of the main shape.
-        When we detect a letter hole (inner loop much smaller than the outer
-        loop), we stitch it into one path automatically. If the outline still
-        looks wrong, try <span className="whitespace-nowrap">Route outline</span>{" "}
-        below.
+        servers. <span className="whitespace-nowrap">Photo threshold</span> only
+        rebuilds the starting line art when you have not drawn yet; anything in{" "}
+        <strong className="text-pace-ink">Line art</strong> (draw / erase) is
+        what the <strong className="text-pace-ink">Final contour</strong> uses
+        after you tap <strong className="text-pace-ink">Done</strong>. Small
+        blobs fully inside a letter hole are merged in from the photo
+        automatically.
       </p>
 
       <div className="pace-card mb-1 w-full max-w-4xl p-1.5 sm:p-2">
@@ -926,26 +899,6 @@ export default function Step1ImageUpload({
               {threshold.toFixed(2)}
             </span>
           </label>
-          {photoShapeCount > 1 && !lineArtDirty ? (
-            <label className="font-dm flex shrink-0 items-center gap-1 text-[10px] text-pace-ink sm:gap-1.5 sm:text-[11px]">
-              <span className="whitespace-nowrap">Shape</span>
-              <select
-                value={Math.min(
-                  photoShapeIndex,
-                  Math.max(0, photoShapeCount - 1),
-                )}
-                onChange={(e) => setPhotoShapeIndex(Number(e.target.value))}
-                className="max-w-[5rem] rounded border border-pace-line bg-pace-white py-0.5 pl-1 pr-6 text-[10px] sm:max-w-[6rem] sm:text-[11px]"
-                aria-label="Which separate blob from the photo to trace"
-              >
-                {Array.from({ length: photoShapeCount }, (_, i) => (
-                  <option key={i} value={i}>
-                    {i === 0 ? "1 (largest)" : `${i + 1}`}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
           <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-x-1 pl-1">
             <span className="shrink-0 font-bebas text-[10px] tracking-[0.1em] text-pace-muted sm:text-[11px]">
               Line art
@@ -1115,7 +1068,7 @@ export default function Step1ImageUpload({
                     >
                       {Array.from({ length: contourRingCount }, (_, i) => (
                         <option key={i} value={i}>
-                          {i === 0 ? "1 (largest)" : `${i + 1}`}
+                          Outline {i + 1}
                         </option>
                       ))}
                     </select>
