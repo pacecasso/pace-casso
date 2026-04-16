@@ -9,10 +9,19 @@ import {
   useState,
 } from "react";
 import * as d3 from "d3-contour";
+import { clampInkThreshold, otsuInkThreshold01 } from "../lib/autoInkThreshold";
+import { morphCloseBinary255 } from "../lib/morphBinaryMask";
+import {
+  likelyStrokeSandwichRings,
+  mergeStrokeMidlineRing,
+} from "../lib/strokeMidlineFromRings";
 
 export type NormalizedPoint = { x: number; y: number };
 
 const BOX_SIZE = 300;
+/** Supersample factor for luminance (2×2 min-pool preserves hole counters vs AA blur). */
+const LUM_SAMPLE_SUPER = 2;
+const LUM_SAMPLE_PX = BOX_SIZE * LUM_SAMPLE_SUPER;
 const DEFAULT_BRUSH = 6;
 const MAX_LINE_UNDO = 28;
 const DEFAULT_CONTOUR_LEVEL = 0.22;
@@ -70,6 +79,46 @@ function lineArtCursorCss(tool: Tool, brushRadius: number): string {
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${hx} ${hy}, crosshair`;
 }
 
+/** Ink strength 0 = paper, 1 = black (matches Step1 luminance convention). */
+function luminanceFromRgba(data: Uint8ClampedArray, idx: number): number {
+  const a = data[idx + 3];
+  if (a < 128) return 0;
+  const r = data[idx];
+  const g = data[idx + 1];
+  const b = data[idx + 2];
+  const gray = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return 1 - gray;
+}
+
+/**
+ * Downsample supersampled ImageData to BOX_SIZE using a 2×2 min on ink strength.
+ * Any subpixel that is still paper white keeps the cell below threshold, so
+ * anti-aliased hole interiors don’t “fill in” as one solid blob.
+ */
+function buildLuminanceMinPool2x2(
+  imageData: ImageData,
+  superW: number,
+): Float32Array {
+  const data = imageData.data;
+  const lum = new Float32Array(BOX_SIZE * BOX_SIZE);
+  for (let y = 0; y < BOX_SIZE; y++) {
+    for (let x = 0; x < BOX_SIZE; x++) {
+      let minL = 1;
+      for (let dy = 0; dy < LUM_SAMPLE_SUPER; dy++) {
+        for (let dx = 0; dx < LUM_SAMPLE_SUPER; dx++) {
+          const sx = x * LUM_SAMPLE_SUPER + dx;
+          const sy = y * LUM_SAMPLE_SUPER + dy;
+          const idx = (sy * superW + sx) * 4;
+          const l = luminanceFromRgba(data, idx);
+          if (l < minL) minL = l;
+        }
+      }
+      lum[y * BOX_SIZE + x] = minL;
+    }
+  }
+  return lum;
+}
+
 /** Shoelace area (pixel²); prefers outer boundary over inner “double line” loops. */
 function ringAreaAbs(ring: [number, number][]): number {
   const n = ring.length;
@@ -83,27 +132,121 @@ function ringAreaAbs(ring: [number, number][]): number {
   return Math.abs(a / 2);
 }
 
-function extractRingFromField(
+/** Ignore dust rings from contour noise (px²). Holes can be small—keep low. */
+const MIN_RING_AREA_PX2 = 8;
+const MAX_SHAPES_LISTED = 8;
+const MAX_RINGS_LISTED = 8;
+
+/**
+ * d3-contour returns GeoJSON MultiPolygon: each entry is [outer, ...holes].
+ * A letter like R is one polygon with two rings (outline + hole counter)—we
+ * must stroke all of them when seeding line art, not only the largest ring.
+ */
+function extractPolygonRingGroups(
   field: Float32Array,
   level: number,
-): [number, number][] | null {
+): [number, number][][][] {
   const contourGenerator = d3.contours().size([BOX_SIZE, BOX_SIZE]);
   const [contour] = contourGenerator.thresholds([level])(Array.from(field));
-  if (!contour) return null;
+  if (!contour) return [];
 
-  let best: [number, number][] | null = null;
-  let bestScore = 0;
+  const groups: [number, number][][][] = [];
   for (const multi of contour.coordinates) {
+    const rings: [number, number][][] = [];
     for (const ring of multi) {
       const r = ring as [number, number][];
-      const score = ringAreaAbs(r);
-      if (score > bestScore) {
-        bestScore = score;
-        best = r;
+      const area = ringAreaAbs(r);
+      if (area < MIN_RING_AREA_PX2 || r.length < 4) continue;
+      rings.push(r);
+    }
+    if (rings.length) groups.push(rings);
+  }
+  groups.sort((a, b) => ringAreaAbs(b[0] ?? []) - ringAreaAbs(a[0] ?? []));
+  return groups.slice(0, MAX_SHAPES_LISTED);
+}
+
+/**
+ * Flattened rings at this threshold (largest ring first). Used for the blurred
+ * line mask → final contour step.
+ */
+function extractAllRingsFromField(
+  field: Float32Array,
+  level: number,
+): [number, number][][] {
+  const groups = extractPolygonRingGroups(field, level);
+  const rings = groups.flat();
+  rings.sort((a, b) => ringAreaAbs(b) - ringAreaAbs(a));
+  return rings.slice(0, MAX_RINGS_LISTED);
+}
+
+/** 4-connected foreground components (label 1…n, 0 = background). */
+function labelConnectedComponents4(
+  binary: Uint8Array,
+  w: number,
+  h: number,
+): Int32Array {
+  const labels = new Int32Array(w * h);
+  let nextLabel = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (binary[i] === 0 || labels[i] !== 0) continue;
+      nextLabel++;
+      const stack: number[] = [i];
+      while (stack.length) {
+        const j = stack.pop()!;
+        if (labels[j] !== 0) continue;
+        if (binary[j] === 0) continue;
+        labels[j] = nextLabel;
+        const jx = j % w;
+        const jy = (j / w) | 0;
+        if (jx > 0) stack.push(j - 1);
+        if (jx < w - 1) stack.push(j + 1);
+        if (jy > 0) stack.push(j - w);
+        if (jy < h - 1) stack.push(j + w);
       }
     }
   }
-  return best;
+  return labels;
+}
+
+function componentEntriesSorted(
+  labels: Int32Array,
+  maxLabel: number,
+): { label: number; count: number }[] {
+  if (maxLabel <= 0) return [];
+  const counts = new Array<number>(maxLabel + 1).fill(0);
+  for (let i = 0; i < labels.length; i++) {
+    const L = labels[i];
+    if (L > 0) counts[L]++;
+  }
+  const out: { label: number; count: number }[] = [];
+  for (let L = 1; L <= maxLabel; L++) {
+    if (counts[L] > 0) out.push({ label: L, count: counts[L] });
+  }
+  out.sort((a, b) => b.count - a.count);
+  return out;
+}
+
+/** Binarize luminance at threshold and label 4-connected ink blobs. */
+function buildPhotoComponents(
+  lum: Float32Array,
+  threshold: number,
+): {
+  labels: Int32Array;
+  entries: { label: number; count: number }[];
+} {
+  const binary = new Uint8Array(BOX_SIZE * BOX_SIZE);
+  for (let i = 0; i < binary.length; i++) {
+    binary[i] = lum[i] >= threshold ? 1 : 0;
+  }
+  const labels = labelConnectedComponents4(binary, BOX_SIZE, BOX_SIZE);
+  let maxLabel = 0;
+  for (let i = 0; i < labels.length; i++) {
+    if (labels[i] > maxLabel) maxLabel = labels[i];
+  }
+  const entries = componentEntriesSorted(labels, maxLabel);
+  return { labels, entries };
 }
 
 export default function Step1ImageUpload({
@@ -124,11 +267,19 @@ export default function Step1ImageUpload({
     NormalizedPoint[] | null
   >(null);
   const [undoCount, setUndoCount] = useState(0);
+  /** Which disconnected shape (polygon) from the photo seeds line art. */
+  const [photoShapeIndex, setPhotoShapeIndex] = useState(0);
+  const [photoShapeCount, setPhotoShapeCount] = useState(0);
+  /** Which ring from the blurred line mask becomes the final route. */
+  const [lineRingIndex, setLineRingIndex] = useState(0);
+  /** Bumps when line mask bytes change so contour preview can refresh. */
+  const [lineMaskVersion, setLineMaskVersion] = useState(0);
+  /** Mirrors lineArtDirtyRef for UI (ring picker disabled after edits). */
+  const [lineArtDirty, setLineArtDirty] = useState(false);
 
   const imageCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lineArtCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const contourCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const workCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const luminanceRef = useRef<Float32Array | null>(null);
   const lineMaskRef = useRef<Uint8Array | null>(null);
@@ -138,6 +289,13 @@ export default function Step1ImageUpload({
 
   const lineUndoStackRef = useRef<Uint8Array[]>([]);
   const lineUndoIndexRef = useRef(-1);
+  const lastPhotoSeedKeyRef = useRef<string>("");
+  const prevContourBuiltRef = useRef(false);
+  const morphScratchRef = useRef<Uint8Array | null>(null);
+
+  const bumpLineMaskVersion = useCallback(() => {
+    setLineMaskVersion((v) => v + 1);
+  }, []);
 
   const drawLineMaskToCanvas = useCallback(() => {
     const canvas = lineArtCanvasRef.current;
@@ -189,47 +347,6 @@ export default function Step1ImageUpload({
     setUndoCount(lineUndoIndexRef.current);
   }, []);
 
-  const ringFromPhoto = useCallback((): [number, number][] | null => {
-    const lum = luminanceRef.current;
-    if (!lum) return null;
-    return extractRingFromField(lum, threshold);
-  }, [threshold]);
-
-  const seedLineMaskFromPhoto = useCallback(() => {
-    const lineMask = lineMaskRef.current;
-    const c = workCanvasRef.current;
-    if (!lineMask || !c) return;
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-
-    const ring = ringFromPhoto();
-    lineMask.fill(0);
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, BOX_SIZE, BOX_SIZE);
-    if (!ring || ring.length < 3) {
-      replaceLineUndoWithCurrent();
-      return;
-    }
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 2.5;
-    ctx.lineJoin = "round";
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ring.forEach(([x, y], i) => {
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.closePath();
-    ctx.stroke();
-
-    const img = ctx.getImageData(0, 0, BOX_SIZE, BOX_SIZE);
-    for (let i = 0; i < BOX_SIZE * BOX_SIZE; i++) {
-      lineMask[i] = img.data[i * 4] > 80 ? 255 : 0;
-    }
-    lineArtDirtyRef.current = false;
-    replaceLineUndoWithCurrent();
-  }, [ringFromPhoto, replaceLineUndoWithCurrent]);
-
   const buildBlurredFieldFromLineMask = useCallback((): Float32Array | null => {
     const lineMask = lineMaskRef.current;
     if (!lineMask) return null;
@@ -245,9 +362,24 @@ export default function Step1ImageUpload({
 
   const contourPointsFromLineMask = useCallback(
     (level: number): NormalizedPoint[] | null => {
+      void lineMaskVersion;
       const field = buildBlurredFieldFromLineMask();
       if (!field) return null;
-      const ring = extractRingFromField(field, level);
+      const rings = extractAllRingsFromField(field, level);
+      if (rings.length >= 2) {
+        const outer = rings[0]!;
+        const inner = rings[1]!;
+        if (likelyStrokeSandwichRings(outer, inner)) {
+          const mid = mergeStrokeMidlineRing(outer, inner, 168);
+          const sampled = curvatureAdaptiveSample(mid, 120);
+          return sampled.map(([x, y]) => ({
+            x: x / BOX_SIZE,
+            y: y / BOX_SIZE,
+          }));
+        }
+      }
+      const ri = Math.min(lineRingIndex, Math.max(0, rings.length - 1));
+      const ring = rings[ri] ?? null;
       if (ring === null || ring.length < 4) return null;
       const sampled = curvatureAdaptiveSample(ring, 120);
       return sampled.map(([x, y]) => ({
@@ -255,7 +387,7 @@ export default function Step1ImageUpload({
         y: y / BOX_SIZE,
       }));
     },
-    [buildBlurredFieldFromLineMask],
+    [buildBlurredFieldFromLineMask, lineRingIndex, lineMaskVersion],
   );
 
   const drawContourPreview = useCallback((points: NormalizedPoint[]) => {
@@ -303,6 +435,7 @@ export default function Step1ImageUpload({
     const prev = lineUndoStackRef.current[idx - 1];
     lineMaskRef.current?.set(prev);
     lineArtDirtyRef.current = true;
+    setLineArtDirty(true);
     drawLineMaskToCanvas();
     setUndoCount(lineUndoIndexRef.current);
     if (contourBuilt) {
@@ -334,6 +467,33 @@ export default function Step1ImageUpload({
 
       const iw = img.width;
       const ih = img.height;
+
+      const off = document.createElement("canvas");
+      off.width = LUM_SAMPLE_PX;
+      off.height = LUM_SAMPLE_PX;
+      const octx = off.getContext("2d", { colorSpace: "srgb" });
+      if (!octx) return;
+      octx.imageSmoothingEnabled = false;
+
+      const scaleHi = Math.min(LUM_SAMPLE_PX / iw, LUM_SAMPLE_PX / ih);
+      const drawWHi = iw * scaleHi;
+      const drawHHi = ih * scaleHi;
+      const offsetXHi = (LUM_SAMPLE_PX - drawWHi) / 2;
+      const offsetYHi = (LUM_SAMPLE_PX - drawHHi) / 2;
+      octx.clearRect(0, 0, LUM_SAMPLE_PX, LUM_SAMPLE_PX);
+      octx.drawImage(img, offsetXHi, offsetYHi, drawWHi, drawHHi);
+
+      const hiData = octx.getImageData(0, 0, LUM_SAMPLE_PX, LUM_SAMPLE_PX);
+      const lum = buildLuminanceMinPool2x2(hiData, LUM_SAMPLE_PX);
+      luminanceRef.current = lum;
+
+      if (!morphScratchRef.current) {
+        morphScratchRef.current = new Uint8Array(BOX_SIZE * BOX_SIZE);
+      }
+      const autoT = clampInkThreshold(otsuInkThreshold01(lum));
+      setThreshold(autoT);
+
+      imageCtx.imageSmoothingEnabled = false;
       const scale = Math.min(BOX_SIZE / iw, BOX_SIZE / ih);
       const drawW = iw * scale;
       const drawH = ih * scale;
@@ -342,35 +502,15 @@ export default function Step1ImageUpload({
 
       imageCtx.clearRect(0, 0, BOX_SIZE, BOX_SIZE);
       imageCtx.drawImage(img, offsetX, offsetY, drawW, drawH);
-
-      const imageData = imageCtx.getImageData(0, 0, BOX_SIZE, BOX_SIZE);
-      const lum = new Float32Array(BOX_SIZE * BOX_SIZE);
-      for (let y = 0; y < BOX_SIZE; y++) {
-        for (let x = 0; x < BOX_SIZE; x++) {
-          const idx = (y * BOX_SIZE + x) * 4;
-          const a = imageData.data[idx + 3];
-          if (a < 128) {
-            lum[y * BOX_SIZE + x] = 0;
-            continue;
-          }
-          const r = imageData.data[idx];
-          const g = imageData.data[idx + 1];
-          const b = imageData.data[idx + 2];
-          const gray = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-          lum[y * BOX_SIZE + x] = 1 - gray;
-        }
-      }
-      luminanceRef.current = lum;
       lineMaskRef.current = new Uint8Array(BOX_SIZE * BOX_SIZE);
 
       setNormalizedContour(null);
       setContourBuilt(false);
       setContourLevel(DEFAULT_CONTOUR_LEVEL);
+      setLineRingIndex(0);
       setImageReady(true);
 
       requestAnimationFrame(() => {
-        seedLineMaskFromPhoto();
-        drawLineMaskToCanvas();
         drawContourPlaceholder();
       });
     };
@@ -381,16 +521,80 @@ export default function Step1ImageUpload({
   useEffect(() => {
     if (!luminanceRef.current || !lineMaskRef.current || !imageReady) return;
     if (lineArtDirtyRef.current) return;
-    seedLineMaskFromPhoto();
+    const lum = luminanceRef.current;
+    const lineMask = lineMaskRef.current;
+    const { labels, entries } = buildPhotoComponents(lum, threshold);
+    const nComp = entries.length;
+    setPhotoShapeCount(nComp);
+    const key = `${threshold}|${uploadedImage?.url ?? ""}`;
+    const keyChanged = lastPhotoSeedKeyRef.current !== key;
+    lastPhotoSeedKeyRef.current = key;
+    const idx = keyChanged
+      ? 0
+      : Math.min(photoShapeIndex, Math.max(0, nComp - 1));
+    if (keyChanged && photoShapeIndex !== 0) {
+      setPhotoShapeIndex(0);
+    }
+    if (nComp === 0) {
+      lineMask.fill(0);
+    } else {
+      const want = entries[idx].label;
+      for (let i = 0; i < lineMask.length; i++) {
+        lineMask[i] = labels[i] === want ? 255 : 0;
+      }
+      const scratch = morphScratchRef.current;
+      if (scratch) {
+        morphCloseBinary255(lineMask, BOX_SIZE, BOX_SIZE, 1, scratch);
+      }
+    }
+    lineArtDirtyRef.current = false;
+    setLineArtDirty(false);
+    replaceLineUndoWithCurrent();
+    bumpLineMaskVersion();
     requestAnimationFrame(() => drawLineMaskToCanvas());
-  }, [threshold, imageReady, seedLineMaskFromPhoto, drawLineMaskToCanvas]);
+  }, [
+    threshold,
+    imageReady,
+    photoShapeIndex,
+    uploadedImage?.url,
+    replaceLineUndoWithCurrent,
+    bumpLineMaskVersion,
+    drawLineMaskToCanvas,
+  ]);
 
   useEffect(() => {
     if (!contourBuilt || !imageReady) return;
     const pts = contourPointsFromLineMask(contourLevel);
     setNormalizedContour(pts);
     requestAnimationFrame(() => applyContourToCanvas(pts));
-  }, [contourLevel, contourBuilt, imageReady, contourPointsFromLineMask, applyContourToCanvas]);
+  }, [
+    contourLevel,
+    contourBuilt,
+    imageReady,
+    contourPointsFromLineMask,
+    applyContourToCanvas,
+    lineMaskVersion,
+  ]);
+
+  useEffect(() => {
+    if (contourBuilt && !prevContourBuiltRef.current) {
+      setLineRingIndex(0);
+    }
+    prevContourBuiltRef.current = contourBuilt;
+  }, [contourBuilt]);
+
+  useEffect(() => {
+    if (!contourBuilt) return;
+    const field = buildBlurredFieldFromLineMask();
+    if (!field) return;
+    const rings = extractAllRingsFromField(field, contourLevel);
+    setLineRingIndex((i) => Math.min(i, Math.max(0, rings.length - 1)));
+  }, [
+    contourBuilt,
+    contourLevel,
+    lineMaskVersion,
+    buildBlurredFieldFromLineMask,
+  ]);
 
   function handleDone() {
     setContourBuilt(true);
@@ -403,8 +607,30 @@ export default function Step1ImageUpload({
     setNormalizedContour(null);
     setContourBuilt(false);
     setContourLevel(DEFAULT_CONTOUR_LEVEL);
+    setLineRingIndex(0);
     lineArtDirtyRef.current = false;
-    seedLineMaskFromPhoto();
+    setLineArtDirty(false);
+    setPhotoShapeIndex(0);
+    lastPhotoSeedKeyRef.current = "";
+    const lum = luminanceRef.current;
+    const lineMask = lineMaskRef.current;
+    if (!lum || !lineMask) return;
+    const { labels, entries } = buildPhotoComponents(lum, threshold);
+    setPhotoShapeCount(entries.length);
+    if (entries.length === 0) {
+      lineMask.fill(0);
+    } else {
+      const want = entries[0].label;
+      for (let i = 0; i < lineMask.length; i++) {
+        lineMask[i] = labels[i] === want ? 255 : 0;
+      }
+      const scratch = morphScratchRef.current;
+      if (scratch) {
+        morphCloseBinary255(lineMask, BOX_SIZE, BOX_SIZE, 1, scratch);
+      }
+    }
+    replaceLineUndoWithCurrent();
+    bumpLineMaskVersion();
     requestAnimationFrame(() => {
       drawLineMaskToCanvas();
       drawContourPlaceholder();
@@ -415,6 +641,7 @@ export default function Step1ImageUpload({
     const lineMask = lineMaskRef.current;
     if (!lineMask) return;
     lineArtDirtyRef.current = true;
+    setLineArtDirty(true);
     strokeDirtyRef.current = true;
     const r = brushRadius;
     const r2 = r * r;
@@ -491,19 +718,26 @@ export default function Step1ImageUpload({
     [tool, brushRadius],
   );
 
+  const contourRingCount = useMemo(() => {
+    void lineMaskVersion;
+    if (!contourBuilt) return 0;
+    const field = buildBlurredFieldFromLineMask();
+    if (!field) return 0;
+    const rings = extractAllRingsFromField(field, contourLevel);
+    if (
+      rings.length >= 2 &&
+      likelyStrokeSandwichRings(rings[0]!, rings[1]!)
+    ) {
+      return 1;
+    }
+    return rings.length;
+  }, [contourBuilt, contourLevel, lineMaskVersion, buildBlurredFieldFromLineMask]);
+
   const columnTitleClass =
     "mb-0.5 flex w-full flex-col items-center justify-center text-center";
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col items-center px-2 pb-1.5 pt-0.5 sm:px-2.5 sm:pb-2 sm:pt-1">
-      <canvas
-        ref={workCanvasRef}
-        width={BOX_SIZE}
-        height={BOX_SIZE}
-        className="pointer-events-none fixed left-0 top-0 opacity-0"
-        aria-hidden
-      />
-
       {onBack ? (
         <div className="mb-0.5 flex w-full justify-start sm:mb-1">
           <button type="button" onClick={onBack} className="pace-link-back">
@@ -514,7 +748,9 @@ export default function Step1ImageUpload({
 
       <p className="mb-1 max-w-xl text-center font-dm text-[10px] leading-snug text-pace-muted sm:mb-1.5 sm:text-[11px]">
         Your photo is traced in the browser—we don’t upload the image to our
-        servers.
+        servers. High-contrast logos get an auto{" "}
+        <span className="whitespace-nowrap">photo threshold</span> and outline
+        strokes can merge to a single centerline when we detect parallel edges.
       </p>
 
       <div className="pace-card mb-1 w-full max-w-4xl p-1.5 sm:p-2">
@@ -559,6 +795,26 @@ export default function Step1ImageUpload({
               {threshold.toFixed(2)}
             </span>
           </label>
+          {photoShapeCount > 1 && !lineArtDirty ? (
+            <label className="font-dm flex shrink-0 items-center gap-1 text-[10px] text-pace-ink sm:gap-1.5 sm:text-[11px]">
+              <span className="whitespace-nowrap">Shape</span>
+              <select
+                value={Math.min(
+                  photoShapeIndex,
+                  Math.max(0, photoShapeCount - 1),
+                )}
+                onChange={(e) => setPhotoShapeIndex(Number(e.target.value))}
+                className="max-w-[5rem] rounded border border-pace-line bg-pace-white py-0.5 pl-1 pr-6 text-[10px] sm:max-w-[6rem] sm:text-[11px]"
+                aria-label="Which separate blob from the photo to trace"
+              >
+                {Array.from({ length: photoShapeCount }, (_, i) => (
+                  <option key={i} value={i}>
+                    {i === 0 ? "1 (largest)" : `${i + 1}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-x-1 pl-1">
             <span className="shrink-0 font-bebas text-[10px] tracking-[0.1em] text-pace-muted sm:text-[11px]">
               Line art
@@ -706,6 +962,38 @@ export default function Step1ImageUpload({
                       : "Tap Done first, then adjust."}
                   </span>
                 </label>
+                {contourBuilt && contourRingCount > 1 ? (
+                  <label className="font-dm mt-1 flex flex-col gap-1 text-[11px] text-pace-muted">
+                    <span className="flex justify-between gap-2 font-medium">
+                      <span>Route outline</span>
+                      <span className="tabular-nums">
+                        {Math.min(lineRingIndex, contourRingCount - 1) + 1} /{" "}
+                        {contourRingCount}
+                      </span>
+                    </span>
+                    <select
+                      value={Math.min(
+                        lineRingIndex,
+                        Math.max(0, contourRingCount - 1),
+                      )}
+                      onChange={(e) =>
+                        setLineRingIndex(Number(e.target.value))
+                      }
+                      className="w-full rounded border border-pace-line bg-pace-white py-1 pl-1.5 pr-8 text-[11px] text-pace-ink"
+                      aria-label="Which closed loop from the line art to use as the route"
+                    >
+                      {Array.from({ length: contourRingCount }, (_, i) => (
+                        <option key={i} value={i}>
+                          {i === 0 ? "1 (largest)" : `${i + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-[10px] leading-snug">
+                      Multiple outlines were found—pick the one you want as the
+                      path.
+                    </span>
+                  </label>
+                ) : null}
               </div>
               <div className="mt-1.5 flex w-full max-w-[280px] flex-col gap-1.5 sm:flex-row sm:justify-center">
                 <button
