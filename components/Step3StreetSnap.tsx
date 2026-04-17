@@ -2,12 +2,14 @@
 
 import dynamic from "next/dynamic";
 import type { LatLngExpression } from "leaflet";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { OSM_TILE_ATTRIBUTION, OSM_TILE_URL } from "../lib/mapAttribution";
+import { shapeAccuracyPercent } from "../lib/shapeMatchScore";
 import { snapWalkingRoute } from "../lib/snapWalkingRoute";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
 import MapChunkFallback from "./MapChunkFallback";
 import MapStepSplitLayout from "./MapStepSplitLayout";
+import ShapeMatchMeter from "./ShapeMatchMeter";
 import type { AnchorLocation, RouteLineString } from "./WorkflowController";
 
 function formatSnapError(err: unknown): string {
@@ -113,6 +115,30 @@ export default function Step3StreetSnap({
     ? (route.distanceMeters / 1000 / 10) * 60
     : undefined;
 
+  const outlineForMatch = useMemo((): [number, number][] => {
+    const pts = anchorLocation?.anchorLatLngs;
+    if (!pts?.length) return [];
+    return pts.map(([lat, lng]) => [lat, lng] as [number, number]);
+  }, [anchorLocation?.anchorLatLngs]);
+
+  const streetForMatch = useMemo((): [number, number][] => {
+    const c = route?.coordinates;
+    if (!c?.length) return [];
+    return c.map(([lat, lng]) => [lat, lng] as [number, number]);
+  }, [route?.coordinates]);
+
+  const snapMatchPercent = useMemo(() => {
+    if (outlineForMatch.length < 2 || streetForMatch.length < 2) return null;
+    return shapeAccuracyPercent(outlineForMatch, streetForMatch);
+  }, [outlineForMatch, streetForMatch]);
+
+  const matchMeterLabel =
+    routeSource === "freehand" ? "Match to sketch" : "Match to art";
+  const matchMeterTitle =
+    routeSource === "freehand"
+      ? "How closely the snapped walking route follows your freehand path."
+      : "How closely the snapped walking route follows your placed outline.";
+
   return (
     <MapStepSplitLayout
       railCollapsed={railCollapsed}
@@ -128,6 +154,15 @@ export default function Step3StreetSnap({
               the request fails, it’s usually network or rate limits—Retry
               usually fixes it.
             </span>
+          </div>
+
+          <div className="mt-4 border-t border-pace-line pt-4">
+            <ShapeMatchMeter
+              label={matchMeterLabel}
+              percent={snapMatchPercent}
+              pendingText={snapping ? "…" : "—"}
+              title={matchMeterTitle}
+            />
           </div>
 
           <div className="mt-4 space-y-3 border-t border-pace-line pt-4 font-dm text-xs text-pace-ink">

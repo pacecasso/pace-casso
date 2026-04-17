@@ -7,8 +7,10 @@ import { shapeAccuracyPercent } from "../lib/shapeMatchScore";
 import type { Map as LeafletMap } from "leaflet";
 import type { AnchorLocation, RouteLineString } from "./WorkflowController";
 import { MAPBOX_PUBLIC_TOKEN } from "../lib/mapboxToken";
+import { simplifyPolylineToBendWaypoints } from "../lib/simplifyPolylineToBendWaypoints";
 import MapChunkFallback from "./MapChunkFallback";
 import MapStepSplitLayout from "./MapStepSplitLayout";
+import ShapeMatchMeter from "./ShapeMatchMeter";
 
 const Step4LeafletMap = dynamic(() => import("./Step4LeafletMap"), {
   ssr: false,
@@ -447,6 +449,24 @@ function initialWaypoints(route: RouteLineString): Waypoint[] {
     const useBlock =
       coords.length < 2 || blockWaypointsSpanPolyline(coords, block);
     if (useBlock) {
+      if (coords.length >= 2) {
+        const distM = route.distanceMeters ?? 0;
+        const maxStraight = Math.min(
+          420,
+          Math.max(200, distM > 0 ? distM / 42 : 280),
+        );
+        const bends = simplifyPolylineToBendWaypoints(
+          coords as [number, number][],
+          {
+            minTurnDeg: 22,
+            maxStraightRunM: maxStraight,
+            minCornerSeparationM: 14,
+          },
+        );
+        if (bends.length >= 2) {
+          return bends as Waypoint[];
+        }
+      }
       return block.map(([a, b]) => [a, b] as Waypoint);
     }
   }
@@ -508,6 +528,13 @@ export default function Step4RouteEditor({
     () => shapeAccuracyPercent(originalArt, streetLine),
     [originalArt, streetLine],
   );
+
+  const matchMeterLabel =
+    routeSource === "freehand" ? "Match to sketch" : "Match to art";
+  const matchMeterTitle =
+    routeSource === "freehand"
+      ? "How closely your edited street route follows the freehand path you drew."
+      : "How closely the street route follows your placed outline (initial full snap).";
 
   /**
    * Geometry used only for FitRouteBounds — must not depend on showOriginalArt
@@ -1012,8 +1039,17 @@ export default function Step4RouteEditor({
               dots · <strong className="text-pace-ink">Shift+click</strong>{" "}
               multi-select · <strong className="text-pace-ink">Delete</strong> key
               removes selected.{" "}
-              <span className="text-emerald-600">Green dashed</span> = your art.
-              Toggle dots off for a clean preview.
+              {showArtControls ? (
+                <>
+                  <span className="text-emerald-600">Green dashed</span> = your
+                  art. Toggle dots off for a clean preview.
+                </>
+              ) : (
+                <>
+                  The shape match meter compares your sketch to the street
+                  route. Toggle dots off for a clean preview.
+                </>
+              )}
               {spurBusy ? (
                 <span className="ml-1 font-medium text-pace-yellow">
                   Connecting…
@@ -1142,26 +1178,17 @@ export default function Step4RouteEditor({
                   <strong className="text-pace-ink">Your art</strong> off for a
                   clean view.
                 </p>
-              ) : null}
-              {showArtControls ? (
-                <div className="min-w-0 w-full">
-                  <div className="mb-1 flex items-center justify-between gap-2 font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
-                    <span>Match to art</span>
-                    <span className="tabular-nums text-pace-ink">
-                      {routeMatchPct}%
-                    </span>
-                  </div>
-                  <div
-                    className="h-2 overflow-hidden rounded-full bg-pace-line"
-                    title="How closely the street route follows your outline."
-                  >
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-pace-yellow via-emerald-400 to-emerald-500 transition-[width] duration-300"
-                      style={{ width: `${routeMatchPct}%` }}
-                    />
-                  </div>
-                </div>
-              ) : null}
+              ) : (
+                <p className="font-dm text-[10px] leading-snug text-pace-muted">
+                  The meter scores your freehand sketch against the initial
+                  snapped walking route (same idea as photo traces).
+                </p>
+              )}
+              <ShapeMatchMeter
+                label={matchMeterLabel}
+                percent={routeMatchPct}
+                title={matchMeterTitle}
+              />
             </div>
 
             <div className="flex flex-wrap items-center gap-2 text-[11px]">

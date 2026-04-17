@@ -11,6 +11,11 @@ export type CityPreset = {
     north: number;
     east: number;
   };
+  /**
+   * Street-grid bearings from north (degrees), for auto-find alignment bonus.
+   * Manhattan’s grid is ~29° / 119° from north.
+   */
+  dominantGridBearingsDeg?: number[];
 };
 
 export const MANHATTAN_PRESET: CityPreset = {
@@ -24,6 +29,7 @@ export const MANHATTAN_PRESET: CityPreset = {
     north: 40.882,
     east: -73.958,
   },
+  dominantGridBearingsDeg: [29, 119],
 };
 
 export const CITY_PRESETS: Record<string, CityPreset> = {

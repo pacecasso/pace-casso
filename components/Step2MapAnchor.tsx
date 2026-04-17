@@ -1,10 +1,15 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import type { LatLngExpression } from "leaflet";
 import { NormalizedPoint } from "./Step1ImageUpload";
-import { MANHATTAN_PRESET } from "../lib/cityPresets";
+import {
+  autoFindPlacement,
+  MAX_SNAP_TRIES,
+  MIN_SNAP_MATCH_PERCENT_TO_ADOPT,
+} from "../lib/autoFindPlacement";
+import { MANHATTAN_PRESET, type CityPreset } from "../lib/cityPresets";
 import { buildAnchorLatLngsFromContour } from "../lib/placementFromContour";
 import { OSM_TILE_ATTRIBUTION, OSM_TILE_URL } from "../lib/mapAttribution";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
@@ -30,6 +35,7 @@ const Marker = dynamic(
 
 type Step2MapAnchorProps = {
   contour: NormalizedPoint[];
+  cityPreset: CityPreset;
   /** Defaults to Manhattan; use selected city preset center. */
   defaultCenter?: [number, number];
   onBack: () => void;
@@ -43,6 +49,7 @@ type Step2MapAnchorProps = {
 
 export default function Step2MapAnchor({
   contour,
+  cityPreset,
   defaultCenter = MANHATTAN_PRESET.defaultCenter,
   onBack,
   onComplete,
@@ -51,6 +58,35 @@ export default function Step2MapAnchor({
   const [scale, setScale] = useState(1);
   const [center, setCenter] = useState<[number, number]>(defaultCenter);
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [autoHint, setAutoHint] = useState<string | null>(null);
+
+  const runAutoFind = useCallback(async () => {
+    setAutoBusy(true);
+    setAutoHint("Searching placement…");
+    try {
+      const r = await autoFindPlacement(contour, cityPreset, {
+        useSnapRefine: true,
+      });
+      setCenter([...r.placement.center] as [number, number]);
+      setRotationDeg(Math.round(r.placement.rotationDeg));
+      setScale(Math.round(r.placement.scale * 10) / 10);
+      setAutoHint(
+        r.usedSnapRefine && r.snapScore != null
+          ? `Street-backed fit (shape match ≈ ${r.snapScore}%).`
+          : r.bestSnapAttemptPercent != null &&
+              r.bestSnapAttemptPercent < MIN_SNAP_MATCH_PERCENT_TO_ADOPT
+            ? `Snap search peaked at ≈${r.bestSnapAttemptPercent}% (≥${MIN_SNAP_MATCH_PERCENT_TO_ADOPT}% counts as street-backed). Applied that best preview — nudge if you want more.`
+            : "Applied geometry-only fit inside this area (no street preview).",
+      );
+      window.setTimeout(() => setAutoHint(null), 5200);
+    } catch {
+      setAutoHint("Couldn’t reach routing — try again or adjust by hand.");
+      window.setTimeout(() => setAutoHint(null), 5000);
+    } finally {
+      setAutoBusy(false);
+    }
+  }, [contour, cityPreset]);
 
   const centerHandleIcon = useMemo(() => {
     if (typeof window === "undefined") return null;
@@ -131,6 +167,27 @@ export default function Step2MapAnchor({
                 )}
               </div>
             </label>
+          </div>
+
+          <div className="mt-4 flex flex-col gap-2">
+            <button
+              type="button"
+              disabled={autoBusy || !contour.length}
+              onClick={() => void runAutoFind()}
+              className="pace-toolbar-btn w-full py-2.5 text-[11px] font-semibold disabled:opacity-50 sm:text-xs"
+            >
+              {autoBusy ? "Auto-find…" : "Auto-find placement"}
+            </button>
+            {autoHint ? (
+              <p className="text-[10px] leading-snug text-pace-muted">{autoHint}</p>
+            ) : (
+              <p className="text-[10px] leading-snug text-pace-muted">
+                Tries several centers, scales, and rotations, snap-tests up to{" "}
+                {MAX_SNAP_TRIES} of them, then locally nudges the best hit to raise
+                match. “Street-backed” label if shape match is ≥
+                {MIN_SNAP_MATCH_PERCENT_TO_ADOPT}%.
+              </p>
+            )}
           </div>
 
           <div className="mt-6 flex flex-col gap-2 border-t border-pace-line pt-4">

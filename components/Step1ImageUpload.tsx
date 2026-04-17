@@ -15,6 +15,11 @@ import {
   stitchNestedHoleRingsInPlace,
 } from "../lib/contourRingStitch";
 import { fillLineMaskPrimaryPlusEnclosedHoles } from "../lib/inkMaskUnionEnclosed";
+import {
+  centerlinePolylineFromPreparedBinary,
+  prepareTracedBinaryMask,
+} from "../lib/centerlineFromMask";
+import { mooreContourRingsFromLineMask } from "../lib/mooreBoundaryFromMask";
 
 export type NormalizedPoint = { x: number; y: number };
 
@@ -25,6 +30,16 @@ const LUM_SAMPLE_PX = BOX_SIZE * LUM_SAMPLE_SUPER;
 const DEFAULT_BRUSH = 6;
 const MAX_LINE_UNDO = 28;
 const DEFAULT_CONTOUR_LEVEL = 0.22;
+
+/** Prepared 0/1 mask → line-art raster values for Moore / d3. */
+function binaryPrepToLineMask(prep: Uint8Array, len: number): Uint8Array {
+  const m = new Uint8Array(len);
+  const n = Math.min(len, prep.length);
+  for (let i = 0; i < n; i++) {
+    if (prep[i]) m[i] = 255;
+  }
+  return m;
+}
 
 type UploadedImage = {
   url: string;
@@ -320,6 +335,26 @@ function simplifyRingPx(ring: [number, number][]): [number, number][] {
   return coords;
 }
 
+/** Lighter simplify for Moore-traced rings so 1–2 px bridges survive. */
+function simplifyMooreRing(ring: [number, number][]): [number, number][] {
+  if (ring.length < 5) return ring;
+  const tolerancePx =
+    ring.length > 3200 ? 0.2 : ring.length > 1600 ? 0.12 : 0.055;
+  const ls = turf.lineString(ring.map(([x, y]) => [x, y]));
+  const out = turf.simplify(ls, {
+    tolerance: tolerancePx,
+    highQuality: true,
+  });
+  const coords = out.geometry.coordinates as [number, number][];
+  if (coords.length < 3) return ring;
+  const first = coords[0]!;
+  const last = coords[coords.length - 1]!;
+  if (Math.hypot(first[0] - last[0], first[1] - last[1]) > 0.6) {
+    return [...coords, first];
+  }
+  return coords;
+}
+
 function computeSortedContourRings(
   mask: Uint8Array,
   level: number,
@@ -424,8 +459,6 @@ export default function Step1ImageUpload({
     NormalizedPoint[] | null
   >(null);
   const [undoCount, setUndoCount] = useState(0);
-  /** Which ring from the blurred line mask becomes the final route. */
-  const [lineRingIndex, setLineRingIndex] = useState(0);
   /** Bumps when line mask bytes change so contour preview can refresh. */
   const [lineMaskVersion, setLineMaskVersion] = useState(0);
   const imageCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -440,7 +473,6 @@ export default function Step1ImageUpload({
 
   const lineUndoStackRef = useRef<Uint8Array[]>([]);
   const lineUndoIndexRef = useRef(-1);
-  const prevContourBuiltRef = useRef(false);
 
   const bumpLineMaskVersion = useCallback(() => {
     setLineMaskVersion((v) => v + 1);
@@ -501,22 +533,67 @@ export default function Step1ImageUpload({
       void lineMaskVersion;
       const mask = lineMaskRef.current;
       if (!mask) return null;
-      const rings = computeSortedContourRings(mask, level, BOX_SIZE, BOX_SIZE);
-      const ri = Math.min(lineRingIndex, Math.max(0, rings.length - 1));
-      const ring = rings[ri] ?? null;
+
+      let ring: [number, number][] | null = null;
+      let usedMoore = false;
+      let usedCenterline = false;
+
+      const prep = prepareTracedBinaryMask(mask, BOX_SIZE, BOX_SIZE);
+      const traceMask = prep ? binaryPrepToLineMask(prep, mask.length) : null;
+
+      if (prep) {
+        const center = centerlinePolylineFromPreparedBinary(
+          prep,
+          BOX_SIZE,
+          BOX_SIZE,
+        );
+        if (center && center.length >= 4) {
+          ring = center;
+          usedCenterline = true;
+        }
+      }
+
+      if (!ring && traceMask) {
+        const mooreRings = mooreContourRingsFromLineMask(
+          traceMask,
+          BOX_SIZE,
+          BOX_SIZE,
+        );
+        if (mooreRings?.length) {
+          usedMoore = true;
+          const rings = mooreRings.map((r) => r.slice());
+          stitchNestedHoleRingsInPlace(rings);
+          ring = rings[0] ?? null;
+        }
+      }
+      if (!ring) {
+        const rings = computeSortedContourRings(
+          traceMask ?? mask,
+          level,
+          BOX_SIZE,
+          BOX_SIZE,
+        );
+        ring = rings[0] ?? null;
+      }
       if (ring === null || ring.length < 4) return null;
-      const smoothed = simplifyRingPx(ring);
-      const target = Math.min(
-        200,
-        Math.max(120, Math.floor(smoothed.length / 3)),
-      );
+
+      const useLightSimplify = usedMoore || usedCenterline;
+      const smoothed =
+        usedCenterline && ring.length < 900
+          ? ring
+          : useLightSimplify
+            ? simplifyMooreRing(ring)
+            : simplifyRingPx(ring);
+      const target = useLightSimplify
+        ? Math.min(560, Math.max(320, Math.floor(smoothed.length * 0.62)))
+        : Math.min(200, Math.max(120, Math.floor(smoothed.length / 3)));
       const sampled = curvatureAdaptiveSample(smoothed, target);
       return sampled.map(([x, y]) => ({
         x: x / BOX_SIZE,
         y: y / BOX_SIZE,
       }));
     },
-    [lineRingIndex, lineMaskVersion],
+    [lineMaskVersion],
   );
 
   const drawContourPreview = useCallback((points: NormalizedPoint[]) => {
@@ -534,7 +611,11 @@ export default function Step1ImageUpload({
       if (idx === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
-    ctx.closePath();
+    const a = points[0]!;
+    const b = points[points.length - 1]!;
+    const close =
+      Math.hypot((a.x - b.x) * BOX_SIZE, (a.y - b.y) * BOX_SIZE) < 3.5;
+    if (close) ctx.closePath();
     ctx.stroke();
   }, []);
 
@@ -630,7 +711,6 @@ export default function Step1ImageUpload({
       setNormalizedContour(null);
       setContourBuilt(false);
       setContourLevel(DEFAULT_CONTOUR_LEVEL);
-      setLineRingIndex(0);
       setImageReady(true);
 
       requestAnimationFrame(() => {
@@ -687,24 +767,6 @@ export default function Step1ImageUpload({
     lineMaskVersion,
   ]);
 
-  useEffect(() => {
-    if (contourBuilt && !prevContourBuiltRef.current) {
-      setLineRingIndex(0);
-    }
-    prevContourBuiltRef.current = contourBuilt;
-  }, [contourBuilt]);
-
-  useEffect(() => {
-    if (!contourBuilt || !lineMaskRef.current) return;
-    const rings = computeSortedContourRings(
-      lineMaskRef.current,
-      contourLevel,
-      BOX_SIZE,
-      BOX_SIZE,
-    );
-    setLineRingIndex((i) => Math.min(i, Math.max(0, rings.length - 1)));
-  }, [contourBuilt, contourLevel, lineMaskVersion]);
-
   function handleDone() {
     setContourBuilt(true);
     const pts = contourPointsFromLineMask(contourLevel);
@@ -716,7 +778,6 @@ export default function Step1ImageUpload({
     setNormalizedContour(null);
     setContourBuilt(false);
     setContourLevel(DEFAULT_CONTOUR_LEVEL);
-    setLineRingIndex(0);
     lineArtDirtyRef.current = false;
     const lum = luminanceRef.current;
     const lineMask = lineMaskRef.current;
@@ -821,17 +882,6 @@ export default function Step1ImageUpload({
     () => lineArtCursorCss(tool, brushRadius),
     [tool, brushRadius],
   );
-
-  const contourRingCount = useMemo(() => {
-    void lineMaskVersion;
-    if (!contourBuilt || !lineMaskRef.current) return 0;
-    return computeSortedContourRings(
-      lineMaskRef.current,
-      contourLevel,
-      BOX_SIZE,
-      BOX_SIZE,
-    ).length;
-  }, [contourBuilt, contourLevel, lineMaskVersion]);
 
   const columnTitleClass =
     "mb-0.5 flex w-full flex-col items-center justify-center text-center";
@@ -1046,38 +1096,6 @@ export default function Step1ImageUpload({
                       : "Tap Done first, then adjust."}
                   </span>
                 </label>
-                {contourBuilt && contourRingCount > 1 ? (
-                  <label className="font-dm mt-1 flex flex-col gap-1 text-[11px] text-pace-muted">
-                    <span className="flex justify-between gap-2 font-medium">
-                      <span>Route outline</span>
-                      <span className="tabular-nums">
-                        {Math.min(lineRingIndex, contourRingCount - 1) + 1} /{" "}
-                        {contourRingCount}
-                      </span>
-                    </span>
-                    <select
-                      value={Math.min(
-                        lineRingIndex,
-                        Math.max(0, contourRingCount - 1),
-                      )}
-                      onChange={(e) =>
-                        setLineRingIndex(Number(e.target.value))
-                      }
-                      className="w-full rounded border border-pace-line bg-pace-white py-1 pl-1.5 pr-8 text-[11px] text-pace-ink"
-                      aria-label="Which closed loop from the line art to use as the route"
-                    >
-                      {Array.from({ length: contourRingCount }, (_, i) => (
-                        <option key={i} value={i}>
-                          Outline {i + 1}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="text-[10px] leading-snug">
-                      Multiple outlines were found—pick the one you want as the
-                      path.
-                    </span>
-                  </label>
-                ) : null}
               </div>
               <div className="mt-1.5 flex w-full max-w-[280px] flex-col gap-1.5 sm:flex-row sm:justify-center">
                 <button

@@ -430,6 +430,12 @@ export default function WorkflowController() {
               setSourceKind("freehand");
               setCurrentStep(2);
             }}
+            cityPreset={cityPreset}
+            onPickAreaTemplate={(contour) => {
+              setSourceKind("image");
+              setContourCoordinates(contour as NormalizedPoint[]);
+              setCurrentStep(3);
+            }}
           />
         )}
 
@@ -463,6 +469,7 @@ export default function WorkflowController() {
         {currentStep === 3 && contourCoordinates && sourceKind === "image" && (
           <Step2MapAnchor
             contour={contourCoordinates}
+            cityPreset={cityPreset}
             defaultCenter={cityPreset.defaultCenter}
             onBack={() => setCurrentStep(2)}
             onComplete={({ anchorLatLngs, center, rotationDeg, scale }) => {
