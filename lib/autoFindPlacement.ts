@@ -43,10 +43,103 @@ const LOCAL_REFINE_MAX_SNAP_CALLS = 40;
  */
 export const AREA_TEMPLATE_SNAP_MAX_TRIES = 3;
 
+/** How many top heuristic hits get a dense local refinement pass. */
+const DENSE_REFINE_TOP_SEEDS = 5;
+
 export type BestPlacementBySnapMatchOptions = {
   maxSnapTries?: number;
   retryDelayMs?: number;
+  /** When set, skips a second heuristic ranking pass (same as auto-find’s rank). */
+  precomputedRanked?: { placement: PlacementTransform; score: number }[];
 };
+
+function normalizeDeg180(d: number): number {
+  let x = d % 360;
+  if (x > 180) x -= 360;
+  if (x <= -180) x += 360;
+  return x;
+}
+
+/**
+ * Principal axis of the contour in normalized (x,y) space (degrees from +x axis).
+ * Used to suggest rotations that align the outline with the city street grid.
+ */
+export function principalAxisAngleDeg(contour: ContourPoint[]): number | null {
+  const n = contour.length;
+  if (n < 2) return null;
+  let cx = 0;
+  let cy = 0;
+  for (const p of contour) {
+    cx += p.x;
+    cy += p.y;
+  }
+  cx /= n;
+  cy /= n;
+  let xx = 0;
+  let yy = 0;
+  let xy = 0;
+  for (const p of contour) {
+    const dx = p.x - cx;
+    const dy = p.y - cy;
+    xx += dx * dx;
+    yy += dy * dy;
+    xy += dx * dy;
+  }
+  xx /= n;
+  yy /= n;
+  xy /= n;
+  const half = (xx - yy) / 2;
+  const root = Math.sqrt(half * half + xy * xy);
+  const lambda1 = (xx + yy) / 2 + root;
+  let vx: number;
+  let vy: number;
+  if (Math.abs(xy) > 1e-12 || Math.abs(xx - lambda1) > 1e-12) {
+    vx = xy;
+    vy = lambda1 - xx;
+  } else {
+    vx = 1;
+    vy = 0;
+  }
+  const len = Math.hypot(vx, vy);
+  if (len < 1e-12) return null;
+  return (Math.atan2(vy, vx) * 180) / Math.PI;
+}
+
+/**
+ * Rotations that approximately align the contour’s long axis with dominant grid directions.
+ */
+function gridSnappedRotationAnglesDeg(
+  contour: ContourPoint[],
+  preset: CityPreset,
+): number[] {
+  const theta = principalAxisAngleDeg(contour);
+  if (theta == null) return [];
+  const bearings = preset.dominantGridBearingsDeg?.length
+    ? [...preset.dominantGridBearingsDeg]
+    : [0];
+  const seeds = new Set<number>();
+  for (const g of bearings) {
+    const align = normalizeDeg180(g - theta);
+    seeds.add(Math.round(align));
+    for (const d of [-10, -5, 5, 10]) {
+      seeds.add(Math.round(normalizeDeg180(align + d)));
+    }
+  }
+  return [...seeds];
+}
+
+/** Base + PCA/grid-snapped rotations (exported for tests). */
+export function buildRotationAngles(
+  contour: ContourPoint[],
+  preset: CityPreset,
+): number[] {
+  const base = [
+    -75, -60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60, 75, 90, -90,
+  ];
+  const pca = gridSnappedRotationAnglesDeg(contour, preset);
+  const merged = new Set<number>([...base, ...pca]);
+  return [...merged].sort((a, b) => a - b);
+}
 
 function anchorsInsideBounds(
   anchors: [number, number][],
@@ -109,6 +202,7 @@ export function scorePlacementHeuristic(
 
 export function enumeratePlacementCandidates(
   preset: CityPreset,
+  contour: ContourPoint[],
 ): PlacementTransform[] {
   const b = preset.searchBounds;
   const latSpan = b.north - b.south - 2 * MARGIN;
@@ -116,9 +210,7 @@ export function enumeratePlacementCandidates(
   const latSteps = 4;
   const lngSteps = 4;
   const scales = [0.7, 0.9, 1.1, 1.35, 1.65, 2.0];
-  const rotations = [
-    -75, -60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60, 75, 90, -90,
-  ];
+  const rotations = buildRotationAngles(contour, preset);
   const out: PlacementTransform[] = [];
   for (let li = 0; li < latSteps; li++) {
     for (let gi = 0; gi < lngSteps; gi++) {
@@ -135,34 +227,125 @@ export function enumeratePlacementCandidates(
   return out;
 }
 
-export function findBestHeuristicPlacement(
+/**
+ * Small nudges around strong heuristic seeds (finer than the global grid).
+ */
+function generateDenseRefinementCandidates(
   contour: ContourPoint[],
   preset: CityPreset,
-): { placement: PlacementTransform; score: number } {
-  let best: PlacementTransform = {
+  seeds: PlacementTransform[],
+): PlacementTransform[] {
+  const b = preset.searchBounds;
+  const latSpan = b.north - b.south - 2 * MARGIN;
+  const lngSpan = b.east - b.west - 2 * MARGIN;
+  const fracs = [-0.035, -0.018, 0.018, 0.035];
+  const out: PlacementTransform[] = [];
+  const seen = new Set<string>();
+  const push = (t: PlacementTransform) => {
+    const k = placementKey(t);
+    if (seen.has(k)) return;
+    if (!placementFeasible(contour, preset, t)) return;
+    seen.add(k);
+    out.push(t);
+  };
+
+  for (const base of seeds) {
+    for (const f of fracs) {
+      push({
+        ...base,
+        center: [base.center[0] + f * latSpan, base.center[1]] as [
+          number,
+          number,
+        ],
+      });
+      push({
+        ...base,
+        center: [base.center[0], base.center[1] + f * lngSpan] as [
+          number,
+          number,
+        ],
+      });
+    }
+    for (const g of [0.96, 1.04]) {
+      push({ ...base, scale: clampScale(base.scale * g) });
+    }
+    for (const r of [-6, -3, 3, 6]) {
+      push({ ...base, rotationDeg: base.rotationDeg + r });
+    }
+  }
+  return out;
+}
+
+function placementKey(p: PlacementTransform): string {
+  return `${p.center[0].toFixed(5)},${p.center[1].toFixed(5)},${Math.round(p.rotationDeg)},${p.scale.toFixed(2)}`;
+}
+
+/** Coarse grid + PCA rotations + dense local refinements around top heuristic seeds. */
+function buildCandidatePool(
+  contour: ContourPoint[],
+  preset: CityPreset,
+): PlacementTransform[] {
+  const base = enumeratePlacementCandidates(preset, contour);
+  const scored = base
+    .map((placement) => ({
+      placement,
+      score: scorePlacementHeuristic(contour, preset, placement),
+    }))
+    .filter((x) => x.score > -Infinity)
+    .sort((a, b) => b.score - a.score);
+
+  const topSeeds = scored
+    .slice(0, DENSE_REFINE_TOP_SEEDS)
+    .map((x) => x.placement);
+  const dense = generateDenseRefinementCandidates(contour, preset, topSeeds);
+
+  const seen = new Set<string>();
+  const out: PlacementTransform[] = [];
+  for (const t of [...base, ...dense]) {
+    const k = placementKey(t);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out;
+}
+
+function defaultPlacementFallback(preset: CityPreset): PlacementTransform {
+  return {
     center: [...preset.defaultCenter] as [number, number],
     rotationDeg: 0,
     scale: 1,
   };
-  let bestScore = -Infinity;
-  for (const t of enumeratePlacementCandidates(preset)) {
-    const s = scorePlacementHeuristic(contour, preset, t);
-    if (s > bestScore) {
-      bestScore = s;
-      best = t;
-    }
+}
+
+export function rankHeuristicTop(
+  contour: ContourPoint[],
+  preset: CityPreset,
+  topK: number,
+): { placement: PlacementTransform; score: number }[] {
+  const pool = buildCandidatePool(contour, preset);
+  const scored: { placement: PlacementTransform; score: number }[] = [];
+  for (const placement of pool) {
+    const s = scorePlacementHeuristic(contour, preset, placement);
+    if (s === -Infinity) continue;
+    scored.push({ placement, score: s });
   }
-  if (bestScore === -Infinity) {
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, Math.max(1, topK));
+}
+
+export function findBestHeuristicPlacement(
+  contour: ContourPoint[],
+  preset: CityPreset,
+): { placement: PlacementTransform; score: number } {
+  const top = rankHeuristicTop(contour, preset, 1);
+  if (!top.length) {
     return {
-      placement: {
-        center: [...preset.defaultCenter] as [number, number],
-        rotationDeg: 0,
-        scale: 1,
-      },
+      placement: defaultPlacementFallback(preset),
       score: -Infinity,
     };
   }
-  return { placement: best, score: bestScore };
+  return { placement: top[0].placement, score: top[0].score };
 }
 
 function placementFeasible(
@@ -267,25 +450,6 @@ async function snapLocalRefineFromSeed(
   return { placement: current, snapScore: currentPct };
 }
 
-function rankHeuristicTop(
-  contour: ContourPoint[],
-  preset: CityPreset,
-  topK: number,
-): { placement: PlacementTransform; score: number }[] {
-  const scored: { placement: PlacementTransform; score: number }[] = [];
-  for (const t of enumeratePlacementCandidates(preset)) {
-    const s = scorePlacementHeuristic(contour, preset, t);
-    if (s === -Infinity) continue;
-    scored.push({ placement: t, score: s });
-  }
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, Math.max(1, topK));
-}
-
-function placementKey(p: PlacementTransform): string {
-  return `${p.center[0].toFixed(5)},${p.center[1].toFixed(5)},${Math.round(p.rotationDeg)},${p.scale.toFixed(2)}`;
-}
-
 /** Snap once and return shape match %, or null on failure. */
 export async function snapMatchPercentForPlacement(
   contour: ContourPoint[],
@@ -327,11 +491,12 @@ export async function bestPlacementBySnapMatch(
     Math.min(options.maxSnapTries ?? MAX_SNAP_TRIES, 24),
   );
   const retryDelayMs = options.retryDelayMs ?? SNAP_RETRY_DELAY_MS;
-  const { placement: heurPlacement } = findBestHeuristicPlacement(
-    contour,
-    preset,
-  );
-  const ranked = rankHeuristicTop(contour, preset, 24);
+
+  const ranked =
+    options.precomputedRanked ??
+    rankHeuristicTop(contour, preset, 24);
+  const heurPlacement =
+    ranked[0]?.placement ?? defaultPlacementFallback(preset);
 
   const ordered: PlacementTransform[] = [];
   const seen = new Set<string>();
@@ -403,12 +568,14 @@ export async function autoFindPlacement(
   preset: CityPreset,
   options: { useSnapRefine?: boolean } = {},
 ): Promise<AutoFindResult> {
-  const { placement, score: heuristicScore } = findBestHeuristicPlacement(
-    contour,
-    preset,
-  );
-
   if (!options.useSnapRefine) {
+    const rankedOne = rankHeuristicTop(contour, preset, 1);
+    const { placement, score: heuristicScore } = rankedOne.length
+      ? { placement: rankedOne[0].placement, score: rankedOne[0].score }
+      : {
+          placement: defaultPlacementFallback(preset),
+          score: -Infinity as number,
+        };
     return {
       placement,
       usedSnapRefine: false,
@@ -416,10 +583,15 @@ export async function autoFindPlacement(
     };
   }
 
+  const ranked = rankHeuristicTop(contour, preset, 24);
+  const first = ranked[0];
+  const placement = first?.placement ?? defaultPlacementFallback(preset);
+  const heuristicScore = first?.score ?? -Infinity;
+
   const { chosen, bestAttemptPercent, snapBest } = await bestPlacementBySnapMatch(
     contour,
     preset,
-    {},
+    { precomputedRanked: ranked },
   );
 
   if (chosen) {
