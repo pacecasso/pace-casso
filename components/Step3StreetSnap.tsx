@@ -95,7 +95,9 @@ export default function Step3StreetSnap({
           throw new Error("Not enough points to snap to streets.");
         }
 
-        const snappedRoute = await snapWalkingRoute(coords);
+        const snappedRoute = await snapWalkingRoute(coords, {
+          anchorSource: routeSource,
+        });
         if (cancelled || ac.signal.aborted) return;
         setRoute(snappedRoute);
       } catch (err: unknown) {
@@ -106,7 +108,7 @@ export default function Step3StreetSnap({
         if (!cancelled && !ac.signal.aborted) setSnapping(false);
       }
     }
-  }, [anchorLocation, retryToken]);
+  }, [anchorLocation, retryToken, routeSource]);
 
   const distanceKm = route?.distanceMeters
     ? route.distanceMeters / 1000

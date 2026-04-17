@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test:unit": "npx --yes tsx lib/outAndBackSpurHints.test.ts && npx --yes tsx lib/inkMaskUnionEnclosed.test.ts && npx --yes tsx lib/contourRingStitch.test.ts && npx --yes tsx lib/mooreBoundaryFromMask.test.ts && npx --yes tsx lib/centerlineFromMask.test.ts && npx --yes tsx lib/simplifyPolylineToBendWaypoints.test.ts && npx --yes tsx lib/shapeMatchScore.test.ts && npx --yes tsx lib/autoFindPlacement.test.ts",
+    "test:unit": "npx --yes tsx lib/outAndBackSpurHints.test.ts && npx --yes tsx lib/inkMaskUnionEnclosed.test.ts && npx --yes tsx lib/contourRingStitch.test.ts && npx --yes tsx lib/mooreBoundaryFromMask.test.ts && npx --yes tsx lib/centerlineFromMask.test.ts && npx --yes tsx lib/simplifyPolylineToBendWaypoints.test.ts && npx --yes tsx lib/simplifyAnchorPathForSnap.test.ts && npx --yes tsx lib/shapeMatchScore.test.ts && npx --yes tsx lib/autoFindPlacement.test.ts",
     "test:e2e": "playwright test"
   },
   "keywords": [],

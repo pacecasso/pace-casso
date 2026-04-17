@@ -9,8 +9,13 @@ import {
   type PlacementTransform,
 } from "./placementFromContour";
 import { interpretationMatchPercent } from "./shapeMatchScore";
-import { simplifyAnchorPathForSnap } from "./simplifyAnchorPathForSnap";
+import {
+  simplifyAnchorPathForSnap,
+  type AnchorPathSource,
+} from "./simplifyAnchorPathForSnap";
 import { snapWalkingRoute } from "./snapWalkingRoute";
+
+export type { AnchorPathSource };
 
 const MARGIN = 0.012;
 const IDEAL_DISTANCE_KM = 9;
@@ -63,6 +68,8 @@ export type BestPlacementBySnapMatchOptions = {
   retryDelayMs?: number;
   /** When set, skips a second heuristic ranking pass (same as auto-find’s rank). */
   precomputedRanked?: { placement: PlacementTransform; score: number }[];
+  /** Align with street snap: photo traces use mild anchor reduction before Mapbox. */
+  anchorSource?: AnchorPathSource;
 };
 
 function normalizeDeg180(d: number): number {
@@ -508,6 +515,7 @@ async function snapLocalRefineFromSeed(
   seed: { placement: PlacementTransform; snapScore: number },
   maxCalls: number,
   retryDelayMs: number,
+  anchorSource: AnchorPathSource | undefined,
 ): Promise<{ placement: PlacementTransform; snapScore: number }> {
   let current = seed.placement;
   let currentPct = seed.snapScore;
@@ -520,7 +528,11 @@ async function snapLocalRefineFromSeed(
 
     for (const n of neighbors) {
       if (used >= maxCalls) break;
-      const pct = await snapMatchPercentForPlacement(contour, n);
+      const pct = await snapMatchPercentForPlacement(
+        contour,
+        n,
+        anchorSource,
+      );
       used++;
       if (pct != null && pct > bestPct) {
         bestPct = pct;
@@ -541,6 +553,7 @@ async function snapLocalRefineFromSeed(
 export async function snapMatchPercentForPlacement(
   contour: ContourPoint[],
   placement: PlacementTransform,
+  anchorSource?: AnchorPathSource,
 ): Promise<number | null> {
   const { anchorLatLngs } = buildAnchorLatLngsFromContour(contour, placement);
   if (anchorLatLngs.length < 2) return null;
@@ -548,9 +561,11 @@ export async function snapMatchPercentForPlacement(
     ([la, ln]) => [la, ln] as [number, number],
   );
   try {
-    anchors = simplifyAnchorPathForSnap(anchors);
+    anchors = simplifyAnchorPathForSnap(anchors, {
+      sourceKind: anchorSource ?? "default",
+    });
     if (anchors.length < 2) return null;
-    const route = await snapWalkingRoute(anchors);
+    const route = await snapWalkingRoute(anchors, { anchorSource });
     const coords = route.coordinates as [number, number][];
     if (coords.length < 2) return null;
     return interpretationMatchPercent(anchors, coords);
@@ -578,6 +593,7 @@ export async function bestPlacementBySnapMatch(
     Math.min(options.maxSnapTries ?? MAX_SNAP_TRIES, 24),
   );
   const retryDelayMs = options.retryDelayMs ?? SNAP_RETRY_DELAY_MS;
+  const anchorSource = options.anchorSource;
 
   const ranked =
     options.precomputedRanked ??
@@ -603,7 +619,11 @@ export async function bestPlacementBySnapMatch(
   let best: { placement: PlacementTransform; snapScore: number } | null = null;
 
   for (const placement of toTry) {
-    const pct = await snapMatchPercentForPlacement(contour, placement);
+    const pct = await snapMatchPercentForPlacement(
+      contour,
+      placement,
+      anchorSource,
+    );
     if (pct != null) {
       if (!best || pct > best.snapScore) {
         best = { placement, snapScore: pct };
@@ -622,6 +642,7 @@ export async function bestPlacementBySnapMatch(
       best,
       LOCAL_REFINE_MAX_SNAP_CALLS,
       retryDelayMs,
+      anchorSource,
     );
     if (refined.snapScore > best.snapScore) {
       snapBest = refined;
@@ -653,7 +674,7 @@ export type AutoFindResult = {
 export async function autoFindPlacement(
   contour: ContourPoint[],
   preset: CityPreset,
-  options: { useSnapRefine?: boolean } = {},
+  options: { useSnapRefine?: boolean; anchorSource?: AnchorPathSource } = {},
 ): Promise<AutoFindResult> {
   if (!options.useSnapRefine) {
     const rankedOne = rankHeuristicTop(contour, preset, 1);
@@ -678,7 +699,7 @@ export async function autoFindPlacement(
   const { chosen, bestAttemptPercent, snapBest } = await bestPlacementBySnapMatch(
     contour,
     preset,
-    { precomputedRanked: ranked },
+    { precomputedRanked: ranked, anchorSource: options.anchorSource },
   );
 
   if (chosen) {

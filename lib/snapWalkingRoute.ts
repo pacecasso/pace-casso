@@ -1,6 +1,19 @@
 import { MAPBOX_PUBLIC_TOKEN } from "./mapboxToken";
-import { simplifyAnchorPathForSnap } from "./simplifyAnchorPathForSnap";
+import {
+  simplifyAnchorPathForSnap,
+  type AnchorPathSource,
+} from "./simplifyAnchorPathForSnap";
 import type { RouteLineString } from "./routeTypes";
+
+export type { AnchorPathSource };
+
+export type SnapWalkingRouteOptions = {
+  /**
+   * Photo traces (`image`) use mild anchor reduction for mid-sized contours so Mapbox
+   * gets fewer legs; freehand stick letters stay unchanged when sparse.
+   */
+  anchorSource?: AnchorPathSource;
+};
 
 type MapboxRouteSegment = {
   coordinates: [number, number][];
@@ -453,7 +466,8 @@ function fallbackWaypointsFromLine(
   return dedupeWaypoints(out, 1);
 }
 
-const CHUNK_SIZE = 20;
+export const SNAP_WALKING_CHUNK_SIZE = 20;
+const CHUNK_SIZE = SNAP_WALKING_CHUNK_SIZE;
 
 /** If chunk geometries don’t meet, Leaflet draws a chord through blocks — bridge with a 2-point walking request. */
 const CHUNK_JOIN_GAP_BRIDGE_M = 28;
@@ -475,7 +489,7 @@ async function fetchWalkingBridge(
   to: [number, number],
 ): Promise<{ coordinates: [number, number][]; distance: number }> {
   const coordString = `${from[1]},${from[0]};${to[1]},${to[0]}`;
-  const url = `https://api.mapbox.com/directions/v5/mapbox/walking/${coordString}?geometries=geojson&overview=full&steps=false&access_token=${MAPBOX_PUBLIC_TOKEN}`;
+  const url = `https://api.mapbox.com/directions/v5/mapbox/walking/${coordString}?geometries=geojson&overview=full&steps=false&alternatives=false&access_token=${MAPBOX_PUBLIC_TOKEN}`;
   const res = await fetch(url);
   if (!res.ok) {
     const text = await res.text();
@@ -537,6 +551,7 @@ async function stitchSegmentGeometries(
 
 async function snapOneContinuousPolyline(
   anchorLatLngs: [number, number][],
+  anchorSource: AnchorPathSource | undefined,
 ): Promise<{
   stitched: [number, number][];
   totalDist: number;
@@ -546,7 +561,9 @@ async function snapOneContinuousPolyline(
     throw new Error("Not enough points to snap to streets.");
   }
 
-  let coords = simplifyAnchorPathForSnap(anchorLatLngs);
+  let coords = simplifyAnchorPathForSnap(anchorLatLngs, {
+    sourceKind: anchorSource ?? "default",
+  });
   if (coords.length < 2) coords = anchorLatLngs;
   const segments: MapboxRouteSegment[] = [];
   const routePayloads: MapboxDirectionsRoute[] = [];
@@ -556,7 +573,7 @@ async function snapOneContinuousPolyline(
     if (chunk.length < 2) break;
 
     const coordString = chunk.map(([lat, lng]) => `${lng},${lat}`).join(";");
-    const url = `https://api.mapbox.com/directions/v5/mapbox/walking/${coordString}?geometries=geojson&overview=full&steps=true&access_token=${MAPBOX_PUBLIC_TOKEN}`;
+    const url = `https://api.mapbox.com/directions/v5/mapbox/walking/${coordString}?geometries=geojson&overview=full&steps=true&alternatives=false&access_token=${MAPBOX_PUBLIC_TOKEN}`;
 
     const res = await fetch(url);
     if (!res.ok) {
@@ -665,14 +682,47 @@ function finalizeBlockWaypoints(
   };
 }
 
+/**
+ * Pure summary of how anchors will be simplified and chunked for Mapbox (no network).
+ * Use in tests and debugging (waypoint budget, segment count).
+ */
+export function describeSnapRoutingPlan(
+  anchorLatLngs: [number, number][],
+  options?: SnapWalkingRouteOptions,
+): {
+  simplifiedVertexCount: number;
+  mapboxChunkCount: number;
+  /** Waypoints per Directions request (incl. endpoints), except the last chunk may be shorter. */
+  chunkWaypointCap: number;
+} {
+  const simplified = simplifyAnchorPathForSnap(anchorLatLngs, {
+    sourceKind: options?.anchorSource ?? "default",
+  });
+  const coords =
+    simplified.length >= 2 ? simplified : anchorLatLngs;
+  const n = coords.length;
+  let chunks = 0;
+  for (let i = 0; i < n - 1; i += CHUNK_SIZE - 1) {
+    chunks++;
+  }
+  return {
+    simplifiedVertexCount: n,
+    mapboxChunkCount: chunks,
+    chunkWaypointCap: CHUNK_SIZE,
+  };
+}
+
 const SNAP_CACHE_MAX = 32;
 const snapCache = new Map<string, Promise<RouteLineString>>();
 
-function snapCacheKey(coords: [number, number][]): string {
+function snapCacheKey(
+  coords: [number, number][],
+  anchorSource: AnchorPathSource | undefined,
+): string {
   const n = coords.length;
   const head = Math.min(24, n);
   const tail = Math.min(24, Math.max(0, n - 24));
-  const parts: number[] = [n];
+  const parts: number[] = [n, anchorSource === undefined ? 0 : anchorSource === "image" ? 1 : anchorSource === "freehand" ? 2 : 3];
   for (let i = 0; i < head; i++) {
     parts.push(
       Math.round(coords[i][0] * 1e5),
@@ -695,12 +745,13 @@ function snapCacheKey(coords: [number, number][]): string {
  */
 export async function snapWalkingRoute(
   anchorLatLngs: [number, number][],
+  options?: SnapWalkingRouteOptions,
 ): Promise<RouteLineString> {
   if (anchorLatLngs.length < 2) {
     throw new Error("Not enough points to snap to streets.");
   }
 
-  const key = snapCacheKey(anchorLatLngs);
+  const key = snapCacheKey(anchorLatLngs, options?.anchorSource);
   const existing = snapCache.get(key);
   if (existing) return existing;
 
@@ -711,7 +762,10 @@ export async function snapWalkingRoute(
   }
 
   const promise = (async () => {
-    const one = await snapOneContinuousPolyline(anchorLatLngs);
+    const one = await snapOneContinuousPolyline(
+      anchorLatLngs,
+      options?.anchorSource,
+    );
     return finalizeBlockWaypoints(
       one.stitched,
       one.totalDist,

@@ -69,7 +69,10 @@ export default function StepSourceChoice({
           const r = await bestPlacementBySnapMatch(
             t.contour as ContourPoint[],
             cityPreset,
-            { maxSnapTries: AREA_TEMPLATE_SNAP_MAX_TRIES },
+            {
+              maxSnapTries: AREA_TEMPLATE_SNAP_MAX_TRIES,
+              anchorSource: "image",
+            },
           );
           if (cancelled) return;
           setTemplateSnap((prev) => ({

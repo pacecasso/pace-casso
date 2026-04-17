@@ -43,12 +43,54 @@ const CLOSED_LOOP_END_M = 45;
 /** Above this, treat as dense (e.g. freehand) and run DP; stick letters stay ≤ ~25 verts. */
 const SPARSE_VERTEX_CAP = 56;
 
+/**
+ * Reserved for callers (`snapWalkingRoute`, auto-find) so options stay aligned if we
+ * ever add source-specific rules again. **Currently unused:** mid-sized photo traces
+ * (≤56 verts) must stay unsimplified so Mapbox keeps silhouette corners for gestalt.
+ */
+export type AnchorPathSource = "default" | "image" | "freehand";
+
+function turfDpSimplify(
+  work: [number, number][],
+  closed: boolean,
+  toleranceDeg: number,
+): [number, number][] {
+  if (work.length < 2) return work;
+  const line = turf.lineString(
+    work.map(([lat, lng]) => [lng, lat] as [number, number]),
+  );
+  let simplified: GeoJSON.Feature<GeoJSON.LineString>;
+  try {
+    simplified = turf.simplify(line, {
+      tolerance: toleranceDeg,
+      highQuality: true,
+    }) as GeoJSON.Feature<GeoJSON.LineString>;
+  } catch {
+    return work;
+  }
+
+  const ring = simplified.geometry?.coordinates;
+  if (!ring || ring.length < 2) return work;
+
+  let out = ring.map(([lng, lat]) => [lat, lng] as [number, number]);
+
+  if (closed && out.length >= 2) {
+    const f = out[0]!;
+    const l = out[out.length - 1]!;
+    if (haversineMeters(f, l) > 18) {
+      out = [...out, f];
+    }
+  }
+
+  return out.length >= 2 ? out : work;
+}
+
 export function simplifyAnchorPathForSnap(
   coords: [number, number][],
+  _opts?: { sourceKind?: AnchorPathSource },
 ): [number, number][] {
   if (coords.length < 2) return coords;
 
-  // Per-stroke stick letters and other sparse shapes: Turf simplify removes corners and ruins glyphs.
   if (coords.length <= SPARSE_VERTEX_CAP) {
     return coords;
   }
@@ -73,38 +115,12 @@ export function simplifyAnchorPathForSnap(
   if (work.length < 2) return pts;
   if (work.length <= 6) return pts;
 
-  const line = turf.lineString(
-    work.map(([lat, lng]) => [lng, lat] as [number, number]),
-  );
-
-  // Degrees tolerance (~25–45 m at NYC lat); stronger when input is very dense (e.g. freehand).
   const n = work.length;
-  let toleranceDeg =
+  const toleranceDeg =
     n > 100 ? 0.00042 : n > 50 ? 0.00032 : n > 20 ? 0.00022 : 0.00014;
-  if (closed) toleranceDeg *= 0.42;
+  const tol = closed ? toleranceDeg * 0.42 : toleranceDeg;
 
-  let simplified: GeoJSON.Feature<GeoJSON.LineString>;
-  try {
-    simplified = turf.simplify(line, {
-      tolerance: toleranceDeg,
-      highQuality: true,
-    }) as GeoJSON.Feature<GeoJSON.LineString>;
-  } catch {
-    return pts;
-  }
-
-  const ring = simplified.geometry?.coordinates;
-  if (!ring || ring.length < 2) return pts;
-
-  let out = ring.map(([lng, lat]) => [lat, lng] as [number, number]);
-
-  if (closed && out.length >= 2) {
-    const f = out[0]!;
-    const l = out[out.length - 1]!;
-    if (haversineMeters(f, l) > 18) {
-      out = [...out, f];
-    }
-  }
+  const out = turfDpSimplify(work, closed, tol);
 
   return out.length >= 2 ? out : pts;
 }

@@ -67,6 +67,7 @@ export default function Step2MapAnchor({
     try {
       const r = await autoFindPlacement(contour, cityPreset, {
         useSnapRefine: true,
+        anchorSource: "image",
       });
       setCenter([...r.placement.center] as [number, number]);
       setRotationDeg(Math.round(r.placement.rotationDeg));
