@@ -1,0 +1,10 @@
+Restore PaceCasso to the commit BEFORE interpretation-style scoring (if you want to undo later):
+
+  git checkout checkpoint/pre-interpretation-score -b restore-from-checkpoint
+
+Or reset current branch (destructive):
+
+  git reset --hard checkpoint/pre-interpretation-score
+
+The baseline was saved as commit + tag "checkpoint/pre-interpretation-score"
+and branch "checkpoint/pre-interpretation-baseline" at the same commit.

@@ -164,7 +164,7 @@ export default function StepSourceChoice({
           </p>
           <p className="mt-1.5 font-dm text-[10px] leading-snug text-pace-muted sm:text-[11px]">
             For this city we snap-test each starter (top {AREA_TEMPLATE_SNAP_MAX_TRIES}{" "}
-            placements). A &quot;street-ready&quot; tag means shape match reached ≥
+            placements). &quot;Street-ready&quot; means interpretation score ≥
             {MIN_SNAP_MATCH_PERCENT_TO_ADOPT}%—same bar as auto-find on the map.
           </p>
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-2.5">
@@ -184,7 +184,7 @@ export default function StepSourceChoice({
                     }
                   >
                     {row.meetsThreshold
-                      ? `Street-ready (≥${MIN_SNAP_MATCH_PERCENT_TO_ADOPT}% match)`
+                      ? `Street-ready (≥${MIN_SNAP_MATCH_PERCENT_TO_ADOPT}% interpretation)`
                       : row.bestPercent != null
                         ? `Best preview ~${Math.round(row.bestPercent)}% here—use auto-find on the map to try more placements.`
                         : "Could not preview against streets—still fine to place by hand."}

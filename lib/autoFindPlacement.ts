@@ -8,7 +8,7 @@ import {
   type ContourPoint,
   type PlacementTransform,
 } from "./placementFromContour";
-import { shapeAccuracyPercent } from "./shapeMatchScore";
+import { interpretationMatchPercent } from "./shapeMatchScore";
 import { simplifyAnchorPathForSnap } from "./simplifyAnchorPathForSnap";
 import { snapWalkingRoute } from "./snapWalkingRoute";
 
@@ -18,10 +18,11 @@ const DIST_WEIGHT = 2.2;
 const GRID_ALIGN_WEIGHT = 0.35;
 
 /**
- * Minimum `shapeAccuracyPercent` (0–100) to adopt a snap-backed placement.
- * Below this we keep the geometry-only heuristic so weak street fits don’t win.
+ * Minimum **interpretation** match (0–100) to label a snap-backed auto-find as
+ * “street-backed.” Uses {@link interpretationMatchPercent} (gestalt-friendly),
+ * not raw point-to-line tight fit.
  */
-export const MIN_SNAP_MATCH_PERCENT_TO_ADOPT = 42;
+export const MIN_SNAP_MATCH_PERCENT_TO_ADOPT = 50;
 
 const SNAP_RETRY_DELAY_MS = 85;
 /**
@@ -301,7 +302,7 @@ export async function snapMatchPercentForPlacement(
     const route = await snapWalkingRoute(anchors);
     const coords = route.coordinates as [number, number][];
     if (coords.length < 2) return null;
-    return shapeAccuracyPercent(anchors, coords);
+    return interpretationMatchPercent(anchors, coords);
   } catch {
     return null;
   }

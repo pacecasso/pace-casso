@@ -73,10 +73,10 @@ export default function Step2MapAnchor({
       setScale(Math.round(r.placement.scale * 10) / 10);
       setAutoHint(
         r.usedSnapRefine && r.snapScore != null
-          ? `Street-backed fit (shape match ≈ ${r.snapScore}%).`
+          ? `Street-backed fit (interpretation ≈ ${r.snapScore}%).`
           : r.bestSnapAttemptPercent != null &&
               r.bestSnapAttemptPercent < MIN_SNAP_MATCH_PERCENT_TO_ADOPT
-            ? `Snap search peaked at ≈${r.bestSnapAttemptPercent}% (≥${MIN_SNAP_MATCH_PERCENT_TO_ADOPT}% counts as street-backed). Applied that best preview — nudge if you want more.`
+            ? `Snap search peaked at ≈${r.bestSnapAttemptPercent}% interpretation (≥${MIN_SNAP_MATCH_PERCENT_TO_ADOPT}% = street-backed label). Applied that best preview — nudge if you want more.`
             : "Applied geometry-only fit inside this area (no street preview).",
       );
       window.setTimeout(() => setAutoHint(null), 5200);
@@ -184,7 +184,7 @@ export default function Step2MapAnchor({
               <p className="text-[10px] leading-snug text-pace-muted">
                 Tries several centers, scales, and rotations, snap-tests up to{" "}
                 {MAX_SNAP_TRIES} of them, then locally nudges the best hit to raise
-                match. “Street-backed” label if shape match is ≥
+                interpretation score (GPS-art style). “Street-backed” if ≥
                 {MIN_SNAP_MATCH_PERCENT_TO_ADOPT}%.
               </p>
             )}

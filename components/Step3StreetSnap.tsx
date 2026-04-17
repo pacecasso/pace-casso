@@ -4,7 +4,10 @@ import dynamic from "next/dynamic";
 import type { LatLngExpression } from "leaflet";
 import { useEffect, useMemo, useState } from "react";
 import { OSM_TILE_ATTRIBUTION, OSM_TILE_URL } from "../lib/mapAttribution";
-import { shapeAccuracyPercent } from "../lib/shapeMatchScore";
+import {
+  interpretationMatchPercent,
+  shapeAccuracyPercent,
+} from "../lib/shapeMatchScore";
 import { snapWalkingRoute } from "../lib/snapWalkingRoute";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
 import MapChunkFallback from "./MapChunkFallback";
@@ -127,17 +130,24 @@ export default function Step3StreetSnap({
     return c.map(([lat, lng]) => [lat, lng] as [number, number]);
   }, [route?.coordinates]);
 
-  const snapMatchPercent = useMemo(() => {
+  const interpretationPct = useMemo(() => {
+    if (outlineForMatch.length < 2 || streetForMatch.length < 2) return null;
+    return interpretationMatchPercent(outlineForMatch, streetForMatch);
+  }, [outlineForMatch, streetForMatch]);
+
+  const tightFitPct = useMemo(() => {
     if (outlineForMatch.length < 2 || streetForMatch.length < 2) return null;
     return shapeAccuracyPercent(outlineForMatch, streetForMatch);
   }, [outlineForMatch, streetForMatch]);
 
   const matchMeterLabel =
-    routeSource === "freehand" ? "Match to sketch" : "Match to art";
-  const matchMeterTitle =
     routeSource === "freehand"
-      ? "How closely the snapped walking route follows your freehand path."
-      : "How closely the snapped walking route follows your placed outline.";
+      ? "Interpretation (sketch)"
+      : "Interpretation (your art)";
+  const matchMeterTitle =
+    "GPS-art style score: multi-scale silhouette, forgiving of grid stair-steps.";
+  const tightTitle =
+    "Strict mean distance between outline and route (often lower on real streets).";
 
   return (
     <MapStepSplitLayout
@@ -159,9 +169,12 @@ export default function Step3StreetSnap({
           <div className="mt-4 border-t border-pace-line pt-4">
             <ShapeMatchMeter
               label={matchMeterLabel}
-              percent={snapMatchPercent}
+              percent={interpretationPct}
               pendingText={snapping ? "…" : "—"}
               title={matchMeterTitle}
+              secondaryPercent={interpretationPct != null ? tightFitPct : null}
+              secondaryLabel="Tight fit"
+              secondaryTitle={tightTitle}
             />
           </div>
 

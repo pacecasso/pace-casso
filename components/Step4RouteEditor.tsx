@@ -3,7 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import * as turf from "@turf/turf";
-import { shapeAccuracyPercent } from "../lib/shapeMatchScore";
+import {
+  interpretationMatchPercent,
+  shapeAccuracyPercent,
+} from "../lib/shapeMatchScore";
 import type { Map as LeafletMap } from "leaflet";
 import type { AnchorLocation, RouteLineString } from "./WorkflowController";
 import { MAPBOX_PUBLIC_TOKEN } from "../lib/mapboxToken";
@@ -524,17 +527,24 @@ export default function Step4RouteEditor({
     [anchorLocation?.anchorLatLngs],
   );
 
-  const routeMatchPct = useMemo(
+  const routeInterpretationPct = useMemo(
+    () => interpretationMatchPercent(originalArt, streetLine),
+    [originalArt, streetLine],
+  );
+
+  const routeTightFitPct = useMemo(
     () => shapeAccuracyPercent(originalArt, streetLine),
     [originalArt, streetLine],
   );
 
   const matchMeterLabel =
-    routeSource === "freehand" ? "Match to sketch" : "Match to art";
-  const matchMeterTitle =
     routeSource === "freehand"
-      ? "How closely your edited street route follows the freehand path you drew."
-      : "How closely the street route follows your placed outline (initial full snap).";
+      ? "Interpretation (sketch)"
+      : "Interpretation (your art)";
+  const matchMeterTitle =
+    "GPS-art style score on the initial full snap: silhouette, not pixel tracing.";
+  const tightMeterTitle =
+    "Strict mean distance between outline and route (often lower on real streets).";
 
   /**
    * Geometry used only for FitRouteBounds — must not depend on showOriginalArt
@@ -1046,8 +1056,8 @@ export default function Step4RouteEditor({
                 </>
               ) : (
                 <>
-                  The shape match meter compares your sketch to the street
-                  route. Toggle dots off for a clean preview.
+                  Interpretation rewards the overall street read (like grid GPS
+                  art); tight fit is stricter. Toggle dots off for a clean preview.
                 </>
               )}
               {spurBusy ? (
@@ -1180,14 +1190,17 @@ export default function Step4RouteEditor({
                 </p>
               ) : (
                 <p className="font-dm text-[10px] leading-snug text-pace-muted">
-                  The meter scores your freehand sketch against the initial
-                  snapped walking route (same idea as photo traces).
+                  Same idea as photo traces: we care how the route reads at
+                  city scale, not every corner hugging the sketch.
                 </p>
               )}
               <ShapeMatchMeter
                 label={matchMeterLabel}
-                percent={routeMatchPct}
+                percent={routeInterpretationPct}
                 title={matchMeterTitle}
+                secondaryPercent={routeTightFitPct}
+                secondaryLabel="Tight fit"
+                secondaryTitle={tightMeterTitle}
               />
             </div>
 
