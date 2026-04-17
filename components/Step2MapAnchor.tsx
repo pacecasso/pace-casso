@@ -182,9 +182,9 @@ export default function Step2MapAnchor({
               <p className="text-[10px] leading-snug text-pace-muted">{autoHint}</p>
             ) : (
               <p className="text-[10px] leading-snug text-pace-muted">
-                Searches a grid of centers and scales, adds rotations aligned to your
-                outline and the city grid (PCA), snap-tests up to {MAX_SNAP_TRIES}{" "}
-                picks, refines the best, then hill-climbs. “Street-backed” if ≥
+                Search favors compact routes, breathing room inside the city box, and
+                grid-aligned rotations (PCA), then snap-tests up to {MAX_SNAP_TRIES}{" "}
+                picks and hill-climbs. “Street-backed” if ≥
                 {MIN_SNAP_MATCH_PERCENT_TO_ADOPT}% interpretation.
               </p>
             )}

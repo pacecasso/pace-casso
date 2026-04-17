@@ -17,6 +17,18 @@ const IDEAL_DISTANCE_KM = 9;
 const DIST_WEIGHT = 2.2;
 const GRID_ALIGN_WEIGHT = 0.35;
 
+/** Extra penalty when outline perimeter (approx route length) is very long — discourages “bloated” scales. */
+const LONG_ROUTE_THRESHOLD_KM = 12;
+const LONG_ROUTE_EXTRA_WEIGHT = 1.15;
+
+/** Reward placements whose footprint sits away from searchBounds edges (room to breathe). */
+const BBOX_MARGIN_BONUS_MAX = 3.2;
+const BBOX_MARGIN_BONUS_SCALE = 2.4;
+
+/** Penalize extremely elongated footprints (thin slivers). */
+const ASPECT_RATIO_SOFT_MAX = 6;
+const ASPECT_RATIO_PENALTY_WEIGHT = 0.38;
+
 /**
  * Minimum **interpretation** match (0–100) to label a snap-backed auto-find as
  * “street-backed.” Uses {@link interpretationMatchPercent} (gestalt-friendly),
@@ -178,6 +190,53 @@ function gridAlignmentBonus(rotationDeg: number, preset: CityPreset): number {
   return Math.max(0, 22 - best);
 }
 
+export type AnchorFootprintMetrics = {
+  widthM: number;
+  heightM: number;
+  /** Shortest gap from axis-aligned bbox to inner searchBounds (km). */
+  minEdgeMarginKm: number;
+  /** max(w,h)/min(w,h) in meters. */
+  aspectRatio: number;
+};
+
+/**
+ * Footprint of placed anchors and breathing room inside the city search box.
+ * Used to prefer compact, well-centered layouts (closer to typical manual tweaks).
+ */
+export function anchorFootprintMetrics(
+  anchorLatLngs: [number, number][],
+  preset: CityPreset,
+): AnchorFootprintMetrics | null {
+  if (anchorLatLngs.length < 2) return null;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+  for (const [lat, lng] of anchorLatLngs) {
+    minLat = Math.min(minLat, lat);
+    maxLat = Math.max(maxLat, lat);
+    minLng = Math.min(minLng, lng);
+    maxLng = Math.max(maxLng, lng);
+  }
+  const latMid = (minLat + maxLat) / 2;
+  const mPerLat = 111_320;
+  const mPerLng = 111_320 * Math.cos((latMid * Math.PI) / 180);
+  const widthM = Math.max((maxLng - minLng) * mPerLng, 1);
+  const heightM = Math.max((maxLat - minLat) * mPerLat, 1);
+  const aspectRatio = Math.max(widthM, heightM) / Math.min(widthM, heightM);
+  const b = preset.searchBounds;
+  const innerS = b.south + MARGIN;
+  const innerN = b.north - MARGIN;
+  const innerW = b.west + MARGIN;
+  const innerE = b.east - MARGIN;
+  const mSouth = ((minLat - innerS) * mPerLat) / 1000;
+  const mNorth = ((innerN - maxLat) * mPerLat) / 1000;
+  const mWest = ((minLng - innerW) * mPerLng) / 1000;
+  const mEast = ((innerE - maxLng) * mPerLng) / 1000;
+  const minEdgeMarginKm = Math.min(mSouth, mNorth, mWest, mEast);
+  return { widthM, heightM, minEdgeMarginKm, aspectRatio };
+}
+
 /**
  * Higher is better. Returns -Infinity if anchors leave city bounds.
  */
@@ -194,10 +253,38 @@ export function scorePlacementHeuristic(
   if (!anchorsInsideBounds(anchorLatLngs, preset.searchBounds)) {
     return -Infinity;
   }
-  const distPen =
+  const baseDistPen =
     DIST_WEIGHT * Math.abs(approxDistanceKm - IDEAL_DISTANCE_KM) ** 1.15;
+  const longBloatPen =
+    approxDistanceKm > LONG_ROUTE_THRESHOLD_KM
+      ? LONG_ROUTE_EXTRA_WEIGHT *
+        (approxDistanceKm - LONG_ROUTE_THRESHOLD_KM) ** 1.35
+      : 0;
+
+  const fp = anchorFootprintMetrics(anchorLatLngs, preset);
+  let marginBonus = 0;
+  let aspectPen = 0;
+  if (fp) {
+    marginBonus = Math.min(
+      BBOX_MARGIN_BONUS_MAX,
+      BBOX_MARGIN_BONUS_SCALE * Math.max(0, fp.minEdgeMarginKm),
+    );
+    if (fp.aspectRatio > ASPECT_RATIO_SOFT_MAX) {
+      aspectPen =
+        ASPECT_RATIO_PENALTY_WEIGHT *
+        (fp.aspectRatio - ASPECT_RATIO_SOFT_MAX) ** 1.05;
+    }
+  }
+
   const grid = GRID_ALIGN_WEIGHT * gridAlignmentBonus(t.rotationDeg, preset);
-  return 200 - distPen + grid;
+  return (
+    200 -
+    baseDistPen -
+    longBloatPen -
+    aspectPen +
+    marginBonus +
+    grid
+  );
 }
 
 export function enumeratePlacementCandidates(
