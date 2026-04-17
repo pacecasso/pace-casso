@@ -1,8 +1,12 @@
-import { MAPBOX_PUBLIC_TOKEN } from "./mapboxToken";
+import {
+  fetchMapboxWalkingDirectionsJson,
+  fetchMapboxWalkingMatchingJson,
+} from "./mapboxClient";
 import {
   simplifyAnchorPathForSnap,
   type AnchorPathSource,
 } from "./simplifyAnchorPathForSnap";
+import { interpretationMatchPercent } from "./shapeMatchScore";
 import type { RouteLineString } from "./routeTypes";
 
 export type { AnchorPathSource };
@@ -469,8 +473,76 @@ function fallbackWaypointsFromLine(
 export const SNAP_WALKING_CHUNK_SIZE = 20;
 const CHUNK_SIZE = SNAP_WALKING_CHUNK_SIZE;
 
+/**
+ * Extra shared anchor vertices between consecutive Directions chunks so each
+ * request sees local context; stitch trims overlap using nearest join.
+ */
+export const SNAP_WALKING_CHUNK_OVERLAP = 3;
+
+const CHUNK_STRIDE = Math.max(
+  2,
+  CHUNK_SIZE - 1 - SNAP_WALKING_CHUNK_OVERLAP,
+);
+
 /** If chunk geometries don’t meet, Leaflet draws a chord through blocks — bridge with a 2-point walking request. */
 const CHUNK_JOIN_GAP_BRIDGE_M = 28;
+
+const MATCH_TRACE_MAX_POINTS = 100;
+
+/** Resample a lat/lng polyline to N points spaced by arc length (for Map Matching). */
+function resamplePolylineToNPointsAlongArc(
+  line: [number, number][],
+  n: number,
+): [number, number][] {
+  if (line.length < 2 || n < 2) return line.slice() as [number, number][];
+  const segs = buildNonDegenerateSegments(line);
+  if (!segs.length) return [line[0]!];
+  const total = segs.reduce((s, g) => s + g.len, 0);
+  if (total < 0.5) return [line[0]!, line[line.length - 1]!];
+  const out: [number, number][] = [];
+  for (let k = 0; k < n; k++) {
+    const s = (k / (n - 1)) * total;
+    out.push(pointAtArcLengthClamped(line, s));
+  }
+  return dedupeWaypoints(out, 1);
+}
+
+function dedupeConsecutiveCoords(
+  coords: [number, number][],
+): [number, number][] {
+  const out: [number, number][] = [];
+  for (const p of coords) {
+    const prev = out[out.length - 1];
+    if (prev && haversineMeters(prev, p) < 0.35) continue;
+    out.push(p);
+  }
+  return out.length >= 2 ? out : coords;
+}
+
+/**
+ * After overlapping Directions chunks, drop the start of the next segment where
+ * it best aligns with the already-stitched end (reduces duplicate geometry / bridges).
+ */
+function trimOverlapPrefixFromNextSegment(
+  stitchedEnd: [number, number],
+  nextSegmentCoords: [number, number][],
+): [number, number][] {
+  if (nextSegmentCoords.length < 2) return nextSegmentCoords;
+  const searchLimit = Math.min(
+    nextSegmentCoords.length - 1,
+    Math.max(2, Math.ceil(nextSegmentCoords.length * 0.42)),
+  );
+  let bestIdx = 0;
+  let bestD = haversineMeters(stitchedEnd, nextSegmentCoords[0]!);
+  for (let i = 1; i <= searchLimit; i++) {
+    const d = haversineMeters(stitchedEnd, nextSegmentCoords[i]!);
+    if (d < bestD) {
+      bestD = d;
+      bestIdx = i;
+    }
+  }
+  return nextSegmentCoords.slice(bestIdx);
+}
 
 function appendDedupedStitch(
   target: [number, number][],
@@ -488,14 +560,11 @@ async function fetchWalkingBridge(
   from: [number, number],
   to: [number, number],
 ): Promise<{ coordinates: [number, number][]; distance: number }> {
-  const coordString = `${from[1]},${from[0]};${to[1]},${to[0]}`;
-  const url = `https://api.mapbox.com/directions/v5/mapbox/walking/${coordString}?geometries=geojson&overview=full&steps=false&alternatives=false&access_token=${MAPBOX_PUBLIC_TOKEN}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Mapbox bridge (${res.status}): ${text || res.statusText}`);
-  }
-  const data = await res.json();
+  const data = (await fetchMapboxWalkingDirectionsJson({
+    coordinates: [from, to],
+    steps: false,
+    overview: "full",
+  })) as { routes?: MapboxDirectionsRoute[] };
   if (!data.routes?.length) {
     throw new Error("Mapbox bridge: no route");
   }
@@ -527,12 +596,20 @@ async function stitchSegmentGeometries(
       continue;
     }
 
-    const prev = stitched[stitched.length - 1];
-    const first = coordsSeg[0];
+    const trimmed =
+      idx > 0
+        ? trimOverlapPrefixFromNextSegment(
+            stitched[stitched.length - 1]!,
+            coordsSeg,
+          )
+        : coordsSeg;
+
+    const prev = stitched[stitched.length - 1]!;
+    const first = trimmed[0]!;
     const gap = haversineMeters(prev, first);
 
     if (gap <= CHUNK_JOIN_GAP_BRIDGE_M) {
-      appendDedupedStitch(stitched, coordsSeg);
+      appendDedupedStitch(stitched, trimmed);
       continue;
     }
 
@@ -540,9 +617,9 @@ async function stitchSegmentGeometries(
       const bridge = await fetchWalkingBridge(prev, first);
       extraDist += bridge.distance;
       appendDedupedStitch(stitched, bridge.coordinates);
-      appendDedupedStitch(stitched, coordsSeg);
+      appendDedupedStitch(stitched, trimmed);
     } catch {
-      appendDedupedStitch(stitched, coordsSeg);
+      appendDedupedStitch(stitched, trimmed);
     }
   }
 
@@ -568,20 +645,15 @@ async function snapOneContinuousPolyline(
   const segments: MapboxRouteSegment[] = [];
   const routePayloads: MapboxDirectionsRoute[] = [];
 
-  for (let i = 0; i < coords.length - 1; i += CHUNK_SIZE - 1) {
+  for (let i = 0; i < coords.length - 1; i += CHUNK_STRIDE) {
     const chunk = coords.slice(i, i + CHUNK_SIZE);
     if (chunk.length < 2) break;
 
-    const coordString = chunk.map(([lat, lng]) => `${lng},${lat}`).join(";");
-    const url = `https://api.mapbox.com/directions/v5/mapbox/walking/${coordString}?geometries=geojson&overview=full&steps=true&alternatives=false&access_token=${MAPBOX_PUBLIC_TOKEN}`;
-
-    const res = await fetch(url);
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Mapbox error (${res.status}): ${text || res.statusText}`);
-    }
-
-    const data = await res.json();
+    const data = (await fetchMapboxWalkingDirectionsJson({
+      coordinates: chunk,
+      steps: true,
+      overview: "full",
+    })) as { routes?: MapboxDirectionsRoute[] };
     if (!data.routes?.length) {
       throw new Error("Mapbox did not return any routes for a segment.");
     }
@@ -683,6 +755,74 @@ function finalizeBlockWaypoints(
 }
 
 /**
+ * Optional Mapbox Map Matching pass on a subsampled user trace: improves gestalt fit
+ * vs Directions-only “via waypoint” routing when the matcher finds a confident trace.
+ */
+async function maybeRefineSnappedRouteWithMapMatching(
+  userAnchors: [number, number][],
+  packaged: RouteLineString,
+): Promise<RouteLineString> {
+  const stitched = packaged.coordinates;
+  if (stitched.length < 2 || userAnchors.length < 2) return packaged;
+
+  const targetN = Math.min(
+    MATCH_TRACE_MAX_POINTS,
+    Math.max(8, Math.min(userAnchors.length, MATCH_TRACE_MAX_POINTS)),
+  );
+  const trace = dedupeConsecutiveCoords(
+    resamplePolylineToNPointsAlongArc(userAnchors, targetN),
+  );
+  if (trace.length < 2) return packaged;
+
+  let data: unknown;
+  try {
+    data = await fetchMapboxWalkingMatchingJson({
+      coordinates: trace,
+      tidy: false,
+      radiusMeters: 30,
+    });
+  } catch {
+    return packaged;
+  }
+
+  type MatchGeom = {
+    matchings?: {
+      confidence?: number;
+      geometry?: { coordinates?: [number, number][] };
+      distance?: number;
+    }[];
+  };
+  const matchings = (data as MatchGeom).matchings;
+  const m0 = matchings?.[0];
+  const rawCoords = m0?.geometry?.coordinates;
+  if (!m0 || !rawCoords?.length) return packaged;
+
+  const matched: [number, number][] = rawCoords.map(([lng, lat]) => [
+    lat,
+    lng,
+  ]);
+  if (matched.length < 2) return packaged;
+
+  const conf = typeof m0.confidence === "number" ? m0.confidence : 0;
+  const interpDir = interpretationMatchPercent(userAnchors, stitched);
+  const interpMatch = interpretationMatchPercent(userAnchors, matched);
+
+  const distM =
+    typeof m0.distance === "number" && Number.isFinite(m0.distance)
+      ? m0.distance
+      : polylineLengthMeters(matched);
+
+  const adopt =
+    interpMatch >= interpDir + 2 ||
+    (interpMatch >= interpDir - 1 && conf >= 0.38) ||
+    (conf >= 0.55 && interpMatch >= 42);
+
+  if (!adopt) return packaged;
+
+  return finalizeBlockWaypoints(matched, distM, [], userAnchors);
+}
+
+/**
  * Pure summary of how anchors will be simplified and chunked for Mapbox (no network).
  * Use in tests and debugging (waypoint budget, segment count).
  */
@@ -694,6 +834,8 @@ export function describeSnapRoutingPlan(
   mapboxChunkCount: number;
   /** Waypoints per Directions request (incl. endpoints), except the last chunk may be shorter. */
   chunkWaypointCap: number;
+  chunkStride: number;
+  chunkOverlap: number;
 } {
   const simplified = simplifyAnchorPathForSnap(anchorLatLngs, {
     sourceKind: options?.anchorSource ?? "default",
@@ -702,13 +844,15 @@ export function describeSnapRoutingPlan(
     simplified.length >= 2 ? simplified : anchorLatLngs;
   const n = coords.length;
   let chunks = 0;
-  for (let i = 0; i < n - 1; i += CHUNK_SIZE - 1) {
+  for (let i = 0; i < n - 1; i += CHUNK_STRIDE) {
     chunks++;
   }
   return {
     simplifiedVertexCount: n,
     mapboxChunkCount: chunks,
     chunkWaypointCap: CHUNK_SIZE,
+    chunkStride: CHUNK_STRIDE,
+    chunkOverlap: SNAP_WALKING_CHUNK_OVERLAP,
   };
 }
 
@@ -766,12 +910,13 @@ export async function snapWalkingRoute(
       anchorLatLngs,
       options?.anchorSource,
     );
-    return finalizeBlockWaypoints(
+    const packaged = finalizeBlockWaypoints(
       one.stitched,
       one.totalDist,
       one.routePayloads,
       anchorLatLngs,
     );
+    return maybeRefineSnappedRouteWithMapMatching(anchorLatLngs, packaged);
   })();
 
   snapCache.set(key, promise);

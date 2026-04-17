@@ -1,4 +1,7 @@
-import { MAPBOX_PUBLIC_TOKEN } from "../lib/mapboxToken";
+import {
+  fetchMapboxReverseGeocodeJson,
+  fetchMapboxWalkingDirectionsJson,
+} from "../lib/mapboxClient";
 import {
   annotateOutAndBackSpurs,
   assignAlongRouteMeters,
@@ -345,11 +348,12 @@ async function fetchCuesForSlice(
   slice: [number, number][],
 ): Promise<WalkingCue[]> {
   if (slice.length < 2) return [];
-  const coordStr = slice.map(([lat, lng]) => `${lng},${lat}`).join(";");
-  const url = `https://api.mapbox.com/directions/v5/mapbox/walking/${coordStr}?geometries=geojson&steps=true&overview=false&language=en&access_token=${MAPBOX_PUBLIC_TOKEN}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Mapbox ${res.status}`);
-  const data = (await res.json()) as {
+  const data = (await fetchMapboxWalkingDirectionsJson({
+    coordinates: slice,
+    steps: true,
+    overview: "false",
+    language: "en",
+  })) as {
     routes?: {
       legs?: { steps?: MapboxStepParsed[] }[];
     }[];
@@ -432,16 +436,11 @@ async function reverseGeocodeStreetName(
   lng: number,
 ): Promise<string | null> {
   try {
-    const url = new URL(
-      `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json`,
-    );
-    url.searchParams.set("types", "address,street");
-    url.searchParams.set("language", "en");
-    url.searchParams.set("limit", "10");
-    url.searchParams.set("access_token", MAPBOX_PUBLIC_TOKEN);
-    const res = await fetch(url.toString());
-    if (!res.ok) return null;
-    const data = (await res.json()) as { features?: GeocodeFeature[] };
+    const data = (await fetchMapboxReverseGeocodeJson({
+      lat,
+      lng,
+      limit: 10,
+    })) as { features?: GeocodeFeature[] };
     for (const f of data.features ?? []) {
       const st = streetNameFromGeocodeFeature(f);
       if (st) return st;

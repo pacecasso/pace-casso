@@ -2,6 +2,7 @@ import assert from "node:assert";
 import { simplifyAnchorPathForSnap } from "./simplifyAnchorPathForSnap";
 import {
   describeSnapRoutingPlan,
+  SNAP_WALKING_CHUNK_OVERLAP,
   SNAP_WALKING_CHUNK_SIZE,
 } from "./snapWalkingRoute";
 
@@ -30,6 +31,11 @@ const denseOpenLine: [number, number][] = Array.from({ length: 45 }, (_, i) => [
     planImage.mapboxChunkCount,
     planDefault.mapboxChunkCount,
   );
+  assert.strictEqual(
+    planDefault.chunkStride,
+    SNAP_WALKING_CHUNK_SIZE - 1 - SNAP_WALKING_CHUNK_OVERLAP,
+  );
+  assert.strictEqual(planDefault.chunkOverlap, SNAP_WALKING_CHUNK_OVERLAP);
 }
 
 console.log("simplifyAnchorPathForSnap + describeSnapRoutingPlan tests ok");

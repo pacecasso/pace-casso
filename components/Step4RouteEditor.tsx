@@ -9,7 +9,7 @@ import {
 } from "../lib/shapeMatchScore";
 import type { Map as LeafletMap } from "leaflet";
 import type { AnchorLocation, RouteLineString } from "./WorkflowController";
-import { MAPBOX_PUBLIC_TOKEN } from "../lib/mapboxToken";
+import { fetchMapboxWalkingDirectionsJson } from "../lib/mapboxClient";
 import { simplifyPolylineToBendWaypoints } from "../lib/simplifyPolylineToBendWaypoints";
 import MapChunkFallback from "./MapChunkFallback";
 import MapStepSplitLayout from "./MapStepSplitLayout";
@@ -26,10 +26,11 @@ async function mapboxWalkingPolyline(
   from: Waypoint,
   to: Waypoint,
 ): Promise<Waypoint[]> {
-  const url = `https://api.mapbox.com/directions/v5/mapbox/walking/${from[1]},${from[0]};${to[1]},${to[0]}?geometries=geojson&overview=full&access_token=${MAPBOX_PUBLIC_TOKEN}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(String(res.status));
-  const data = (await res.json()) as {
+  const data = (await fetchMapboxWalkingDirectionsJson({
+    coordinates: [from, to],
+    steps: false,
+    overview: "full",
+  })) as {
     routes?: { geometry?: { coordinates?: [number, number][] } }[];
   };
   const coords = data.routes?.[0]?.geometry?.coordinates;

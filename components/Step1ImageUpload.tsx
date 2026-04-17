@@ -8,18 +8,11 @@ import {
   useRef,
   useState,
 } from "react";
-import * as d3 from "d3-contour";
-import * as turf from "@turf/turf";
-import {
-  medianMinDistBetweenRings,
-  stitchNestedHoleRingsInPlace,
-} from "../lib/contourRingStitch";
+import { filledSilhouetteToLineArtMask } from "../lib/filledSilhouetteToLineArtMask";
 import { fillLineMaskPrimaryPlusEnclosedHoles } from "../lib/inkMaskUnionEnclosed";
-import {
-  centerlinePolylineFromPreparedBinary,
-  prepareTracedBinaryMask,
-} from "../lib/centerlineFromMask";
-import { mooreContourRingsFromLineMask } from "../lib/mooreBoundaryFromMask";
+import { extractNormalizedContourFromLineMask } from "../lib/extractNormalizedContourFromLineMask";
+import { describeLineMaskHealth } from "../lib/lineMaskHealth";
+import type { PhotoContourWorkerResponse } from "../lib/photoContourWorkerMessages";
 
 export type NormalizedPoint = { x: number; y: number };
 
@@ -30,16 +23,8 @@ const LUM_SAMPLE_PX = BOX_SIZE * LUM_SAMPLE_SUPER;
 const DEFAULT_BRUSH = 6;
 const MAX_LINE_UNDO = 28;
 const DEFAULT_CONTOUR_LEVEL = 0.22;
-
-/** Prepared 0/1 mask → line-art raster values for Moore / d3. */
-function binaryPrepToLineMask(prep: Uint8Array, len: number): Uint8Array {
-  const m = new Uint8Array(len);
-  const n = Math.min(len, prep.length);
-  for (let i = 0; i < n; i++) {
-    if (prep[i]) m[i] = 255;
-  }
-  return m;
-}
+/** Photo trace → line mask: peel this many boundary layers so the canvas shows strokes, not a solid fill. */
+const PHOTO_LINE_ART_OUTLINE_LAYERS = 3;
 
 type UploadedImage = {
   url: string;
@@ -134,243 +119,6 @@ function buildLuminanceMinPool2x2(
   return lum;
 }
 
-/** Shoelace area (pixel²); prefers outer boundary over inner “double line” loops. */
-function ringAreaAbs(ring: [number, number][]): number {
-  const n = ring.length;
-  if (n < 3) return 0;
-  let a = 0;
-  for (let i = 0; i < n; i++) {
-    const [x1, y1] = ring[i];
-    const [x2, y2] = ring[(i + 1) % n];
-    a += x1 * y2 - x2 * y1;
-  }
-  return Math.abs(a / 2);
-}
-
-/** Ignore dust rings from contour noise (px²). Holes can be small—keep low. */
-const MIN_RING_AREA_PX2 = 8;
-const MAX_SHAPES_LISTED = 8;
-const MAX_RINGS_LISTED = 8;
-
-/**
- * d3-contour returns GeoJSON MultiPolygon: each entry is [outer, ...holes].
- * A letter like R is one polygon with two rings (outline + hole counter)—we
- * must stroke all of them when seeding line art, not only the largest ring.
- */
-function extractPolygonRingGroups(
-  field: Float32Array,
-  level: number,
-): [number, number][][][] {
-  const contourGenerator = d3.contours().size([BOX_SIZE, BOX_SIZE]);
-  const [contour] = contourGenerator.thresholds([level])(Array.from(field));
-  if (!contour) return [];
-
-  const groups: [number, number][][][] = [];
-  for (const multi of contour.coordinates) {
-    const rings: [number, number][][] = [];
-    for (const ring of multi) {
-      const r = ring as [number, number][];
-      const area = ringAreaAbs(r);
-      if (area < MIN_RING_AREA_PX2 || r.length < 4) continue;
-      rings.push(r);
-    }
-    if (rings.length) groups.push(rings);
-  }
-  groups.sort((a, b) => ringAreaAbs(b[0] ?? []) - ringAreaAbs(a[0] ?? []));
-  return groups.slice(0, MAX_SHAPES_LISTED);
-}
-
-/**
- * Flattened rings at this threshold (largest ring first). Used for the blurred
- * line mask → final contour step.
- */
-function extractAllRingsFromField(
-  field: Float32Array,
-  level: number,
-): [number, number][][] {
-  const groups = extractPolygonRingGroups(field, level);
-  const rings = groups.flat();
-  rings.sort((a, b) => ringAreaAbs(b) - ringAreaAbs(a));
-  return rings.slice(0, MAX_RINGS_LISTED);
-}
-
-function maskToFloatField(mask: Uint8Array): Float32Array {
-  const field = new Float32Array(mask.length);
-  for (let i = 0; i < mask.length; i++) {
-    field[i] = mask[i] / 255;
-  }
-  return field;
-}
-
-/** Ink pixels that touch background (true boundary of the line art). */
-function buildInkEdgeMap(mask: Uint8Array, w: number, h: number): Uint8Array {
-  const edge = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      if (mask[i] <= 127) continue;
-      const up = y > 0 ? mask[i - w] : 0;
-      const dn = y < h - 1 ? mask[i + w] : 0;
-      const lf = x > 0 ? mask[i - 1] : 0;
-      const rt = x < w - 1 ? mask[i + 1] : 0;
-      if (up <= 127 || dn <= 127 || lf <= 127 || rt <= 127) {
-        edge[i] = 1;
-      }
-    }
-  }
-  return edge;
-}
-
-function ringPolylineLength(ring: [number, number][]): number {
-  const n = ring.length;
-  if (n < 2) return 0;
-  let len = 0;
-  for (let i = 0; i < n; i++) {
-    const a = ring[i]!;
-    const b = ring[(i + 1) % n]!;
-    len += Math.hypot(b[0] - a[0], b[1] - a[1]);
-  }
-  return len;
-}
-
-function ringInkBoundaryScore(
-  edgeMap: Uint8Array,
-  ring: [number, number][],
-  w: number,
-  h: number,
-): number {
-  let hits = 0;
-  const step = Math.max(1, Math.floor(ring.length / 600));
-  for (let k = 0; k < ring.length; k += step) {
-    const xr = Math.round(ring[k]![0]);
-    const yr = Math.round(ring[k]![1]);
-    let seen = false;
-    for (let dy = -2; dy <= 2 && !seen; dy++) {
-      for (let dx = -2; dx <= 2; dx++) {
-        const x = xr + dx;
-        const y = yr + dy;
-        if (x < 0 || y < 0 || x >= w || y >= h) continue;
-        if (edgeMap[y * w + x] !== 0) {
-          seen = true;
-          break;
-        }
-      }
-    }
-    if (seen) hits++;
-  }
-  return hits;
-}
-
-/**
- * d3 iso-rings on a blurred field favor a smooth “outer shell” and can miss
- * narrow bridges. On the binary mask, re-rank rings so index 0 follows real
- * ink edges (bridges, inner loops) before area alone.
- */
-function sortContourRingsByInkEdges(
-  mask: Uint8Array,
-  rings: [number, number][][],
-  w: number,
-  h: number,
-): void {
-  if (rings.length < 2) return;
-  const edge = buildInkEdgeMap(mask, w, h);
-  const scored = rings.map((ring) => ({
-    ring,
-    s: ringInkBoundaryScore(edge, ring, w, h),
-    len: ringPolylineLength(ring),
-  }));
-  scored.sort((a, b) => {
-    if (b.s !== a.s) return b.s - a.s;
-    return b.len - a.len;
-  });
-  rings.length = 0;
-  for (const row of scored) {
-    rings.push(row.ring);
-  }
-}
-
-/**
- * Marching squares on thick ink often yields two almost-parallel iso-loops
- * (inner vs outer edge of the same brush). Keep one ring per such pair.
- */
-function dedupeNearlyParallelContourRings(rings: [number, number][][]): void {
-  if (rings.length < 2) return;
-  const keep: [number, number][][] = [];
-  for (const r of rings) {
-    let merged = false;
-    for (let k = 0; k < keep.length; k++) {
-      const k2 = keep[k]!;
-      const med = medianMinDistBetweenRings(r, k2);
-      const ar = ringAreaAbs(r) / Math.max(1, ringAreaAbs(k2));
-      const ar2 = ringAreaAbs(k2) / Math.max(1, ringAreaAbs(r));
-      if (med < 1.85 && (ar > 0.46 || ar2 > 0.46)) {
-        if (ringPolylineLength(r) >= ringPolylineLength(k2)) {
-          keep[k] = r;
-        }
-        merged = true;
-        break;
-      }
-    }
-    if (!merged) keep.push(r);
-  }
-  rings.length = 0;
-  for (const r of keep) rings.push(r);
-}
-
-function simplifyRingPx(ring: [number, number][]): [number, number][] {
-  if (ring.length < 5) return ring;
-  const tolerancePx = ring.length > 900 ? 0.62 : 0.36;
-  const ls = turf.lineString(ring.map(([x, y]) => [x, y]));
-  const out = turf.simplify(ls, {
-    tolerance: tolerancePx,
-    highQuality: true,
-  });
-  const coords = out.geometry.coordinates as [number, number][];
-  if (coords.length < 3) return ring;
-  const first = coords[0]!;
-  const last = coords[coords.length - 1]!;
-  if (Math.hypot(first[0] - last[0], first[1] - last[1]) > 0.6) {
-    return [...coords, first];
-  }
-  return coords;
-}
-
-/** Lighter simplify for Moore-traced rings so 1–2 px bridges survive. */
-function simplifyMooreRing(ring: [number, number][]): [number, number][] {
-  if (ring.length < 5) return ring;
-  const tolerancePx =
-    ring.length > 3200 ? 0.2 : ring.length > 1600 ? 0.12 : 0.055;
-  const ls = turf.lineString(ring.map(([x, y]) => [x, y]));
-  const out = turf.simplify(ls, {
-    tolerance: tolerancePx,
-    highQuality: true,
-  });
-  const coords = out.geometry.coordinates as [number, number][];
-  if (coords.length < 3) return ring;
-  const first = coords[0]!;
-  const last = coords[coords.length - 1]!;
-  if (Math.hypot(first[0] - last[0], first[1] - last[1]) > 0.6) {
-    return [...coords, first];
-  }
-  return coords;
-}
-
-function computeSortedContourRings(
-  mask: Uint8Array,
-  level: number,
-  w: number,
-  h: number,
-): [number, number][][] {
-  const field = maskToFloatField(mask);
-  const rings = extractAllRingsFromField(field, level);
-  dedupeNearlyParallelContourRings(rings);
-  stitchNestedHoleRingsInPlace(rings);
-  if (rings.length > 1) {
-    sortContourRingsByInkEdges(mask, rings, w, h);
-  }
-  return rings;
-}
-
 /** 4-connected foreground components (label 1…n, 0 = background). */
 function labelConnectedComponents4(
   binary: Uint8Array,
@@ -461,6 +209,8 @@ export default function Step1ImageUpload({
   const [undoCount, setUndoCount] = useState(0);
   /** Bumps when line mask bytes change so contour preview can refresh. */
   const [lineMaskVersion, setLineMaskVersion] = useState(0);
+  const [contourHint, setContourHint] = useState<string | null>(null);
+  const [contourComputing, setContourComputing] = useState(false);
   const imageCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lineArtCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const contourCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -473,6 +223,10 @@ export default function Step1ImageUpload({
 
   const lineUndoStackRef = useRef<Uint8Array[]>([]);
   const lineUndoIndexRef = useRef(-1);
+  const workerRef = useRef<Worker | null>(null);
+  const contourReqIdRef = useRef(0);
+  const workerInFlightRef = useRef(0);
+  const applyContourRef = useRef<(pts: NormalizedPoint[] | null) => void>(() => {});
 
   const bumpLineMaskVersion = useCallback(() => {
     setLineMaskVersion((v) => v + 1);
@@ -528,74 +282,6 @@ export default function Step1ImageUpload({
     setUndoCount(lineUndoIndexRef.current);
   }, []);
 
-  const contourPointsFromLineMask = useCallback(
-    (level: number): NormalizedPoint[] | null => {
-      void lineMaskVersion;
-      const mask = lineMaskRef.current;
-      if (!mask) return null;
-
-      let ring: [number, number][] | null = null;
-      let usedMoore = false;
-      let usedCenterline = false;
-
-      const prep = prepareTracedBinaryMask(mask, BOX_SIZE, BOX_SIZE);
-      const traceMask = prep ? binaryPrepToLineMask(prep, mask.length) : null;
-
-      if (prep) {
-        const center = centerlinePolylineFromPreparedBinary(
-          prep,
-          BOX_SIZE,
-          BOX_SIZE,
-        );
-        if (center && center.length >= 4) {
-          ring = center;
-          usedCenterline = true;
-        }
-      }
-
-      if (!ring && traceMask) {
-        const mooreRings = mooreContourRingsFromLineMask(
-          traceMask,
-          BOX_SIZE,
-          BOX_SIZE,
-        );
-        if (mooreRings?.length) {
-          usedMoore = true;
-          const rings = mooreRings.map((r) => r.slice());
-          stitchNestedHoleRingsInPlace(rings);
-          ring = rings[0] ?? null;
-        }
-      }
-      if (!ring) {
-        const rings = computeSortedContourRings(
-          traceMask ?? mask,
-          level,
-          BOX_SIZE,
-          BOX_SIZE,
-        );
-        ring = rings[0] ?? null;
-      }
-      if (ring === null || ring.length < 4) return null;
-
-      const useLightSimplify = usedMoore || usedCenterline;
-      const smoothed =
-        usedCenterline && ring.length < 900
-          ? ring
-          : useLightSimplify
-            ? simplifyMooreRing(ring)
-            : simplifyRingPx(ring);
-      const target = useLightSimplify
-        ? Math.min(560, Math.max(320, Math.floor(smoothed.length * 0.62)))
-        : Math.min(200, Math.max(120, Math.floor(smoothed.length / 3)));
-      const sampled = curvatureAdaptiveSample(smoothed, target);
-      return sampled.map(([x, y]) => ({
-        x: x / BOX_SIZE,
-        y: y / BOX_SIZE,
-      }));
-    },
-    [lineMaskVersion],
-  );
-
   const drawContourPreview = useCallback((points: NormalizedPoint[]) => {
     const canvas = contourCanvasRef.current;
     if (!canvas) return;
@@ -638,6 +324,83 @@ export default function Step1ImageUpload({
     [drawContourPreview, drawContourPlaceholder],
   );
 
+  useEffect(() => {
+    applyContourRef.current = applyContourToCanvas;
+  }, [applyContourToCanvas]);
+
+  const refreshContourFromMask = useCallback(
+    (level: number) => {
+      void lineMaskVersion;
+      const mask = lineMaskRef.current;
+      if (!mask) return;
+
+      const health = describeLineMaskHealth(mask, BOX_SIZE, BOX_SIZE);
+      setContourHint(health.hint);
+
+      const id = ++contourReqIdRef.current;
+      const copy = new Uint8Array(mask);
+      const buf = copy.buffer.slice(
+        copy.byteOffset,
+        copy.byteOffset + copy.byteLength,
+      );
+
+      const w = workerRef.current;
+      if (w) {
+        workerInFlightRef.current++;
+        setContourComputing(true);
+        w.postMessage(
+          { id, level, boxSize: BOX_SIZE, mask: buf },
+          [buf],
+        );
+      } else {
+        const pts = extractNormalizedContourFromLineMask(
+          copy,
+          level,
+          BOX_SIZE,
+          BOX_SIZE,
+        ) as NormalizedPoint[] | null;
+        if (id !== contourReqIdRef.current) return;
+        setNormalizedContour(pts);
+        requestAnimationFrame(() => applyContourToCanvas(pts));
+      }
+    },
+    [lineMaskVersion, applyContourToCanvas],
+  );
+
+  useEffect(() => {
+    if (typeof Worker === "undefined") return;
+    let w: Worker;
+    try {
+      w = new Worker(
+        new URL("../workers/photoContour.worker.ts", import.meta.url),
+        { type: "module" },
+      );
+    } catch {
+      return;
+    }
+    workerRef.current = w;
+    w.onmessage = (ev: MessageEvent<PhotoContourWorkerResponse>) => {
+      const d = ev.data;
+      workerInFlightRef.current = Math.max(0, workerInFlightRef.current - 1);
+      if (workerInFlightRef.current === 0) {
+        setContourComputing(false);
+      }
+      if (d.id !== contourReqIdRef.current) return;
+      if (!d.ok) {
+        setContourHint(`Couldn’t build contour preview: ${d.error}`);
+        return;
+      }
+      setContourHint(d.healthHint);
+      const pts = d.contour as NormalizedPoint[] | null;
+      setNormalizedContour(pts);
+      requestAnimationFrame(() => applyContourRef.current(pts));
+    };
+    return () => {
+      w.terminate();
+      if (workerRef.current === w) workerRef.current = null;
+    };
+  }, []);
+
   const undoLineArt = useCallback(() => {
     const idx = lineUndoIndexRef.current;
     if (idx <= 0) return;
@@ -648,15 +411,12 @@ export default function Step1ImageUpload({
     drawLineMaskToCanvas();
     setUndoCount(lineUndoIndexRef.current);
     if (contourBuilt) {
-      const pts = contourPointsFromLineMask(contourLevel);
-      setNormalizedContour(pts);
-      requestAnimationFrame(() => applyContourToCanvas(pts));
+      refreshContourFromMask(contourLevel);
     }
   }, [
     contourBuilt,
     contourLevel,
-    contourPointsFromLineMask,
-    applyContourToCanvas,
+    refreshContourFromMask,
     drawLineMaskToCanvas,
   ]);
 
@@ -709,6 +469,7 @@ export default function Step1ImageUpload({
       lineMaskRef.current = new Uint8Array(BOX_SIZE * BOX_SIZE);
 
       setNormalizedContour(null);
+      setContourHint(null);
       setContourBuilt(false);
       setContourLevel(DEFAULT_CONTOUR_LEVEL);
       setImageReady(true);
@@ -739,6 +500,13 @@ export default function Step1ImageUpload({
         BOX_SIZE,
         BOX_SIZE,
       );
+      const outline = filledSilhouetteToLineArtMask(
+        lineMask,
+        BOX_SIZE,
+        BOX_SIZE,
+        PHOTO_LINE_ART_OUTLINE_LAYERS,
+      );
+      lineMask.set(outline);
     }
     lineArtDirtyRef.current = false;
     replaceLineUndoWithCurrent();
@@ -755,27 +523,23 @@ export default function Step1ImageUpload({
 
   useEffect(() => {
     if (!contourBuilt || !imageReady) return;
-    const pts = contourPointsFromLineMask(contourLevel);
-    setNormalizedContour(pts);
-    requestAnimationFrame(() => applyContourToCanvas(pts));
+    refreshContourFromMask(contourLevel);
   }, [
     contourLevel,
     contourBuilt,
     imageReady,
-    contourPointsFromLineMask,
-    applyContourToCanvas,
+    refreshContourFromMask,
     lineMaskVersion,
   ]);
 
   function handleDone() {
     setContourBuilt(true);
-    const pts = contourPointsFromLineMask(contourLevel);
-    setNormalizedContour(pts);
-    requestAnimationFrame(() => applyContourToCanvas(pts));
+    refreshContourFromMask(contourLevel);
   }
 
   function handleStartOver() {
     setNormalizedContour(null);
+    setContourHint(null);
     setContourBuilt(false);
     setContourLevel(DEFAULT_CONTOUR_LEVEL);
     lineArtDirtyRef.current = false;
@@ -794,6 +558,13 @@ export default function Step1ImageUpload({
         BOX_SIZE,
         BOX_SIZE,
       );
+      const outline = filledSilhouetteToLineArtMask(
+        lineMask,
+        BOX_SIZE,
+        BOX_SIZE,
+        PHOTO_LINE_ART_OUTLINE_LAYERS,
+      );
+      lineMask.set(outline);
     }
     replaceLineUndoWithCurrent();
     bumpLineMaskVersion();
@@ -859,9 +630,7 @@ export default function Step1ImageUpload({
       pushLineUndo();
       strokeDirtyRef.current = false;
       if (contourBuilt) {
-        const pts = contourPointsFromLineMask(contourLevel);
-        setNormalizedContour(pts);
-        requestAnimationFrame(() => applyContourToCanvas(pts));
+        refreshContourFromMask(contourLevel);
       }
     }
   };
@@ -898,12 +667,13 @@ export default function Step1ImageUpload({
 
       <p className="mb-1 max-w-xl text-center font-dm text-[10px] leading-snug text-pace-muted sm:mb-1.5 sm:text-[11px]">
         Your photo is traced in the browser—we don’t upload the image to our
-        servers. <span className="whitespace-nowrap">Photo threshold</span> only
-        rebuilds the starting line art when you have not drawn yet; anything in{" "}
-        <strong className="text-pace-ink">Line art</strong> (draw / erase) is
-        what the <strong className="text-pace-ink">Final contour</strong> uses
-        after you tap <strong className="text-pace-ink">Done</strong>. Small
-        blobs fully inside a letter hole are merged in from the photo
+        servers. <span className="whitespace-nowrap">Photo threshold</span>{" "}
+        rebuilds a <strong className="text-pace-ink">stroke outline</strong>{" "}
+        (not a solid fill) when you have not drawn yet; use{" "}
+        <strong className="text-pace-ink">Line art</strong> draw / erase to
+        refine it. After <strong className="text-pace-ink">Done</strong>, the{" "}
+        <strong className="text-pace-ink">Final contour</strong> follows that
+        mask. Small blobs fully inside a letter hole are merged from the photo
         automatically.
       </p>
 
@@ -1061,6 +831,12 @@ export default function Step1ImageUpload({
                 height={BOX_SIZE}
                 className={panelCanvasClass}
               />
+              {contourHint || contourComputing ? (
+                <p className="mt-1 max-w-[min(100vw-1rem,280px)] text-center font-dm text-[10px] leading-snug text-pace-muted sm:text-[11px]">
+                  {contourComputing ? "Updating contour… " : null}
+                  {contourHint}
+                </p>
+              ) : null}
             </div>
           </div>
 
@@ -1121,67 +897,4 @@ export default function Step1ImageUpload({
       </div>
     </div>
   );
-}
-
-function curvatureAdaptiveSample(
-  ring: [number, number][],
-  targetCount: number,
-): [number, number][] {
-  const n = ring.length;
-  if (targetCount >= n) return ring;
-
-  const weights: number[] = new Array(n).fill(0);
-
-  for (let i = 0; i < n; i++) {
-    const prev = ring[(i - 1 + n) % n];
-    const curr = ring[i];
-    const next = ring[(i + 1) % n];
-
-    const v1x = curr[0] - prev[0];
-    const v1y = curr[1] - prev[1];
-    const v2x = next[0] - curr[0];
-    const v2y = next[1] - curr[1];
-
-    const dot = v1x * v2x + v1y * v2y;
-    const mag1 = Math.hypot(v1x, v1y) || 1;
-    const mag2 = Math.hypot(v2x, v2y) || 1;
-    const cosTheta = Math.min(1, Math.max(-1, dot / (mag1 * mag2)));
-    const angle = Math.acos(cosTheta);
-
-    const segmentLen = mag2;
-    const curvatureWeight = 1 + 4 * (angle / Math.PI);
-    weights[i] = segmentLen * curvatureWeight;
-  }
-
-  const cumulative: number[] = new Array(n + 1);
-  cumulative[0] = 0;
-  for (let i = 0; i < n; i++) {
-    cumulative[i + 1] = cumulative[i] + weights[i];
-  }
-  const total = cumulative[n];
-  if (total === 0) return ring;
-
-  const sampled: [number, number][] = [];
-  for (let k = 0; k < targetCount; k++) {
-    const t = (k / targetCount) * total;
-    let idx = binarySearchCumulative(cumulative, t);
-    if (idx >= n) idx = n - 1;
-    sampled.push(ring[idx]);
-  }
-
-  return sampled;
-}
-
-function binarySearchCumulative(arr: number[], target: number): number {
-  let lo = 0;
-  let hi = arr.length - 1;
-  while (lo < hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    if (arr[mid] < target) {
-      lo = mid + 1;
-    } else {
-      hi = mid;
-    }
-  }
-  return lo - 1 >= 0 ? lo - 1 : 0;
 }
