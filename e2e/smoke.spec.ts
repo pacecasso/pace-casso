@@ -18,9 +18,11 @@ test.describe("smoke", () => {
 
   test("create flow shows city gate", async ({ page }) => {
     await page.goto("/create");
-    await expect(page.getByRole("button", { name: /^Continue$/ })).toBeVisible(
-      { timeout: 30_000 },
-    );
+    // Button label is "Continue with {preset.label}" after the multi-city
+    // rewrite — accept both forms (future-proofing against a label tweak).
+    await expect(
+      page.getByRole("button", { name: /^Continue\b/ }),
+    ).toBeVisible({ timeout: 30_000 });
   });
 
   test("help page loads", async ({ page }) => {

@@ -294,8 +294,8 @@ export default function Step2MapAnchor({
             ) : (
               <p className="text-[10px] leading-snug text-pace-muted">
                 <strong>Auto-find:</strong> searches the whole city.{" "}
-                <strong>Refine:</strong> searches ~2 km around where you've put it
-                now, at similar size and angle.
+                <strong>Refine:</strong> searches ~2 km around where you&apos;ve
+                put it now, at similar size and angle.
               </p>
             )}
           </div>
