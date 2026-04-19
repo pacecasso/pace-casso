@@ -39,21 +39,10 @@ type MapboxDirectionsRoute = {
   }[];
 };
 
+import { haversineMeters } from "./haversine";
+
 function nearSame(a: [number, number], b: [number, number], eps = 1e-5): boolean {
   return Math.abs(a[0] - b[0]) < eps && Math.abs(a[1] - b[1]) < eps;
-}
-
-function haversineMeters(a: [number, number], b: [number, number]): number {
-  const R = 6371000;
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(b[0] - a[0]);
-  const dLng = toRad(b[1] - a[1]);
-  const lat1 = toRad(a[0]);
-  const lat2 = toRad(b[0]);
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
 type LineSeg = { a: [number, number]; b: [number, number]; len: number };

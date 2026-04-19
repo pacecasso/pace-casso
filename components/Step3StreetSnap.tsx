@@ -9,6 +9,7 @@ import {
   shapeAccuracyPercent,
 } from "../lib/shapeMatchScore";
 import { snapWalkingRoute } from "../lib/snapWalkingRoute";
+import { useLeafletContainerId } from "../lib/useLeafletContainerId";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
 import MapChunkFallback from "./MapChunkFallback";
 import MapStepSplitLayout from "./MapStepSplitLayout";
@@ -64,6 +65,7 @@ export default function Step3StreetSnap({
   const [route, setRoute] = useState<RouteLineString | null>(null);
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
+  const leafletId = useLeafletContainerId();
 
   const center = anchorLocation?.center ?? [40.7831, -73.9712];
 
@@ -266,6 +268,7 @@ export default function Step3StreetSnap({
             </div>
           ) : null}
           <MapContainer
+            id={leafletId}
             center={center as LatLngExpression}
             zoom={13}
             className="h-full w-full"

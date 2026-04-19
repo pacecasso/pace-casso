@@ -12,6 +12,7 @@ import {
 import MapChunkFallback from "./MapChunkFallback";
 import { getShareTwitterHandle } from "../lib/siteConfig";
 import { getSiteUrl } from "../lib/siteUrl";
+import { saveFinalizedRoute } from "../lib/finalizedRouteMemory";
 
 const Step5PreviewMap = dynamic(() => import("./Step5PreviewMap"), {
   ssr: false,
@@ -28,8 +29,19 @@ type Props = {
   onStartOver: () => void;
 };
 
+function safeCoords(route: RouteLineString): [number, number][] {
+  return (route.coordinates ?? []).filter(
+    (c): c is [number, number] =>
+      Array.isArray(c) &&
+      typeof c[0] === "number" &&
+      Number.isFinite(c[0]) &&
+      typeof c[1] === "number" &&
+      Number.isFinite(c[1]),
+  );
+}
+
 function routeToGeoJSONFeature(route: RouteLineString) {
-  const coords = route.coordinates ?? [];
+  const coords = safeCoords(route);
   return {
     type: "Feature" as const,
     properties: {
@@ -68,7 +80,7 @@ function routeToGeoJSONFeatureCollection(
 }
 
 function routeToGpx(route: RouteLineString, cues: WalkingCue[]): string {
-  const coords = route.coordinates ?? [];
+  const coords = safeCoords(route);
   const pts = coords
     .map(
       ([lat, lng]) =>
@@ -76,9 +88,14 @@ function routeToGpx(route: RouteLineString, cues: WalkingCue[]): string {
     )
     .join("\n");
   const name = "Pacecasso route";
+  // Guard cue coords too — a non-finite lat/lng would emit <wpt lat="NaN">
+  // which breaks every GPX parser.
+  const safeCues = cues.filter(
+    (c) => Number.isFinite(c.lat) && Number.isFinite(c.lng),
+  );
   const wptBlock =
-    cues.length > 0
-      ? `${cues
+    safeCues.length > 0
+      ? `${safeCues
           .map((c) => {
             const desc =
               c.street && shouldAppendStreetLabel(c.instruction, c.street)
@@ -152,6 +169,20 @@ export default function Step5RouteComplete({
       typeof navigator !== "undefined" && typeof navigator.share === "function",
     );
   }, []);
+
+  // Remember this finalized placement so future auto-find runs can lean
+  // toward similar layouts. Stored per-browser in localStorage only.
+  useEffect(() => {
+    if (!anchorLocation) return;
+    const distanceKm = (route.distanceMeters ?? 0) / 1000;
+    if (!Number.isFinite(distanceKm) || distanceKm <= 0) return;
+    saveFinalizedRoute({
+      center: anchorLocation.center,
+      rotationDeg: anchorLocation.rotationDeg,
+      scale: anchorLocation.scale,
+      distanceKm,
+    });
+  }, [anchorLocation, route.distanceMeters]);
 
   const routeLine = useMemo(
     () => (route.coordinates ?? []) as [number, number][],

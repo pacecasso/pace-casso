@@ -50,13 +50,15 @@
   --font-accent: var(--font-marker), "Permanent Marker", cursive;
   --font-body: var(--font-dm-sans), "DM Sans", system-ui, sans-serif;
 
-  /* Create page: sticky header + step bar — map steps fill below (taller on small screens: mobile tagline line) */
-  --pace-create-chrome-height: 9.75rem;
+  /* Create page: sticky header + step bar — map steps fill below. Tightened
+     so the workflow fits in a viewport without scrolling. Matches the trimmed
+     header chrome in WorkflowController. */
+  --pace-create-chrome-height: 7rem;
 }
 
 @media (min-width: 1024px) {
   :root {
-    --pace-create-chrome-height: 9rem;
+    --pace-create-chrome-height: 6rem;
   }
 }
 
@@ -150,7 +152,7 @@ body {
 .pace-app-nav {
   background: var(--white);
   border-bottom: 2px solid var(--yellow);
-  padding: 1rem clamp(1rem, 4vw, 2.5rem);
+  padding: 0.5rem clamp(1rem, 4vw, 2.5rem);
 }
 
 /* Yellow left accent — highlighted / callout blocks */

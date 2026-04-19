@@ -59,6 +59,17 @@ export default function WorkflowController() {
   const [contourCoordinates, setContourCoordinates] = useState<
     NormalizedPoint[] | null
   >(null);
+  /**
+   * Original uploaded image as a data-URL. Populated by Step1ImageUpload and
+   * forwarded to Step2MapAnchor for Claude vision rescoring. Persisted to
+   * draft storage when small enough (~1.5 MB cap); if it's too large to fit
+   * the image silently won't persist and vision degrades to snap-only order
+   * on refresh. Typical downscaled JPEGs from Step1 are ~150–400 KB, well
+   * inside the cap.
+   */
+  const [uploadedImageBase64, setUploadedImageBase64] = useState<string | null>(
+    null,
+  );
   const [anchorLocation, setAnchorLocation] = useState<AnchorLocation>(null);
   const [snappedRoute, setSnappedRoute] = useState<RouteLineString | null>(
     null,
@@ -95,6 +106,7 @@ export default function WorkflowController() {
       setSnappedRoute(d.snappedRoute);
       setEditedRoute(d.editedRoute);
       setFinalRoute(d.finalRoute);
+      setUploadedImageBase64(d.uploadedImageBase64 ?? null);
     }
     setDraftHydrated(true);
   }, []);
@@ -153,6 +165,7 @@ export default function WorkflowController() {
         snappedRoute,
         editedRoute,
         finalRoute,
+        uploadedImageBase64,
       });
     }, 400);
     return () => window.clearTimeout(id);
@@ -166,10 +179,12 @@ export default function WorkflowController() {
     snappedRoute,
     editedRoute,
     finalRoute,
+    uploadedImageBase64,
   ]);
 
   const resetWorkflowData = useCallback(() => {
     setContourCoordinates(null);
+    setUploadedImageBase64(null);
     setAnchorLocation(null);
     setSnappedRoute(null);
     setEditedRoute(null);
@@ -191,6 +206,7 @@ export default function WorkflowController() {
 
   const goBackToSourcePicker = useCallback(() => {
     setContourCoordinates(null);
+    setUploadedImageBase64(null);
     setSourceKind(null);
     setCurrentStep(1);
   }, []);
@@ -251,49 +267,37 @@ export default function WorkflowController() {
   return (
     <main className="flex min-h-screen flex-col bg-pace-warm">
       <header className="sticky top-0 z-40 bg-pace-white">
-        <div className="pace-app-nav flex flex-wrap items-center justify-between gap-4">
+        <div className="pace-app-nav flex items-center justify-between gap-3">
           <Link
             href="/landing.html"
             className="inline-block shrink-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2"
             aria-label="PaceCasso home"
           >
-            <BrandLogo />
+            <BrandLogo className="h-[clamp(2.5rem,7vw,3.75rem)] w-auto max-w-[min(360px,60vw)] object-contain object-left" />
           </Link>
           <nav
-            className="order-3 flex w-full flex-wrap items-center justify-center gap-x-8 gap-y-2 border-t border-pace-line pt-3 sm:order-none sm:w-auto sm:border-t-0 sm:pt-0 lg:flex-1 lg:justify-center"
+            className="flex shrink-0 items-center gap-x-4 gap-y-1 sm:gap-x-6"
             aria-label="Marketing links"
           >
             <Link
               href="/gallery"
-              className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+              className="pace-nav-link font-bebas text-xs tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow sm:text-sm"
             >
               Gallery
             </Link>
             <Link
               href="/how"
-              className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+              className="pace-nav-link font-bebas text-xs tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow sm:text-sm"
             >
               How it works
             </Link>
             <Link
-              href="/community"
-              className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+              href="/help"
+              className="pace-nav-link hidden font-bebas text-xs tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow sm:inline sm:text-sm"
             >
-              Community
+              Help
             </Link>
           </nav>
-          <div className="hidden min-w-0 flex-col items-end gap-0.5 text-right lg:flex">
-            <div className="flex items-center gap-2">
-              <span className="h-px w-6 bg-pace-yellow" aria-hidden />
-              <p className="pace-tagline-primary shrink-0 text-[9px]">
-                DESIGN · RUN · REPEAT
-              </p>
-              <span className="h-px w-6 bg-pace-yellow" aria-hidden />
-            </div>
-            <p className="pace-tagline-secondary text-base leading-tight">
-              Where miles make masterpieces.
-            </p>
-          </div>
         </div>
 
         <div className="border-b border-pace-line bg-pace-white px-[clamp(1rem,4vw,2.5rem)] py-1.5 sm:py-2">
@@ -319,9 +323,6 @@ export default function WorkflowController() {
                   {stepRecap}
                 </p>
               ) : null}
-              <p className="font-dm text-[10px] leading-snug text-pace-muted/85 lg:hidden">
-                Where miles make masterpieces.
-              </p>
             </div>
             <div className="flex w-full min-w-0 flex-row flex-wrap items-center gap-2 sm:max-w-xl sm:flex-1 sm:justify-end sm:gap-2.5">
               <div
@@ -442,8 +443,9 @@ export default function WorkflowController() {
         {currentStep === 2 && sourceKind === "image" && (
           <Step1ImageUpload
             onBack={goBackToSourcePicker}
-            onComplete={(normalizedContour) => {
+            onComplete={(normalizedContour, imageBase64) => {
               setContourCoordinates(normalizedContour);
+              setUploadedImageBase64(imageBase64);
               setCurrentStep(3);
             }}
           />
@@ -471,6 +473,7 @@ export default function WorkflowController() {
             contour={contourCoordinates}
             cityPreset={cityPreset}
             defaultCenter={cityPreset.defaultCenter}
+            imageBase64={uploadedImageBase64}
             onBack={() => setCurrentStep(2)}
             onComplete={({ anchorLatLngs, center, rotationDeg, scale }) => {
               setAnchorLocation({

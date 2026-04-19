@@ -2,18 +2,7 @@
  * Cumulative distance (m) along an open polyline to the closest point to p [lat,lng].
  */
 
-function haversineMeters(a: [number, number], b: [number, number]): number {
-  const R = 6371000;
-  const toR = (d: number) => (d * Math.PI) / 180;
-  const dLat = toR(b[0] - a[0]);
-  const dLng = toR(b[1] - a[1]);
-  const lat1 = toR(a[0]);
-  const lat2 = toR(b[0]);
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
-}
+import { haversineMeters } from "./haversine";
 
 function projectScalarOnSegment(
   a: [number, number],
@@ -36,6 +25,9 @@ function projectScalarOnSegment(
   return Math.max(0, Math.min(1, t));
 }
 
+/** Segments shorter than this (metres) are skipped to avoid NaN from 0/0. */
+const MIN_SEG_M = 1e-4;
+
 export function distanceAlongPolylineToPoint(
   line: [number, number][],
   p: [number, number],
@@ -48,6 +40,17 @@ export function distanceAlongPolylineToPoint(
     const a = line[i]!;
     const b = line[i + 1]!;
     const segLen = haversineMeters(a, b);
+    if (segLen < MIN_SEG_M) {
+      // Identical or near-identical points: treat the segment as a single
+      // point candidate and advance cumulative distance without dividing.
+      const d = haversineMeters(p, a);
+      if (d < bestDist) {
+        bestDist = d;
+        bestAlong = cumulative;
+      }
+      cumulative += segLen;
+      continue;
+    }
     const t = projectScalarOnSegment(a, b, p);
     const cx = a[0] + t * (b[0] - a[0]);
     const cy = a[1] + t * (b[1] - a[1]);

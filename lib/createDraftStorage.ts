@@ -22,9 +22,36 @@ export type CreateDraftV1 = {
   snappedRoute: RouteLineString | null;
   editedRoute: RouteLineString | null;
   finalRoute: RouteLineString | null;
+  /** Downscaled uploaded image as a data URL. Persisted so the Claude vision
+   *  auto-placement still works after a page refresh. Skipped if too large to
+   *  fit localStorage comfortably. */
+  uploadedImageBase64: string | null;
 };
 
+/** Cap in characters (~1 MB). localStorage quota is typically 5 MB per origin,
+ *  but we leave headroom for the rest of the draft + other localStorage uses. */
+const MAX_PERSISTED_IMAGE_CHARS = 1_500_000;
+
 const KEY = "pacecasso-create-draft-v1";
+
+function isFiniteNum(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+function isValidNormalizedPoint(v: unknown): v is NormalizedPointDraft {
+  if (!v || typeof v !== "object") return false;
+  const p = v as Record<string, unknown>;
+  return isFiniteNum(p.x) && isFiniteNum(p.y) && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1;
+}
+
+function isValidLatLng(v: unknown): v is [number, number] {
+  if (!Array.isArray(v) || v.length < 2) return false;
+  return isFiniteNum(v[0]) && isFiniteNum(v[1]) && v[0] >= -90 && v[0] <= 90 && v[1] >= -180 && v[1] <= 180;
+}
+
+function isValidRouteCoords(coords: unknown): coords is [number, number][] {
+  return Array.isArray(coords) && coords.length >= 2 && coords.every(isValidLatLng);
+}
 
 export function loadCreateDraft(): CreateDraftV1 | null {
   if (typeof window === "undefined") return null;
@@ -55,32 +82,43 @@ export function loadCreateDraft(): CreateDraftV1 | null {
       currentStep: d.currentStep,
       selectedCityId: cityId,
       sourceKind: d.sourceKind ?? null,
-      contourCoordinates: Array.isArray(d.contourCoordinates)
-        ? d.contourCoordinates
-        : null,
-      anchorLocation:
-        d.anchorLocation &&
-        typeof d.anchorLocation === "object" &&
-        Array.isArray((d.anchorLocation as AnchorLocationDraft).anchorLatLngs)
-          ? (d.anchorLocation as AnchorLocationDraft)
+      contourCoordinates:
+        Array.isArray(d.contourCoordinates) &&
+        d.contourCoordinates.length >= 2 &&
+        d.contourCoordinates.every(isValidNormalizedPoint)
+          ? (d.contourCoordinates as NormalizedPointDraft[])
           : null,
+      anchorLocation: (() => {
+        const al = d.anchorLocation as AnchorLocationDraft | undefined;
+        if (!al || typeof al !== "object") return null;
+        if (!isValidRouteCoords(al.anchorLatLngs)) return null;
+        if (!isValidLatLng(al.center)) return null;
+        if (!isFiniteNum(al.rotationDeg) || !isFiniteNum(al.scale)) return null;
+        return al;
+      })(),
       snappedRoute:
         d.snappedRoute &&
         typeof d.snappedRoute === "object" &&
-        Array.isArray(d.snappedRoute.coordinates)
+        isValidRouteCoords(d.snappedRoute.coordinates)
           ? d.snappedRoute
           : null,
       editedRoute:
         d.editedRoute &&
         typeof d.editedRoute === "object" &&
-        Array.isArray(d.editedRoute.coordinates)
+        isValidRouteCoords(d.editedRoute.coordinates)
           ? d.editedRoute
           : null,
       finalRoute:
         d.finalRoute &&
         typeof d.finalRoute === "object" &&
-        Array.isArray(d.finalRoute.coordinates)
+        isValidRouteCoords(d.finalRoute.coordinates)
           ? d.finalRoute
+          : null,
+      uploadedImageBase64:
+        typeof d.uploadedImageBase64 === "string" &&
+        d.uploadedImageBase64.startsWith("data:image/") &&
+        d.uploadedImageBase64.length <= MAX_PERSISTED_IMAGE_CHARS * 1.2
+          ? d.uploadedImageBase64
           : null,
     };
   } catch {
@@ -126,14 +164,37 @@ export function saveCreateDraft(
 ): void {
   if (typeof window === "undefined") return;
   try {
+    // Drop the image if it's too big to persist comfortably — the draft should
+    // still save (route state, etc.). On refresh the user will just lose the
+    // image and vision will quietly disable for that shape.
+    const safeImage =
+      draft.uploadedImageBase64 &&
+      draft.uploadedImageBase64.length <= MAX_PERSISTED_IMAGE_CHARS
+        ? draft.uploadedImageBase64
+        : null;
+
     const payload: CreateDraftV1 = {
       version: 1,
       updatedAt: new Date().toISOString(),
       ...draft,
+      uploadedImageBase64: safeImage,
     };
     localStorage.setItem(KEY, JSON.stringify(payload));
   } catch {
-    /* quota or private mode */
+    /* quota or private mode — try again without the image if it was present */
+    if (draft.uploadedImageBase64) {
+      try {
+        const payload: CreateDraftV1 = {
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          ...draft,
+          uploadedImageBase64: null,
+        };
+        localStorage.setItem(KEY, JSON.stringify(payload));
+      } catch {
+        /* give up */
+      }
+    }
   }
 }
 

@@ -17,6 +17,7 @@ import {
 } from "react-leaflet";
 import L from "leaflet";
 import { OSM_TILE_ATTRIBUTION, OSM_TILE_URL } from "../lib/mapAttribution";
+import { useLeafletContainerId } from "../lib/useLeafletContainerId";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
 import type { LatLngExpression } from "leaflet";
 
@@ -173,9 +174,11 @@ export default function Step4LeafletMap({
     },
     [onMapReady],
   );
+  const leafletId = useLeafletContainerId();
 
   return (
     <MapContainer
+      id={leafletId}
       center={center as LatLngExpression}
       zoom={14}
       className="h-full w-full z-0"

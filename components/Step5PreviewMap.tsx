@@ -5,6 +5,7 @@ import L from "leaflet";
 import type { LatLngExpression } from "leaflet";
 import { MapContainer, Polyline, TileLayer, useMap } from "react-leaflet";
 import { OSM_TILE_ATTRIBUTION, OSM_TILE_URL } from "../lib/mapAttribution";
+import { useLeafletContainerId } from "../lib/useLeafletContainerId";
 
 type LatLng = [number, number];
 
@@ -49,9 +50,11 @@ export default function Step5PreviewMap({
     routeLine[0] ??
     originalArt[0] ??
     ([40.7831, -73.9712] as LatLng);
+  const leafletId = useLeafletContainerId();
 
   return (
     <MapContainer
+      id={leafletId}
       center={center as LatLngExpression}
       zoom={14}
       className="z-0 h-full min-h-[280px] w-full rounded-xl border border-pace-line bg-pace-white shadow-inner"

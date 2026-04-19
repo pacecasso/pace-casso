@@ -13,7 +13,7 @@ export default function MarketingNav() {
           className="inline-block shrink-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2"
           aria-label="PaceCasso home"
         >
-          <BrandLogo className="h-[clamp(3.5rem,12vw,6rem)] w-auto max-w-[min(480px,90vw)] object-contain object-left" />
+          <BrandLogo />
         </Link>
         <nav
           className="order-3 flex w-full flex-wrap items-center justify-center gap-x-8 gap-y-2 border-t border-pace-line pt-3 lg:order-1 lg:flex-1 lg:w-auto lg:border-t-0 lg:pt-0"

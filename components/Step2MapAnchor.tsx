@@ -5,13 +5,14 @@ import dynamic from "next/dynamic";
 import type { LatLngExpression } from "leaflet";
 import { NormalizedPoint } from "./Step1ImageUpload";
 import {
-  autoFindPlacement,
-  MAX_SNAP_TRIES,
-  MIN_SNAP_MATCH_PERCENT_TO_ADOPT,
-} from "../lib/autoFindPlacement";
+  autoFindTop5,
+  type ShapeHint,
+  type Top5Pick,
+} from "../lib/autoFindTop5";
 import { MANHATTAN_PRESET, type CityPreset } from "../lib/cityPresets";
 import { buildAnchorLatLngsFromContour } from "../lib/placementFromContour";
 import { OSM_TILE_ATTRIBUTION, OSM_TILE_URL } from "../lib/mapAttribution";
+import { useLeafletContainerId } from "../lib/useLeafletContainerId";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
 import MapChunkFallback from "./MapChunkFallback";
 import MapStepSplitLayout from "./MapStepSplitLayout";
@@ -38,6 +39,11 @@ type Step2MapAnchorProps = {
   cityPreset: CityPreset;
   /** Defaults to Manhattan; use selected city preset center. */
   defaultCenter?: [number, number];
+  /**
+   * Original uploaded image as a data-URL. When provided, auto-find rescores
+   * the top snap candidates with Claude vision and picks by gestalt match.
+   */
+  imageBase64?: string | null;
   onBack: () => void;
   onComplete: (args: {
     anchorLatLngs: [number, number][];
@@ -51,6 +57,7 @@ export default function Step2MapAnchor({
   contour,
   cityPreset,
   defaultCenter = MANHATTAN_PRESET.defaultCenter,
+  imageBase64,
   onBack,
   onComplete,
 }: Step2MapAnchorProps) {
@@ -60,34 +67,77 @@ export default function Step2MapAnchor({
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [autoBusy, setAutoBusy] = useState(false);
   const [autoHint, setAutoHint] = useState<string | null>(null);
+  const leafletId = useLeafletContainerId();
+  const [picks, setPicks] = useState<Top5Pick[]>([]);
+  const [picksVisionUsed, setPicksVisionUsed] = useState(false);
+  const [picksHint, setPicksHint] = useState<ShapeHint | null>(null);
+  const [selectedPickIdx, setSelectedPickIdx] = useState<number | null>(null);
 
-  const runAutoFind = useCallback(async () => {
-    setAutoBusy(true);
-    setAutoHint("Searching placement…");
-    try {
-      const r = await autoFindPlacement(contour, cityPreset, {
-        useSnapRefine: true,
-        anchorSource: "image",
-      });
-      setCenter([...r.placement.center] as [number, number]);
-      setRotationDeg(Math.round(r.placement.rotationDeg));
-      setScale(Math.round(r.placement.scale * 10) / 10);
+  const runAutoFind = useCallback(
+    async (mode: "full" | "refine") => {
+      setAutoBusy(true);
+      const modeLabel =
+        mode === "refine" ? "Refining around your placement" : "Searching placements";
       setAutoHint(
-        r.usedSnapRefine && r.snapScore != null
-          ? `Street-backed fit (interpretation ≈ ${r.snapScore}%).`
-          : r.bestSnapAttemptPercent != null &&
-              r.bestSnapAttemptPercent < MIN_SNAP_MATCH_PERCENT_TO_ADOPT
-            ? `Snap search peaked at ≈${r.bestSnapAttemptPercent}% interpretation (≥${MIN_SNAP_MATCH_PERCENT_TO_ADOPT}% = street-backed label). Applied that best preview — nudge if you want more.`
-            : "Applied geometry-only fit inside this area (no street preview).",
+        imageBase64
+          ? `${modeLabel} — Claude will rank the top 5…`
+          : `${modeLabel}…`,
       );
-      window.setTimeout(() => setAutoHint(null), 5200);
-    } catch {
-      setAutoHint("Couldn’t reach routing — try again or adjust by hand.");
-      window.setTimeout(() => setAutoHint(null), 5000);
-    } finally {
-      setAutoBusy(false);
-    }
-  }, [contour, cityPreset]);
+      setPicks([]);
+      setSelectedPickIdx(null);
+      try {
+        const r = await autoFindTop5(contour, cityPreset, {
+          anchorSource: "image",
+          imageBase64: imageBase64 ?? undefined,
+          anchorAround:
+            mode === "refine"
+              ? { center, rotationDeg, scale }
+              : undefined,
+        });
+        if (r.picks.length === 0) {
+          setAutoHint("No viable placements found — try adjusting manually.");
+          window.setTimeout(() => setAutoHint(null), 5000);
+          return;
+        }
+        setPicks(r.picks);
+        setPicksVisionUsed(r.visionUsed);
+        setPicksHint(r.hint ?? null);
+        // Auto-apply the #1 pick so the map updates immediately; user can tap others.
+        const first = r.picks[0]!;
+        setCenter([...first.placement.center] as [number, number]);
+        setRotationDeg(Math.round(first.placement.rotationDeg));
+        setScale(Math.round(first.placement.scale * 10) / 10);
+        setSelectedPickIdx(0);
+        const modeNoun = mode === "refine" ? "refinements" : "options";
+        setAutoHint(
+          r.visionUsed
+            ? `Claude ranked ${r.picks.length} ${modeNoun} — tap any to try it.`
+            : `Showing ${r.picks.length} ${modeNoun} — tap any to try it.`,
+        );
+      } catch (err) {
+        console.warn("[Step2] autoFindTop5 failed:", err);
+        setAutoHint("Couldn’t reach routing — try again or adjust by hand.");
+        window.setTimeout(() => setAutoHint(null), 5000);
+      } finally {
+        setAutoBusy(false);
+      }
+    },
+    [contour, cityPreset, imageBase64, center, rotationDeg, scale],
+  );
+
+  const applyPick = useCallback((pick: Top5Pick, idx: number) => {
+    setCenter([...pick.placement.center] as [number, number]);
+    setRotationDeg(Math.round(pick.placement.rotationDeg));
+    setScale(Math.round(pick.placement.scale * 10) / 10);
+    setSelectedPickIdx(idx);
+  }, []);
+
+  const clearPicks = useCallback(() => {
+    setPicks([]);
+    setSelectedPickIdx(null);
+    setPicksHint(null);
+    setAutoHint(null);
+  }, []);
 
   const centerHandleIcon = useMemo(() => {
     if (typeof window === "undefined") return null;
@@ -174,48 +224,134 @@ export default function Step2MapAnchor({
             <button
               type="button"
               disabled={autoBusy || !contour.length}
-              onClick={() => void runAutoFind()}
+              onClick={() => void runAutoFind("full")}
               className="pace-toolbar-btn w-full py-2.5 text-[11px] font-semibold disabled:opacity-50 sm:text-xs"
             >
-              {autoBusy ? "Auto-find…" : "Auto-find placement"}
+              {autoBusy ? "Working…" : "Auto-find placement"}
+            </button>
+            <button
+              type="button"
+              disabled={autoBusy || !contour.length}
+              onClick={() => void runAutoFind("refine")}
+              className="w-full rounded border border-pace-line bg-pace-white py-2 text-[11px] font-medium text-pace-ink transition hover:border-pace-yellow hover:bg-pace-warm disabled:opacity-50 sm:text-xs"
+              title="Search tightly around where you've placed the shape — good once you've nudged it into roughly the right area."
+            >
+              Refine around my placement
             </button>
             {autoHint ? (
               <p className="text-[10px] leading-snug text-pace-muted">{autoHint}</p>
             ) : (
               <p className="text-[10px] leading-snug text-pace-muted">
-                Search favors compact routes, breathing room inside the city box, and
-                grid-aligned rotations (PCA), then snap-tests up to {MAX_SNAP_TRIES}{" "}
-                picks and hill-climbs. “Street-backed” if ≥
-                {MIN_SNAP_MATCH_PERCENT_TO_ADOPT}% interpretation.
+                <strong>Auto-find:</strong> searches the whole city.{" "}
+                <strong>Refine:</strong> searches ~2 km around where you've put it
+                now, at similar size and angle.
               </p>
             )}
           </div>
 
-          <div className="mt-6 flex flex-col gap-2 border-t border-pace-line pt-4">
-            <button type="button" onClick={onBack} className="pace-toolbar-btn">
-              Back
-            </button>
-            <button
-              type="button"
-              disabled={!anchorLatLngs.length}
-              onClick={() =>
-                onComplete({
-                  anchorLatLngs,
-                  center,
-                  rotationDeg,
-                  scale,
-                })
-              }
-              className="pace-toolbar-btn-primary font-bebas tracking-[0.08em]"
-            >
-              Snap to streets →
-            </button>
-          </div>
+          {picks.length > 0 && (
+            <div className="mt-3 flex flex-col gap-2 rounded border border-pace-line bg-pace-warm/50 p-2">
+              <div className="flex items-center justify-between">
+                <span className="font-bebas text-[11px] tracking-[0.1em] text-pace-ink">
+                  {picksVisionUsed ? "Claude's top picks" : "Candidates"}
+                </span>
+                <button
+                  type="button"
+                  onClick={clearPicks}
+                  className="text-[10px] text-pace-muted underline underline-offset-2 hover:text-pace-ink"
+                >
+                  clear
+                </button>
+              </div>
+              {picksHint && (
+                <p className="-mt-1 text-[10px] leading-tight text-pace-muted">
+                  <span className="font-semibold text-pace-ink">
+                    {picksHint.shapeClass}
+                  </span>
+                  <span> · {picksHint.rotationStrategy}</span>
+                  <span> · {picksHint.scaleHint}</span>
+                  {picksHint.reason && (
+                    <span className="block italic text-pace-muted">
+                      “{picksHint.reason}”
+                    </span>
+                  )}
+                </p>
+              )}
+              <div className="grid grid-cols-2 gap-1.5">
+                {picks.map((p, idx) => {
+                  const selected = selectedPickIdx === idx;
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => applyPick(p, idx)}
+                      className={`relative flex flex-col overflow-hidden rounded border transition ${
+                        selected
+                          ? "border-pace-yellow ring-2 ring-pace-yellow/50"
+                          : "border-pace-line hover:border-pace-yellow/60"
+                      } bg-white p-1 text-left`}
+                      title={p.reason || `Option ${idx + 1}`}
+                    >
+                      {p.previewDataUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={p.previewDataUrl}
+                          alt={`Option ${idx + 1}`}
+                          className="aspect-square w-full object-contain"
+                        />
+                      ) : (
+                        <div className="aspect-square w-full bg-pace-line/30" />
+                      )}
+                      <span className="absolute left-1 top-1 rounded bg-pace-ink/85 px-1.5 py-0.5 font-bebas text-[10px] text-white">
+                        {idx + 1}
+                      </span>
+                      <span className="mt-1 text-[10px] font-medium tabular-nums text-pace-muted">
+                        {p.distanceKm.toFixed(1)} km
+                      </span>
+                      {p.reason && (
+                        <span className="line-clamp-2 text-[9px] leading-tight text-pace-muted">
+                          {p.reason}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
         </>
+      }
+      sidebarFooter={
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onBack}
+            className="pace-toolbar-btn shrink-0"
+          >
+            Back
+          </button>
+          <button
+            type="button"
+            disabled={!anchorLatLngs.length}
+            onClick={() =>
+              onComplete({
+                anchorLatLngs,
+                center,
+                rotationDeg,
+                scale,
+              })
+            }
+            className="pace-toolbar-btn-primary flex-1 font-bebas tracking-[0.08em]"
+          >
+            Snap to streets →
+          </button>
+        </div>
       }
       map={
         <div className="relative h-full min-h-0 w-full">
           <MapContainer
+            id={leafletId}
             center={defaultCenter}
             zoom={13}
             className="h-full w-full"

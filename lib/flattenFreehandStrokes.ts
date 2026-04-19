@@ -5,18 +5,7 @@
  * that creates bogus triangles at T-junctions.
  */
 
-function haversineMeters(a: [number, number], b: [number, number]): number {
-  const R = 6371000;
-  const toR = (d: number) => (d * Math.PI) / 180;
-  const dLat = toR(b[0] - a[0]);
-  const dLng = toR(b[1] - a[1]);
-  const lat1 = toR(a[0]);
-  const lat2 = toR(b[0]);
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
-}
+import { haversineMeters } from "./haversine";
 
 /** Below this, treat the next stroke as continuing the same path (skip its first vertex). */
 const STROKE_JOIN_GAP_M = 22;

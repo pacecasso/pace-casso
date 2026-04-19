@@ -1,17 +1,5 @@
-import * as turf from "@turf/turf";
-
-function haversineMeters(a: [number, number], b: [number, number]): number {
-  const R = 6371000;
-  const toR = (d: number) => (d * Math.PI) / 180;
-  const dLat = toR(b[0] - a[0]);
-  const dLng = toR(b[1] - a[1]);
-  const lat1 = toR(a[0]);
-  const lat2 = toR(b[0]);
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
-}
+import { simplifyLatLng } from "./douglasPeucker";
+import { haversineMeters } from "./haversine";
 
 /** Drop consecutive vertices closer than minM (noise from touch / dense sampling). */
 function dedupeByMinSpacing(
@@ -50,38 +38,18 @@ const SPARSE_VERTEX_CAP = 56;
  */
 export type AnchorPathSource = "default" | "image" | "freehand";
 
-function turfDpSimplify(
+function dpSimplifyLatLng(
   work: [number, number][],
   closed: boolean,
-  toleranceDeg: number,
+  toleranceMeters: number,
 ): [number, number][] {
   if (work.length < 2) return work;
-  const line = turf.lineString(
-    work.map(([lat, lng]) => [lng, lat] as [number, number]),
-  );
-  let simplified: GeoJSON.Feature<GeoJSON.LineString>;
-  try {
-    simplified = turf.simplify(line, {
-      tolerance: toleranceDeg,
-      highQuality: true,
-    }) as GeoJSON.Feature<GeoJSON.LineString>;
-  } catch {
-    return work;
-  }
-
-  const ring = simplified.geometry?.coordinates;
-  if (!ring || ring.length < 2) return work;
-
-  let out = ring.map(([lng, lat]) => [lat, lng] as [number, number]);
-
+  let out = simplifyLatLng(work, toleranceMeters) as [number, number][];
   if (closed && out.length >= 2) {
     const f = out[0]!;
     const l = out[out.length - 1]!;
-    if (haversineMeters(f, l) > 18) {
-      out = [...out, f];
-    }
+    if (haversineMeters(f, l) > 18) out = [...out, f];
   }
-
   return out.length >= 2 ? out : work;
 }
 
@@ -116,11 +84,13 @@ export function simplifyAnchorPathForSnap(
   if (work.length <= 6) return pts;
 
   const n = work.length;
-  const toleranceDeg =
-    n > 100 ? 0.00042 : n > 50 ? 0.00032 : n > 20 ? 0.00022 : 0.00014;
-  const tol = closed ? toleranceDeg * 0.42 : toleranceDeg;
+  // Tolerances in metres (previously degree-based: 0.00014°–0.00042° ≈ 15–47 m).
+  // Bumped ~30 % more aggressive to smooth anchor paths.
+  const toleranceM =
+    n > 100 ? 60 : n > 50 ? 45 : n > 20 ? 30 : 20;
+  const tol = closed ? toleranceM * 0.42 : toleranceM;
 
-  const out = turfDpSimplify(work, closed, tol);
+  const out = dpSimplifyLatLng(work, closed, tol);
 
   return out.length >= 2 ? out : pts;
 }

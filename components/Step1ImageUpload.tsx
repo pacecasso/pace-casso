@@ -25,6 +25,8 @@ const MAX_LINE_UNDO = 28;
 const DEFAULT_CONTOUR_LEVEL = 0.22;
 /** Photo trace → line mask: peel this many boundary layers so the canvas shows strokes, not a solid fill. */
 const PHOTO_LINE_ART_OUTLINE_LAYERS = 3;
+/** Gaussian sigma (in 300px canvas pixels) applied to luminance before thresholding to remove staircase jaggedness. */
+const PHOTO_BLUR_SIGMA = 1.0;
 
 type UploadedImage = {
   url: string;
@@ -32,10 +34,61 @@ type UploadedImage = {
 };
 
 type Step1ImageUploadProps = {
-  onComplete: (normalizedContour: NormalizedPoint[]) => void;
+  /** `imageBase64` is a data-URL of the uploaded image (for Claude vision scoring in Step 2). */
+  onComplete: (
+    normalizedContour: NormalizedPoint[],
+    imageBase64: string | null,
+  ) => void;
   /** Back to source picker (image vs freehand). */
   onBack?: () => void;
 };
+
+/**
+ * Decode the uploaded image and re-encode at a predictable size for the Claude
+ * vision API. Downscales only — small images are kept at native size.
+ * Returns a JPEG data-URL.
+ */
+async function imageFileToSizedDataUrl(
+  file: File,
+  maxEdge = 1024,
+  jpegQuality = 0.92,
+): Promise<string> {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("Image failed to load"));
+      el.src = objectUrl;
+    });
+    const iw = img.naturalWidth;
+    const ih = img.naturalHeight;
+    if (iw === 0 || ih === 0) throw new Error("Image has zero dimensions");
+    const scale = Math.min(1, maxEdge / Math.max(iw, ih));
+    const cw = Math.max(1, Math.round(iw * scale));
+    const ch = Math.max(1, Math.round(ih * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas 2D context unavailable");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, 0, 0, cw, ch);
+    const dataUrl = canvas.toDataURL("image/jpeg", jpegQuality);
+    // DIAGNOSTIC: source file vs. encoded output so tiny thumbnails are visible
+    console.log("[Step1 image->base64]", {
+      sourceFileBytes: file.size,
+      sourceFileType: file.type,
+      imgPixels: `${iw}x${ih}`,
+      canvasPixels: `${cw}x${ch}`,
+      dataUrlChars: dataUrl.length,
+    });
+    return dataUrl;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
 
 type Tool = "draw" | "erase";
 
@@ -77,6 +130,52 @@ function lineArtCursorCss(tool: Tool, brushRadius: number): string {
   const hy = Math.round((PEN_HOTSPOT_Y * penPx) / 32);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${penPx}" height="${penPx}" viewBox="0 0 32 32"><path d="M4 26 L10 20 L22 8 L26 12 L14 24 L8 28 Z" fill="#e5e5e5" stroke="#171717" stroke-width="1.2" stroke-linejoin="round"/><path d="M22 8 L24 6 L27 9 L25 11 Z" fill="#a3a3a3" stroke="#171717" stroke-width="1"/></svg>`;
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${hx} ${hy}, crosshair`;
+}
+
+/**
+ * Separable Gaussian blur on a Float32Array image (row-major, w×h).
+ * Clamps at borders (reflect-zero equivalent). sigma controls smoothing radius.
+ */
+function gaussianBlurFloat32(
+  src: Float32Array,
+  w: number,
+  h: number,
+  sigma: number,
+): Float32Array {
+  const radius = Math.ceil(sigma * 2.5);
+  const ks = 2 * radius + 1;
+  const kernel = new Float32Array(ks);
+  let ksum = 0;
+  for (let i = 0; i < ks; i++) {
+    const x = i - radius;
+    kernel[i] = Math.exp(-(x * x) / (2 * sigma * sigma));
+    ksum += kernel[i];
+  }
+  for (let i = 0; i < ks; i++) kernel[i] /= ksum;
+
+  const tmp = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let k = 0; k < ks; k++) {
+        const sx = Math.max(0, Math.min(w - 1, x + k - radius));
+        v += src[y * w + sx]! * kernel[k]!;
+      }
+      tmp[y * w + x] = v;
+    }
+  }
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let k = 0; k < ks; k++) {
+        const sy = Math.max(0, Math.min(h - 1, y + k - radius));
+        v += tmp[sy * w + x]! * kernel[k]!;
+      }
+      out[y * w + x] = v;
+    }
+  }
+  return out;
 }
 
 /** Ink strength 0 = paper, 1 = black (matches Step1 luminance convention). */
@@ -353,12 +452,18 @@ export default function Step1ImageUpload({
           [buf],
         );
       } else {
-        const pts = extractNormalizedContourFromLineMask(
-          copy,
-          level,
-          BOX_SIZE,
-          BOX_SIZE,
-        ) as NormalizedPoint[] | null;
+        let pts: NormalizedPoint[] | null = null;
+        try {
+          pts = extractNormalizedContourFromLineMask(
+            copy,
+            level,
+            BOX_SIZE,
+            BOX_SIZE,
+          ) as NormalizedPoint[] | null;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setContourHint(`Contour preview failed: ${msg}`);
+        }
         if (id !== contourReqIdRef.current) return;
         setNormalizedContour(pts);
         requestAnimationFrame(() => applyContourToCanvas(pts));
@@ -454,7 +559,7 @@ export default function Step1ImageUpload({
 
       const hiData = octx.getImageData(0, 0, LUM_SAMPLE_PX, LUM_SAMPLE_PX);
       const lum = buildLuminanceMinPool2x2(hiData, LUM_SAMPLE_PX);
-      luminanceRef.current = lum;
+      luminanceRef.current = gaussianBlurFloat32(lum, BOX_SIZE, BOX_SIZE, PHOTO_BLUR_SIGMA);
       setThreshold(0.5);
 
       imageCtx.imageSmoothingEnabled = false;
@@ -885,7 +990,19 @@ export default function Step1ImageUpload({
                 <button
                   type="button"
                   disabled={!normalizedContour}
-                  onClick={() => normalizedContour && onComplete(normalizedContour)}
+                  onClick={async () => {
+                    if (!normalizedContour) return;
+                    let b64: string | null = null;
+                    if (uploadedImage) {
+                      try {
+                        b64 = await imageFileToSizedDataUrl(uploadedImage.file);
+                      } catch (err) {
+                        console.warn("[Step1] image encode failed:", err);
+                        b64 = null;
+                      }
+                    }
+                    onComplete(normalizedContour, b64);
+                  }}
                   className="pace-toolbar-btn-primary px-4 py-2"
                 >
                   Next: place on map →

@@ -10,6 +10,7 @@ import {
 } from "../lib/latLngPathToNormalizedContour";
 import type { NormalizedPoint } from "./Step1ImageUpload";
 import { OSM_TILE_ATTRIBUTION, OSM_TILE_URL } from "../lib/mapAttribution";
+import { useLeafletContainerId } from "../lib/useLeafletContainerId";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
 import MapChunkFallback from "./MapChunkFallback";
 import MapStepSplitLayout from "./MapStepSplitLayout";
@@ -93,6 +94,7 @@ export default function StepFreehandMapDraw({
   const [mode, setMode] = useState<"draw" | "pan">("pan");
   const [strokes, setStrokes] = useState<[number, number][][]>([]);
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const leafletId = useLeafletContainerId();
   const lastInStrokeRef = useRef<[number, number] | null>(null);
 
   const finalizeOpenStroke = useCallback(() => {
@@ -292,6 +294,7 @@ export default function StepFreehandMapDraw({
       map={
         <div className="relative h-full min-h-0 w-full">
           <MapContainer
+            id={leafletId}
             center={defaultCenter as LatLngExpression}
             zoom={14}
             className="z-0 h-full w-full"

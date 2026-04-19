@@ -8,3 +8,16 @@ playwright/.cache
 .env
 .env.local
 *.log
+
+# Agent tool metadata
+.claude/
+
+# Local reference screenshots / test images at repo root (kept for
+# convenience but not tracked). Image assets under public/ and app/ are
+# still committed.
+/*.png
+/*.jpg
+/*.jpeg
+/*.jfif
+/*.webp
+/*.gif

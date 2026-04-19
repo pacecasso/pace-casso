@@ -168,7 +168,7 @@ export default function GalleryPage() {
 
           <div className="mt-12 flex flex-col items-center gap-4 border-t border-pace-line pt-10 text-center">
             <p className="max-w-md text-sm text-pace-muted">
-              Ready to draw your line on real streets?
+              Ready to draw your design on real streets?
             </p>
             <Link href="/create" className="pace-btn-primary px-8">
               Start creating

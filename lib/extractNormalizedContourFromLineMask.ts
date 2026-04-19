@@ -4,7 +4,7 @@
  */
 
 import * as d3 from "d3-contour";
-import * as turf from "@turf/turf";
+import { simplifyCartesian } from "./douglasPeucker";
 import {
   medianMinDistBetweenRings,
   stitchNestedHoleRingsInPlace,
@@ -192,34 +192,24 @@ function dedupeNearlyParallelContourRings(rings: [number, number][][]): void {
   for (const r of keep) rings.push(r);
 }
 
-function simplifyRingPx(ring: [number, number][]): [number, number][] {
+/**
+ * Simplify a closed pixel-space ring using the shared DP utility.
+ * Re-closes the ring if DP opens the endpoint gap beyond 0.6 px.
+ * `dense` flag selects tighter tolerances for Moore boundary traces,
+ * which are noisier (pixel-grid staircase) than d3-contour output.
+ */
+function simplifyRingPx(
+  ring: [number, number][],
+  dense = false,
+): [number, number][] {
   if (ring.length < 5) return ring;
-  const tolerancePx = ring.length > 900 ? 0.62 : 0.36;
-  const ls = turf.lineString(ring.map(([x, y]) => [x, y]));
-  const out = turf.simplify(ls, {
-    tolerance: tolerancePx,
-    highQuality: true,
-  });
-  const coords = out.geometry.coordinates as [number, number][];
-  if (coords.length < 3) return ring;
-  const first = coords[0]!;
-  const last = coords[coords.length - 1]!;
-  if (Math.hypot(first[0] - last[0], first[1] - last[1]) > 0.6) {
-    return [...coords, first];
+  let tolerancePx: number;
+  if (dense) {
+    tolerancePx = ring.length > 3200 ? 0.35 : ring.length > 1600 ? 0.22 : 0.12;
+  } else {
+    tolerancePx = ring.length > 900 ? 0.9 : 0.5;
   }
-  return coords;
-}
-
-function simplifyMooreRing(ring: [number, number][]): [number, number][] {
-  if (ring.length < 5) return ring;
-  const tolerancePx =
-    ring.length > 3200 ? 0.2 : ring.length > 1600 ? 0.12 : 0.055;
-  const ls = turf.lineString(ring.map(([x, y]) => [x, y]));
-  const out = turf.simplify(ls, {
-    tolerance: tolerancePx,
-    highQuality: true,
-  });
-  const coords = out.geometry.coordinates as [number, number][];
+  const coords = simplifyCartesian(ring, tolerancePx);
   if (coords.length < 3) return ring;
   const first = coords[0]!;
   const last = coords[coords.length - 1]!;
@@ -348,9 +338,7 @@ export function extractNormalizedContourFromLineMask(
   const smoothed =
     usedCenterline && ring.length < 900
       ? ring
-      : useLightSimplify
-        ? simplifyMooreRing(ring)
-        : simplifyRingPx(ring);
+      : simplifyRingPx(ring, useLightSimplify);
   const target = useLightSimplify
     ? Math.min(560, Math.max(320, Math.floor(smoothed.length * 0.62)))
     : Math.min(200, Math.max(120, Math.floor(smoothed.length / 3)));
