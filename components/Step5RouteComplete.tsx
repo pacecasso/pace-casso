@@ -13,6 +13,10 @@ import MapChunkFallback from "./MapChunkFallback";
 import { getShareTwitterHandle } from "../lib/siteConfig";
 import { getSiteUrl } from "../lib/siteUrl";
 import { saveFinalizedRoute } from "../lib/finalizedRouteMemory";
+import {
+  isRouteAnimationSupported,
+  recordRouteAnimation,
+} from "../lib/recordRouteAnimation";
 
 const Step5PreviewMap = dynamic(() => import("./Step5PreviewMap"), {
   ssr: false,
@@ -261,6 +265,50 @@ export default function Step5RouteComplete({
     );
   }, [turnCues]);
 
+  const [animBusy, setAnimBusy] = useState(false);
+  const [animError, setAnimError] = useState<string | null>(null);
+  const [animSupported, setAnimSupported] = useState(false);
+  useEffect(() => {
+    setAnimSupported(isRouteAnimationSupported());
+  }, []);
+
+  const downloadAnimation = useCallback(async () => {
+    setAnimBusy(true);
+    setAnimError(null);
+    try {
+      const coords = routeLine;
+      if (coords.length < 2) {
+        setAnimError("Route too short to animate.");
+        return;
+      }
+      const distanceLabel =
+        route.distanceMeters != null
+          ? `${(route.distanceMeters / 1000).toFixed(1)} km`
+          : "";
+      const blob = await recordRouteAnimation(coords, {
+        distanceLabel,
+        title: "PaceCasso",
+      });
+      if (!blob) {
+        setAnimError(
+          "Your browser doesn't support canvas video recording. Try Chrome, Edge, or Firefox.",
+        );
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "pacecasso-route.webm";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.warn("[Step5] recordRouteAnimation failed:", err);
+      setAnimError("Couldn't record animation — try again.");
+    } finally {
+      setAnimBusy(false);
+    }
+  }, [routeLine, route.distanceMeters]);
+
   const distanceKm =
     route.distanceMeters != null
       ? (route.distanceMeters / 1000).toFixed(2)
@@ -431,7 +479,23 @@ export default function Step5RouteComplete({
                 >
                   Cues (.txt)
                 </button>
+                {animSupported && (
+                  <button
+                    type="button"
+                    onClick={() => void downloadAnimation()}
+                    disabled={animBusy || pathVertices < 2}
+                    className="pace-toolbar-btn px-3 py-2 disabled:opacity-40"
+                    title="Download a ~4-second animation of the route drawing itself — great for social."
+                  >
+                    {animBusy ? "Recording…" : "Animation (.webm)"}
+                  </button>
+                )}
               </div>
+              {animError && (
+                <p className="text-[10px] leading-snug text-red-600">
+                  {animError}
+                </p>
+              )}
 
               <span className="mt-4 font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
                 Share

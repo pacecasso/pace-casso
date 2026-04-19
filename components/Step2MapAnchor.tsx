@@ -68,6 +68,7 @@ export default function Step2MapAnchor({
   const [autoBusy, setAutoBusy] = useState(false);
   const [autoHint, setAutoHint] = useState<string | null>(null);
   const leafletId = useLeafletContainerId();
+  const [targetDistanceKm, setTargetDistanceKm] = useState<number | null>(null);
   const [picks, setPicks] = useState<Top5Pick[]>([]);
   const [picksVisionUsed, setPicksVisionUsed] = useState(false);
   const [picksHint, setPicksHint] = useState<ShapeHint | null>(null);
@@ -92,6 +93,10 @@ export default function Step2MapAnchor({
           anchorAround:
             mode === "refine"
               ? { center, rotationDeg, scale }
+              : undefined,
+          targetDistanceKm:
+            mode === "full" && targetDistanceKm != null
+              ? targetDistanceKm
               : undefined,
         });
         if (r.picks.length === 0) {
@@ -122,7 +127,7 @@ export default function Step2MapAnchor({
         setAutoBusy(false);
       }
     },
-    [contour, cityPreset, imageBase64, center, rotationDeg, scale],
+    [contour, cityPreset, imageBase64, center, rotationDeg, scale, targetDistanceKm],
   );
 
   const applyPick = useCallback((pick: Top5Pick, idx: number) => {
@@ -221,6 +226,38 @@ export default function Step2MapAnchor({
           </div>
 
           <div className="mt-4 flex flex-col gap-2">
+            <label className="flex items-center gap-2 text-[11px] text-pace-muted">
+              <span className="shrink-0 font-medium">Target distance:</span>
+              <input
+                type="number"
+                min={2}
+                max={40}
+                step={0.5}
+                value={targetDistanceKm ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "") {
+                    setTargetDistanceKm(null);
+                    return;
+                  }
+                  const n = parseFloat(v);
+                  setTargetDistanceKm(Number.isFinite(n) ? n : null);
+                }}
+                placeholder="any"
+                className="w-16 rounded border border-pace-line bg-pace-white px-2 py-1 text-xs tabular-nums text-pace-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow"
+              />
+              <span className="text-pace-muted">km</span>
+              {targetDistanceKm != null && (
+                <button
+                  type="button"
+                  onClick={() => setTargetDistanceKm(null)}
+                  className="ml-auto text-[10px] text-pace-muted underline underline-offset-2 hover:text-pace-ink"
+                  title="Clear target distance"
+                >
+                  clear
+                </button>
+              )}
+            </label>
             <button
               type="button"
               disabled={autoBusy || !contour.length}

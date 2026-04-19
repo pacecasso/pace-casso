@@ -97,6 +97,13 @@ export type AutoFindTop5Options = {
     rotationDeg: number;
     scale: number;
   };
+  /**
+   * When present (and not in refine mode), override the hint-derived scale
+   * array with scales computed to yield a route close to this distance. The
+   * snap stage can shift the final distance ±30% due to street shortcuts, so
+   * this is a target, not a hard cap.
+   */
+  targetDistanceKm?: number;
 };
 
 // --- helpers -----------------------------------------------------------------
@@ -118,6 +125,30 @@ function scalesFromHint(hint: ShapeHint | null): number[] {
     default:
       return [0.5, 0.75, 1.0, 1.4, 1.9, 2.5, 3.2];
   }
+}
+
+/**
+ * When the user asks for a route close to a specific distance, compute the
+ * scale that produces that anchor perimeter, then sample tight variants
+ * around it. Mapbox snap can still shift the final route distance ±30% via
+ * street shortcuts — this is a target, not a hard cap.
+ */
+function scalesFromTargetDistance(
+  contour: ContourPoint[],
+  preset: CityPreset,
+  targetDistanceKm: number,
+): number[] | null {
+  if (!Number.isFinite(targetDistanceKm) || targetDistanceKm <= 0) return null;
+  const ref = buildAnchorLatLngsFromContour(contour, {
+    center: preset.defaultCenter,
+    rotationDeg: 0,
+    scale: 1.0,
+  });
+  if (!ref.approxDistanceKm || ref.approxDistanceKm <= 0) return null;
+  const targetScale = targetDistanceKm / ref.approxDistanceKm;
+  return [0.85, 0.93, 1.0, 1.08, 1.15]
+    .map((m) => targetScale * m)
+    .map((s) => Math.max(0.3, Math.min(3.5, s)));
 }
 
 /**
@@ -186,6 +217,7 @@ function enumerateCandidates(
   preset: CityPreset,
   hint: ShapeHint | null,
   anchorAround?: AutoFindTop5Options["anchorAround"],
+  targetDistanceKm?: number,
 ): PlacementTransform[] {
   if (anchorAround) {
     return enumerateAroundAnchor(preset, anchorAround);
@@ -195,7 +227,12 @@ function enumerateCandidates(
   const latSpan = b.north - b.south - 2 * MARGIN;
   const lngSpan = b.east - b.west - 2 * MARGIN;
   const GRID = 5;
-  const scales = scalesFromHint(hint);
+  // Target-distance scales take priority over hint-derived scales when both
+  // are available — the user asked for a specific distance; respect it.
+  const scales =
+    (targetDistanceKm != null
+      ? scalesFromTargetDistance(contour, preset, targetDistanceKm)
+      : null) ?? scalesFromHint(hint);
   const rotations = rotationsFromHint(contour, preset, hint);
 
   const out: PlacementTransform[] = [];
@@ -612,7 +649,13 @@ export async function autoFindTop5(
     hint = await getVisionHint(parsedOrig.data, parsedOrig.mediaType);
   }
 
-  const raw = enumerateCandidates(contour, preset, hint, options.anchorAround);
+  const raw = enumerateCandidates(
+    contour,
+    preset,
+    hint,
+    options.anchorAround,
+    options.targetDistanceKm,
+  );
 
   const valid: ValidCandidate[] = [];
   for (const p of raw) {

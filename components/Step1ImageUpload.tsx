@@ -942,6 +942,14 @@ export default function Step1ImageUpload({
                   {contourHint}
                 </p>
               ) : null}
+              {imageReady && contourBuilt ? (
+                <p className="mt-2 max-w-[min(100vw-1rem,280px)] rounded border-l-2 border-pace-blue bg-pace-blue/5 px-2 py-1.5 text-center font-dm text-[10px] leading-snug text-pace-ink sm:text-[11px]">
+                  <strong>Tip:</strong> a route is one continuous line. Inner
+                  holes (like the eye of an R) are auto-bridged. If your image
+                  has two separate pieces, use the <strong>Draw</strong> tool
+                  to sketch a thin connector between them.
+                </p>
+              ) : null}
             </div>
           </div>
 

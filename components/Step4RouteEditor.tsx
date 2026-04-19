@@ -1090,29 +1090,6 @@ export default function Step4RouteEditor({
             </p>
           </div>
 
-          <div className="mt-4 flex flex-col gap-2 border-t border-pace-line pt-4">
-            <button type="button" onClick={onBack} className="pace-toolbar-btn">
-              Back
-            </button>
-            <button
-              type="button"
-              disabled={waypoints.length < 2}
-              onClick={() =>
-                onComplete({
-                  coordinates:
-                    activeRouteLine.length >= 2
-                      ? (activeRouteLine as [number, number][])
-                      : (waypoints as [number, number][]),
-                  distanceMeters,
-                  blockWaypoints: waypoints as [number, number][],
-                })
-              }
-              className="pace-toolbar-btn-primary font-bebas tracking-[0.08em]"
-            >
-              Looks good →
-            </button>
-          </div>
-
           <div className="mt-5 flex flex-col gap-4 border-t border-pace-line pt-4 text-sm">
             <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-4">
@@ -1271,6 +1248,34 @@ export default function Step4RouteEditor({
             </div>
           </div>
         </>
+      }
+      sidebarFooter={
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onBack}
+            className="pace-toolbar-btn shrink-0"
+          >
+            Back
+          </button>
+          <button
+            type="button"
+            disabled={waypoints.length < 2}
+            onClick={() =>
+              onComplete({
+                coordinates:
+                  activeRouteLine.length >= 2
+                    ? (activeRouteLine as [number, number][])
+                    : (waypoints as [number, number][]),
+                distanceMeters,
+                blockWaypoints: waypoints as [number, number][],
+              })
+            }
+            className="pace-toolbar-btn-primary flex-1 font-bebas tracking-[0.08em]"
+          >
+            Looks good →
+          </button>
+        </div>
       }
       map={
         <div className="relative h-full min-h-0 w-full">
