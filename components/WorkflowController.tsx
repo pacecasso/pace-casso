@@ -299,47 +299,98 @@ export default function WorkflowController() {
     return () => cancelAnimationFrame(id);
   }, [currentStep, sourceKind]);
 
+  // Step 0 (city gate) = full marketing-style header so users don't see the
+  // header jump between landing.html and /create. Steps 1+ are map/tool
+  // heavy and height-constrained, so we drop to a compact variant (logo +
+  // Start Over only, no wrapping menu row) to keep the map's usable area big.
+  const showFullNav = currentStep === 0;
+
   return (
     <main className="flex min-h-screen flex-col bg-pace-warm">
       <header className="sticky top-0 z-40 bg-pace-white">
-        <div className="pace-app-nav--compact flex items-center justify-between gap-3">
-          <Link
-            href="/landing.html"
-            className="inline-block shrink-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2"
-            aria-label="PaceCasso home"
-          >
-            <BrandLogo className="h-[clamp(3.5rem,10vw,5rem)] w-auto max-w-[min(440px,70vw)] object-contain object-left" />
-          </Link>
-          <nav
-            className="flex shrink-0 items-center gap-x-3 gap-y-1 sm:gap-x-5"
-            aria-label="Marketing links"
-          >
+        {showFullNav ? (
+          /* Mirrors MarketingNav exactly: big logo (left) | centered nav |
+             right slot (Start Over if we already have draft state). */
+          <div className="pace-app-nav flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
             <Link
               href="/landing.html"
-              className="pace-nav-link font-bebas text-xs tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow sm:text-sm"
+              className="inline-block shrink-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2"
+              aria-label="PaceCasso home"
             >
-              Home
+              <BrandLogo />
             </Link>
+            <nav
+              className="order-3 flex w-full flex-wrap items-center justify-center gap-x-6 gap-y-2 border-t border-pace-line pt-3 sm:gap-x-8 lg:order-1 lg:flex-1 lg:w-auto lg:border-t-0 lg:pt-0"
+              aria-label="Main"
+            >
+              <Link
+                href="/landing.html"
+                className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+              >
+                Home
+              </Link>
+              <Link
+                href="/gallery"
+                className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+              >
+                Gallery
+              </Link>
+              <Link
+                href="/how"
+                className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+              >
+                How It Works
+              </Link>
+              <Link
+                href="/community"
+                className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+              >
+                Community
+              </Link>
+              <Link
+                href="/help"
+                className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+              >
+                Help
+              </Link>
+            </nav>
+            {showHeaderStartOver ? (
+              <button
+                type="button"
+                onClick={handleStartOver}
+                className="order-2 shrink-0 rounded border-2 border-pace-line bg-pace-white px-4 py-2 font-bebas text-xs tracking-[0.14em] text-pace-muted uppercase transition hover:border-pace-ink hover:text-pace-ink sm:text-sm lg:order-3"
+                aria-label="Start over — clear saved draft and return to city selection"
+              >
+                Start Over
+              </button>
+            ) : (
+              <span className="hidden shrink-0 lg:order-3 lg:block lg:w-[9rem]" aria-hidden />
+            )}
+          </div>
+        ) : (
+          /* Compact header for map steps. Logo stays clickable and visually
+             recognisable, but we trade the full nav menu for viewport height.
+             Step-indicator row below still shows where we are. */
+          <div className="pace-app-nav--compact flex items-center justify-between gap-3">
             <Link
-              href="/gallery"
-              className="pace-nav-link font-bebas text-xs tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow sm:text-sm"
+              href="/landing.html"
+              className="inline-block shrink-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2"
+              aria-label="PaceCasso home"
             >
-              Gallery
+              <BrandLogo className="h-[clamp(2.25rem,7vw,3rem)] w-auto" />
             </Link>
-            <Link
-              href="/how"
-              className="pace-nav-link font-bebas text-xs tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow sm:text-sm"
-            >
-              How it works
-            </Link>
-            <Link
-              href="/help"
-              className="pace-nav-link hidden font-bebas text-xs tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow sm:inline sm:text-sm"
-            >
-              Help
-            </Link>
-          </nav>
-        </div>
+            {showHeaderStartOver ? (
+              <button
+                type="button"
+                onClick={handleStartOver}
+                className="shrink-0 rounded border-2 border-pace-line bg-pace-white px-3 py-1.5 font-bebas text-[11px] tracking-[0.14em] text-pace-muted uppercase transition hover:border-pace-ink hover:text-pace-ink sm:px-4 sm:py-2 sm:text-xs"
+                aria-label="Start over — clear saved draft and return to city selection"
+              >
+                Start Over
+              </button>
+            ) : null}
+          </div>
+        )}
 
         <div className="border-b border-pace-line bg-pace-white px-[clamp(1rem,4vw,2.5rem)] py-1.5 sm:py-2">
           <div className="mx-auto flex max-w-5xl flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
@@ -385,16 +436,6 @@ export default function WorkflowController() {
                   />
                 ))}
               </div>
-              {showHeaderStartOver ? (
-                <button
-                  type="button"
-                  onClick={handleStartOver}
-                  className="pace-start-over-header shrink-0 font-bebas text-[11px] tracking-[0.14em] text-pace-muted underline decoration-pace-line underline-offset-2 transition hover:text-pace-ink hover:decoration-pace-yellow sm:text-[11px]"
-                  aria-label="Start over — clear saved draft and return to city selection"
-                >
-                  START OVER
-                </button>
-              ) : null}
             </div>
           </div>
         </div>
