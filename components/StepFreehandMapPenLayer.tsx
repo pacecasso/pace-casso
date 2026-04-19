@@ -38,11 +38,18 @@ export default function StepFreehandMapPenLayer({
   useEffect(() => {
     const el = map.getContainer();
     if (mode === "pan") {
+      el.style.touchAction = "";
       map.dragging.enable();
       map.doubleClickZoom?.enable();
       return;
     }
 
+    // On mobile, the browser's native touch handling interprets a single-
+    // finger drag as a pan BEFORE Leaflet's pointer listeners get to decide
+    // otherwise. `touch-action: pinch-zoom` tells the browser: no native pan
+    // or tap-zoom on single-finger gestures (we handle those with JS), but
+    // keep two-finger pinch-zoom working for the user to zoom the map.
+    el.style.touchAction = "pinch-zoom";
     map.dragging.disable();
     /** Prop `doubleClickZoom={mode === "pan"}` on MapContainer often does not update after mount. */
     map.doubleClickZoom?.disable();
@@ -97,6 +104,15 @@ export default function StepFreehandMapPenLayer({
         lastTapY = ev.clientY;
       }
 
+      // Stop the browser from interpreting this as a pan / scroll, and stop
+      // Leaflet's pre-registered listeners (tap, drag start) from racing us.
+      // Only safe to preventDefault() for touch/pen; mouse-preventDefault
+      // kills focus/click behaviour elsewhere on the page.
+      if (ev.pointerType !== "mouse") {
+        ev.preventDefault();
+      }
+      ev.stopPropagation();
+
       drawing = true;
       try {
         el.setPointerCapture(ev.pointerId);
@@ -109,6 +125,9 @@ export default function StepFreehandMapPenLayer({
 
     const onMove = (ev: PointerEvent) => {
       if (!drawing) return;
+      if (ev.pointerType !== "mouse") {
+        ev.preventDefault();
+      }
       const ll = toLatLng(ev);
       pointRef.current(ll.lat, ll.lng);
     };
@@ -124,17 +143,23 @@ export default function StepFreehandMapPenLayer({
       endRef.current();
     };
 
-    el.addEventListener("pointerdown", onDown);
-    el.addEventListener("pointermove", onMove);
-    el.addEventListener("pointerup", end);
-    el.addEventListener("pointercancel", end);
+    // Capture phase + passive:false so preventDefault() actually blocks the
+    // browser's native touch handling. Leaflet registers bubble-phase tap /
+    // drag listeners; we run first and stop propagation when we claim the
+    // gesture for drawing.
+    const opts: AddEventListenerOptions = { capture: true, passive: false };
+    el.addEventListener("pointerdown", onDown, opts);
+    el.addEventListener("pointermove", onMove, opts);
+    el.addEventListener("pointerup", end, opts);
+    el.addEventListener("pointercancel", end, opts);
 
     return () => {
+      el.style.touchAction = "";
       el.removeEventListener("dblclick", onDblClickCapture, true);
-      el.removeEventListener("pointerdown", onDown);
-      el.removeEventListener("pointermove", onMove);
-      el.removeEventListener("pointerup", end);
-      el.removeEventListener("pointercancel", end);
+      el.removeEventListener("pointerdown", onDown, opts);
+      el.removeEventListener("pointermove", onMove, opts);
+      el.removeEventListener("pointerup", end, opts);
+      el.removeEventListener("pointercancel", end, opts);
       map.dragging.enable();
       map.doubleClickZoom?.enable();
     };
