@@ -16,36 +16,36 @@ export default function MarketingNav() {
           <BrandLogo />
         </Link>
         <nav
-          className="order-3 flex w-full flex-wrap items-center justify-center gap-x-8 gap-y-2 border-t border-pace-line pt-3 lg:order-1 lg:flex-1 lg:w-auto lg:border-t-0 lg:pt-0"
+          className="order-3 flex w-full flex-wrap items-center justify-center gap-x-[clamp(1rem,3vw,2rem)] gap-y-2 border-t border-pace-line pt-3 lg:order-1 lg:flex-1 lg:w-auto lg:border-t-0 lg:pt-0"
           aria-label="Main"
         >
           <Link
             href="/landing.html"
-            className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+            className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
           >
             Home
           </Link>
           <Link
             href="/gallery"
-            className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+            className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
           >
             Gallery
           </Link>
           <Link
             href="/how"
-            className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+            className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
           >
             How It Works
           </Link>
           <Link
             href="/community"
-            className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+            className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
           >
             Community
           </Link>
           <Link
             href="/help"
-            className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+            className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
           >
             Help
           </Link>
