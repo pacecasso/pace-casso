@@ -336,9 +336,9 @@ export default function WorkflowController() {
                     role="listitem"
                     className={`h-2.5 flex-1 rounded-full transition-all duration-300 sm:h-2 sm:max-w-8 ${
                       i < stepNum - 1
-                        ? "bg-pace-yellow"
+                        ? "bg-pace-yellow shadow-[0_0_0_1px_rgba(255,184,0,0.4)]"
                         : i === stepNum - 1
-                          ? "bg-pace-blue ring-1 ring-pace-blue/30"
+                          ? "pace-step-active bg-pace-blue"
                           : "bg-pace-line"
                     }`}
                   />

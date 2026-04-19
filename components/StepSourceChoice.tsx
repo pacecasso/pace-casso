@@ -5,6 +5,10 @@ import { useEffect, useState } from "react";
 import {
   AREA_DESIGN_TEMPLATES,
   AREA_TEMPLATE_INTRO,
+  COMPLEXITY_LABEL,
+  COMPLEXITY_ORDER,
+  contourToSvgPath,
+  type AreaDesignComplexity,
   type AreaDesignContour,
 } from "../lib/areaDesignTemplates";
 import {
@@ -158,58 +162,101 @@ export default function StepSourceChoice({
       </div>
 
       {showTemplates ? (
-        <div className="mt-6 w-full max-w-3xl border-t border-pace-line pt-5">
+        <div className="mt-6 w-full max-w-4xl border-t border-pace-line pt-5">
           <p className="font-bebas text-[11px] tracking-[0.14em] text-pace-muted">
-            Grid-friendly starters
+            Starter shapes
           </p>
           <p className="mt-1 font-dm text-[11px] leading-relaxed text-pace-muted sm:text-xs">
             {AREA_TEMPLATE_INTRO}
           </p>
           <p className="mt-1.5 font-dm text-[10px] leading-snug text-pace-muted sm:text-[11px]">
-            For this city we snap-test each starter (top {AREA_TEMPLATE_SNAP_MAX_TRIES}{" "}
-            placements). &quot;Street-ready&quot; means interpretation score ≥
-            {MIN_SNAP_MATCH_PERCENT_TO_ADOPT}%—same bar as auto-find on the map.
+            Each starter gets snap-tested against {cityPreset?.label ?? "the city"} (top{" "}
+            {AREA_TEMPLATE_SNAP_MAX_TRIES} placements). &quot;Street-ready&quot; means
+            interpretation score ≥{MIN_SNAP_MATCH_PERCENT_TO_ADOPT}%.
           </p>
-          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-2.5">
-            {AREA_DESIGN_TEMPLATES.map((t) => {
-              const row = templateSnap[t.id];
-              const snapBadge =
-                row?.status === "loading" ? (
-                  <span className="mt-1 block text-[9px] font-dm text-pace-muted">
-                    Checking map…
-                  </span>
-                ) : row?.status === "done" ? (
-                  <span
-                    className={
-                      row.meetsThreshold
-                        ? "mt-1 block text-[9px] font-dm text-emerald-700"
-                        : "mt-1 block text-[9px] font-dm text-pace-muted"
-                    }
-                  >
-                    {row.meetsThreshold
-                      ? `Street-ready (≥${MIN_SNAP_MATCH_PERCENT_TO_ADOPT}% interpretation)`
-                      : row.bestPercent != null
-                        ? `Best preview ~${Math.round(row.bestPercent)}% here—use auto-find on the map to try more placements.`
-                        : "Could not preview against streets—still fine to place by hand."}
-                  </span>
-                ) : null;
 
+          {(["simple", "medium", "elaborate"] as AreaDesignComplexity[]).map(
+            (tier) => {
+              const tierTemplates = [...AREA_DESIGN_TEMPLATES]
+                .sort(
+                  (a, b) =>
+                    COMPLEXITY_ORDER[a.complexity] -
+                    COMPLEXITY_ORDER[b.complexity],
+                )
+                .filter((t) => t.complexity === tier);
+              if (tierTemplates.length === 0) return null;
               return (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => onPickAreaTemplate?.(t.contour)}
-                  className="pace-card-editorial flex flex-col gap-0.5 p-2.5 text-left text-[11px] shadow-sm transition hover:border-pace-yellow hover:shadow-md active:scale-[0.99] sm:p-3"
-                >
-                  <span className="font-bebas text-sm tracking-[0.1em] text-pace-ink">
-                    {t.title}
-                  </span>
-                  <span className="leading-snug text-pace-muted">{t.blurb}</span>
-                  {snapBadge}
-                </button>
+                <div key={tier} className="mt-4">
+                  <p className="mb-2 flex items-baseline gap-2 font-bebas text-[10px] tracking-[0.14em] text-pace-muted">
+                    <span className="inline-block h-px w-6 bg-pace-yellow" aria-hidden />
+                    {COMPLEXITY_LABEL[tier]}
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-2.5 lg:grid-cols-4">
+                    {tierTemplates.map((t) => {
+                      const row = templateSnap[t.id];
+                      const snapBadge =
+                        row?.status === "loading" ? (
+                          <span className="mt-1 block text-[9px] font-dm text-pace-muted">
+                            Checking map…
+                          </span>
+                        ) : row?.status === "done" ? (
+                          <span
+                            className={
+                              row.meetsThreshold
+                                ? "mt-1 inline-flex w-fit items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700"
+                                : "mt-1 block text-[9px] font-dm text-pace-muted"
+                            }
+                          >
+                            {row.meetsThreshold
+                              ? "✓ street-ready"
+                              : row.bestPercent != null
+                                ? `best ~${Math.round(row.bestPercent)}% — try auto-find`
+                                : "preview unavailable"}
+                          </span>
+                        ) : null;
+
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => onPickAreaTemplate?.(t.contour)}
+                          className="pace-card-editorial group flex flex-col gap-1 overflow-hidden p-0 text-left text-[11px] shadow-sm transition hover:border-pace-yellow hover:shadow-md active:scale-[0.99]"
+                        >
+                          <div className="relative flex aspect-[5/4] w-full items-center justify-center bg-gradient-to-br from-pace-panel to-pace-white">
+                            <svg
+                              viewBox="0 0 100 100"
+                              width="64"
+                              height="64"
+                              aria-hidden
+                              className="opacity-90 transition group-hover:opacity-100"
+                            >
+                              <path
+                                d={contourToSvgPath(t.contour, 100)}
+                                fill="none"
+                                stroke="var(--pace-ink)"
+                                strokeWidth={4}
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </div>
+                          <div className="flex flex-col gap-0.5 p-2.5 sm:p-3">
+                            <span className="font-bebas text-sm tracking-[0.1em] text-pace-ink">
+                              {t.title}
+                            </span>
+                            <span className="leading-snug text-pace-muted">
+                              {t.blurb}
+                            </span>
+                            {snapBadge}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               );
-            })}
-          </div>
+            },
+          )}
         </div>
       ) : null}
     </div>

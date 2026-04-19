@@ -396,12 +396,30 @@ body {
   font-weight: 600;
   color: var(--ink);
   box-shadow: 0 1px 2px rgba(13, 13, 13, 0.05);
-  transition: background 0.2s ease;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.1s ease,
+    box-shadow 0.15s ease;
   cursor: pointer;
 }
 
-.pace-toolbar-btn:hover {
+.pace-toolbar-btn:hover:not(:disabled) {
   background: var(--panel-gallery);
+  border-color: var(--ink);
+  box-shadow: 0 2px 4px rgba(13, 13, 13, 0.08);
+}
+
+.pace-toolbar-btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: 0 1px 1px rgba(13, 13, 13, 0.06);
+}
+
+.pace-toolbar-btn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 1),
+    0 0 0 4px var(--yellow);
 }
 
 /* Toolbar primary CTA — same yellow lift as landing .btn--yellow, compact */
@@ -424,12 +442,23 @@ body {
 
 .pace-toolbar-btn-primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 5px 0 rgba(13, 13, 13, 0.14);
+  box-shadow:
+    0 5px 0 rgba(13, 13, 13, 0.14),
+    0 8px 16px rgba(255, 184, 0, 0.3);
+  filter: brightness(1.03);
 }
 
 .pace-toolbar-btn-primary:active:not(:disabled) {
-  transform: translateY(0);
-  box-shadow: 0 4px 0 rgba(13, 13, 13, 0.12);
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 rgba(13, 13, 13, 0.12);
+}
+
+.pace-toolbar-btn-primary:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 1),
+    0 0 0 4px var(--ink),
+    0 4px 0 rgba(13, 13, 13, 0.12);
 }
 
 .pace-toolbar-btn-primary:disabled {
@@ -438,4 +467,27 @@ body {
   color: #94a3b8;
   box-shadow: none;
   transform: none;
+}
+
+/* Active workflow step indicator — soft pulse + halo so the current step
+   is visually louder than the completed + upcoming segments. */
+@keyframes paceStepPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1px rgba(22, 143, 208, 0.4), 0 0 0 3px rgba(22, 143, 208, 0.12);
+  }
+  50% {
+    box-shadow: 0 0 0 1px rgba(22, 143, 208, 0.6), 0 0 0 5px rgba(22, 143, 208, 0.08);
+  }
+}
+
+.pace-step-active {
+  animation: paceStepPulse 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pace-step-active {
+    animation: none;
+    box-shadow: 0 0 0 1px rgba(22, 143, 208, 0.4),
+      0 0 0 3px rgba(22, 143, 208, 0.12);
+  }
 }

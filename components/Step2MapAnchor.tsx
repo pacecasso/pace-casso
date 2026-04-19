@@ -226,9 +226,21 @@ export default function Step2MapAnchor({
           </div>
 
           <div className="mt-4 flex flex-col gap-2">
-            <label className="flex items-center gap-2 text-[11px] text-pace-muted">
-              <span className="shrink-0 font-medium">Target distance:</span>
+            <div
+              className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 transition ${
+                targetDistanceKm != null
+                  ? "border-pace-yellow bg-pace-yellow/10"
+                  : "border-pace-line bg-pace-white"
+              }`}
+            >
+              <label
+                htmlFor="target-distance"
+                className="shrink-0 font-bebas text-[10px] tracking-[0.14em] text-pace-muted"
+              >
+                Distance
+              </label>
               <input
+                id="target-distance"
                 type="number"
                 min={2}
                 max={40}
@@ -244,20 +256,21 @@ export default function Step2MapAnchor({
                   setTargetDistanceKm(Number.isFinite(n) ? n : null);
                 }}
                 placeholder="any"
-                className="w-16 rounded border border-pace-line bg-pace-white px-2 py-1 text-xs tabular-nums text-pace-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow"
+                className="w-14 border-0 bg-transparent p-0 text-xs font-semibold tabular-nums text-pace-ink placeholder:font-normal placeholder:text-pace-muted focus:outline-none focus:ring-0"
               />
-              <span className="text-pace-muted">km</span>
+              <span className="text-[11px] font-medium text-pace-muted">km</span>
               {targetDistanceKm != null && (
                 <button
                   type="button"
                   onClick={() => setTargetDistanceKm(null)}
-                  className="ml-auto text-[10px] text-pace-muted underline underline-offset-2 hover:text-pace-ink"
+                  className="ml-auto rounded-full px-1.5 text-[10px] leading-tight text-pace-muted transition hover:bg-pace-ink/5 hover:text-pace-ink"
                   title="Clear target distance"
+                  aria-label="Clear target distance"
                 >
-                  clear
+                  ×
                 </button>
               )}
-            </label>
+            </div>
             <button
               type="button"
               disabled={autoBusy || !contour.length}
@@ -314,7 +327,7 @@ export default function Step2MapAnchor({
                   )}
                 </p>
               )}
-              <div className="grid grid-cols-2 gap-1.5">
+              <div className="grid grid-cols-2 gap-2">
                 {picks.map((p, idx) => {
                   const selected = selectedPickIdx === idx;
                   return (
@@ -322,11 +335,11 @@ export default function Step2MapAnchor({
                       key={idx}
                       type="button"
                       onClick={() => applyPick(p, idx)}
-                      className={`relative flex flex-col overflow-hidden rounded border transition ${
+                      className={`group relative flex flex-col overflow-hidden rounded-lg border bg-white text-left shadow-sm transition-all duration-150 ease-out ${
                         selected
-                          ? "border-pace-yellow ring-2 ring-pace-yellow/50"
-                          : "border-pace-line hover:border-pace-yellow/60"
-                      } bg-white p-1 text-left`}
+                          ? "-translate-y-0.5 border-pace-yellow shadow-md ring-2 ring-pace-yellow/60"
+                          : "border-pace-line hover:-translate-y-0.5 hover:border-pace-yellow/60 hover:shadow-md"
+                      }`}
                       title={p.reason || `Option ${idx + 1}`}
                     >
                       {p.previewDataUrl ? (
@@ -334,22 +347,30 @@ export default function Step2MapAnchor({
                         <img
                           src={p.previewDataUrl}
                           alt={`Option ${idx + 1}`}
-                          className="aspect-square w-full object-contain"
+                          className="aspect-square w-full object-cover"
                         />
                       ) : (
                         <div className="aspect-square w-full bg-pace-line/30" />
                       )}
-                      <span className="absolute left-1 top-1 rounded bg-pace-ink/85 px-1.5 py-0.5 font-bebas text-[10px] text-white">
+                      <span
+                        className={`absolute left-1.5 top-1.5 rounded-full px-2 py-0.5 font-bebas text-[10px] tracking-wider shadow-sm transition ${
+                          selected
+                            ? "bg-pace-yellow text-pace-ink"
+                            : "bg-pace-ink/85 text-white"
+                        }`}
+                      >
                         {idx + 1}
                       </span>
-                      <span className="mt-1 text-[10px] font-medium tabular-nums text-pace-muted">
-                        {p.distanceKm.toFixed(1)} km
-                      </span>
-                      {p.reason && (
-                        <span className="line-clamp-2 text-[9px] leading-tight text-pace-muted">
-                          {p.reason}
+                      <div className="flex flex-col gap-0.5 px-2 py-1.5">
+                        <span className="text-[10px] font-semibold tabular-nums text-pace-ink">
+                          {p.distanceKm.toFixed(1)} km
                         </span>
-                      )}
+                        {p.reason && (
+                          <span className="line-clamp-2 text-[9px] leading-tight text-pace-muted">
+                            {p.reason}
+                          </span>
+                        )}
+                      </div>
                     </button>
                   );
                 })}
