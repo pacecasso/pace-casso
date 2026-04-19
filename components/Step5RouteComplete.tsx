@@ -397,24 +397,24 @@ export default function Step5RouteComplete({
 
             <div className="mt-5 flex flex-col gap-2 border-t border-pace-line pt-5">
               <div className="flex items-center justify-between gap-2">
-                <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
+                <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
                   Turn-by-turn
                 </span>
                 {cuesLoading ? (
                   <span
-                    className="text-[10px] font-medium text-pace-blue"
+                    className="text-[11px] font-medium text-pace-blue"
                     role="status"
                     aria-live="polite"
                   >
                     Building turn-by-turn cues…
                   </span>
                 ) : turnCues.length > 0 ? (
-                  <span className="text-[10px] font-medium tabular-nums text-pace-muted">
+                  <span className="text-[11px] font-medium tabular-nums text-pace-muted">
                     {turnCues.length} steps
                   </span>
                 ) : cuesError ? (
                   <span
-                    className="text-[10px] font-medium text-red-600"
+                    className="text-[11px] font-medium text-red-600"
                     title={cuesError}
                   >
                     Unavailable
@@ -423,7 +423,7 @@ export default function Step5RouteComplete({
               </div>
               {cuesError ? (
                 <p
-                  className="text-[10px] text-red-600"
+                  className="text-[11px] text-red-600"
                   role="alert"
                   aria-live="assertive"
                 >
@@ -445,12 +445,12 @@ export default function Step5RouteComplete({
                   ))}
                 </ol>
               ) : !cuesLoading && !cuesError && pathVertices >= 2 ? (
-                <p className="text-[10px] text-pace-muted">
+                <p className="text-[11px] text-pace-muted">
                   No cues returned — check connection or try again.
                 </p>
               ) : null}
 
-              <span className="mt-2 font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
+              <span className="mt-2 font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
                 Export
               </span>
               <div className="flex flex-wrap gap-2">
@@ -492,15 +492,15 @@ export default function Step5RouteComplete({
                 )}
               </div>
               {animError && (
-                <p className="text-[10px] leading-snug text-red-600">
+                <p className="text-[11px] leading-snug text-red-600">
                   {animError}
                 </p>
               )}
 
-              <span className="mt-4 font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
+              <span className="mt-4 font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
                 Share
               </span>
-              <p className="text-[10px] leading-snug text-pace-muted">
+              <p className="text-[11px] leading-snug text-pace-muted">
                 Copy a short blurb for social — your route stays on your device;
                 this only shares text and a link to PaceCasso.
               </p>
@@ -524,7 +524,7 @@ export default function Step5RouteComplete({
               </div>
               {shareHint ? (
                 <p
-                  className="text-[10px] font-medium text-pace-blue"
+                  className="text-[11px] font-medium text-pace-blue"
                   role="status"
                   aria-live="polite"
                 >
@@ -532,7 +532,7 @@ export default function Step5RouteComplete({
                 </p>
               ) : null}
 
-              <p className="text-[10px] leading-snug text-pace-muted">
+              <p className="text-[11px] leading-snug text-pace-muted">
                 GPX embeds{" "}
                 <code className="rounded bg-pace-panel px-1 text-pace-ink ring-1 ring-pace-line">
                   &lt;wpt&gt;
@@ -544,7 +544,7 @@ export default function Step5RouteComplete({
                 <h3 className="font-bebas text-[11px] tracking-[0.12em] text-pace-yellow">
                   Get this route on your watch
                 </h3>
-                <ul className="font-dm mt-2 list-disc space-y-1.5 pl-4 text-[10px] leading-relaxed text-pace-muted">
+                <ul className="font-dm mt-2 list-disc space-y-1.5 pl-4 text-[11px] leading-relaxed text-pace-muted">
                   <li>
                     Tap <strong className="text-pace-ink">GPX</strong> — the file
                     downloads to your computer or phone. PaceCasso does not upload
@@ -574,7 +574,7 @@ export default function Step5RouteComplete({
 
             {showArtControls && hasArt ? (
               <div className="mt-4 flex items-center justify-between gap-3 border-t border-pace-line pt-4">
-                <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
+                <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
                   Show art on map
                 </span>
                 <button

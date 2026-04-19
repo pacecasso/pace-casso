@@ -1070,20 +1070,20 @@ export default function Step4RouteEditor({
             </span>
           </div>
 
-          <div className="mt-3 rounded-md border border-pace-line bg-pace-panel/60 px-2.5 py-2 font-dm text-[10px] leading-snug text-pace-muted">
-            <span className="font-bebas text-[9px] tracking-[0.12em] text-pace-yellow">
+          <div className="mt-3 rounded-md border border-pace-line bg-pace-panel/60 px-2.5 py-2 font-dm text-[11px] leading-snug text-pace-muted">
+            <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-yellow">
               Keyboard
             </span>
             <p className="mt-1 text-pace-muted">
-              <kbd className="rounded border border-pace-line bg-pace-white px-1 py-0.5 font-mono text-[9px] text-pace-ink">
+              <kbd className="rounded border border-pace-line bg-pace-white px-1 py-0.5 font-mono text-[10px] text-pace-ink">
                 Delete
               </kbd>{" "}
               or{" "}
-              <kbd className="rounded border border-pace-line bg-pace-white px-1 py-0.5 font-mono text-[9px] text-pace-ink">
+              <kbd className="rounded border border-pace-line bg-pace-white px-1 py-0.5 font-mono text-[10px] text-pace-ink">
                 Backspace
               </kbd>{" "}
               — remove selected ·{" "}
-              <kbd className="rounded border border-pace-line bg-pace-white px-1 py-0.5 font-mono text-[9px] text-pace-ink">
+              <kbd className="rounded border border-pace-line bg-pace-white px-1 py-0.5 font-mono text-[10px] text-pace-ink">
                 Shift
               </kbd>
               + click — multi-select · Double-tap map — add waypoint
@@ -1095,7 +1095,7 @@ export default function Step4RouteEditor({
               <div className="flex flex-wrap items-center gap-4">
                 {showArtControls ? (
                   <div className="flex items-center gap-3">
-                    <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
+                    <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
                       Your art
                     </span>
                     <button
@@ -1117,7 +1117,7 @@ export default function Step4RouteEditor({
                   </div>
                 ) : null}
                 <div className="flex items-center gap-3">
-                  <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
+                  <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
                     Full snap
                   </span>
                   <button
@@ -1138,7 +1138,7 @@ export default function Step4RouteEditor({
                   </button>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
+                  <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
                     Dots
                   </span>
                   <button
@@ -1160,7 +1160,7 @@ export default function Step4RouteEditor({
                 </div>
               </div>
               {showArtControls ? (
-                <p className="font-dm text-[10px] leading-snug text-pace-muted">
+                <p className="font-dm text-[11px] leading-snug text-pace-muted">
                   Dashed <span className="text-emerald-600">green</span> is your
                   traced outline (vs the red street route). It can cut across
                   blocks where streets go around — not a second route. Toggle{" "}
@@ -1168,7 +1168,7 @@ export default function Step4RouteEditor({
                   clean view.
                 </p>
               ) : (
-                <p className="font-dm text-[10px] leading-snug text-pace-muted">
+                <p className="font-dm text-[11px] leading-snug text-pace-muted">
                   Same idea as photo traces: we care how the route reads at
                   city scale, not every corner hugging the sketch.
                 </p>
@@ -1226,7 +1226,7 @@ export default function Step4RouteEditor({
                 Reset
               </button>
               <div className="flex items-center gap-1 rounded-full border border-pace-line bg-pace-panel px-2 py-1">
-                <span className="text-[10px] text-pace-muted">Zoom</span>
+                <span className="text-[11px] text-pace-muted">Zoom</span>
                 <button
                   type="button"
                   className="rounded bg-pace-white px-1.5 text-xs font-bold text-pace-ink shadow-sm ring-1 ring-pace-line"

@@ -236,7 +236,7 @@ export default function Step2MapAnchor({
             >
               <label
                 htmlFor="target-distance"
-                className="shrink-0 font-bebas text-[10px] tracking-[0.14em] text-pace-muted"
+                className="shrink-0 font-bebas text-[11px] tracking-[0.14em] text-pace-muted"
               >
                 Distance
               </label>
@@ -264,7 +264,7 @@ export default function Step2MapAnchor({
                 <button
                   type="button"
                   onClick={() => setTargetDistanceKm(null)}
-                  className="ml-auto rounded-full px-1.5 text-[10px] leading-tight text-pace-muted transition hover:bg-pace-ink/5 hover:text-pace-ink"
+                  className="ml-auto flex h-8 w-8 items-center justify-center rounded-full text-base leading-none text-pace-muted transition hover:bg-pace-ink/10 hover:text-pace-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow"
                   title="Clear target distance"
                   aria-label="Clear target distance"
                 >
@@ -290,15 +290,42 @@ export default function Step2MapAnchor({
               Refine around my placement
             </button>
             {autoHint ? (
-              <p className="text-[10px] leading-snug text-pace-muted">{autoHint}</p>
+              <p className="text-[11px] leading-snug text-pace-muted">{autoHint}</p>
             ) : (
-              <p className="text-[10px] leading-snug text-pace-muted">
+              <p className="text-[11px] leading-snug text-pace-muted">
                 <strong>Auto-find:</strong> searches the whole city.{" "}
                 <strong>Refine:</strong> searches ~2 km around where you&apos;ve
                 put it now, at similar size and angle.
               </p>
             )}
           </div>
+
+          {autoBusy && picks.length === 0 && (
+            <div className="mt-3 flex flex-col gap-2 rounded border border-pace-line bg-pace-warm/50 p-2">
+              <div className="flex items-center justify-between">
+                <span className="font-bebas text-[11px] tracking-[0.1em] text-pace-muted">
+                  Working on it…
+                </span>
+                <span className="inline-flex h-2 w-2 animate-pulse rounded-full bg-pace-yellow motion-reduce:animate-none" aria-hidden />
+              </div>
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="flex animate-pulse flex-col overflow-hidden rounded-lg border border-pace-line bg-white shadow-sm motion-reduce:animate-none"
+                    style={{ animationDelay: `${i * 120}ms` }}
+                    aria-hidden
+                  >
+                    <div className="aspect-square w-full bg-gradient-to-br from-pace-line/50 to-pace-line/20" />
+                    <div className="space-y-1.5 px-2 py-1.5">
+                      <div className="h-2 w-1/3 rounded bg-pace-line/60" />
+                      <div className="h-1.5 w-3/4 rounded bg-pace-line/40" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {picks.length > 0 && (
             <div className="mt-3 flex flex-col gap-2 rounded border border-pace-line bg-pace-warm/50 p-2">
@@ -309,13 +336,13 @@ export default function Step2MapAnchor({
                 <button
                   type="button"
                   onClick={clearPicks}
-                  className="text-[10px] text-pace-muted underline underline-offset-2 hover:text-pace-ink"
+                  className="min-h-[32px] rounded px-2 py-1 text-[11px] text-pace-muted underline underline-offset-2 transition hover:bg-pace-ink/5 hover:text-pace-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow"
                 >
                   clear
                 </button>
               </div>
               {picksHint && (
-                <p className="-mt-1 text-[10px] leading-tight text-pace-muted">
+                <p className="-mt-1 text-[11px] leading-tight text-pace-muted">
                   <span className="font-semibold text-pace-ink">
                     {picksHint.shapeClass}
                   </span>
@@ -328,7 +355,7 @@ export default function Step2MapAnchor({
                   )}
                 </p>
               )}
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 {picks.map((p, idx) => {
                   const selected = selectedPickIdx === idx;
                   return (
@@ -336,7 +363,7 @@ export default function Step2MapAnchor({
                       key={idx}
                       type="button"
                       onClick={() => applyPick(p, idx)}
-                      className={`group relative flex flex-col overflow-hidden rounded-lg border bg-white text-left shadow-sm transition-all duration-150 ease-out ${
+                      className={`group relative flex flex-col overflow-hidden rounded-lg border bg-white text-left shadow-sm transition-all duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-blue focus-visible:ring-offset-2 ${
                         selected
                           ? "-translate-y-0.5 border-pace-yellow shadow-md ring-2 ring-pace-yellow/60"
                           : "border-pace-line hover:-translate-y-0.5 hover:border-pace-yellow/60 hover:shadow-md"
@@ -354,7 +381,7 @@ export default function Step2MapAnchor({
                         <div className="aspect-square w-full bg-pace-line/30" />
                       )}
                       <span
-                        className={`absolute left-1.5 top-1.5 rounded-full px-2 py-0.5 font-bebas text-[10px] tracking-wider shadow-sm transition ${
+                        className={`absolute left-1.5 top-1.5 rounded-full px-2 py-0.5 font-bebas text-[11px] tracking-wider shadow-sm transition ${
                           selected
                             ? "bg-pace-yellow text-pace-ink"
                             : "bg-pace-ink/85 text-white"
@@ -363,11 +390,11 @@ export default function Step2MapAnchor({
                         {idx + 1}
                       </span>
                       <div className="flex flex-col gap-0.5 px-2 py-1.5">
-                        <span className="text-[10px] font-semibold tabular-nums text-pace-ink">
+                        <span className="text-[11px] font-semibold tabular-nums text-pace-ink">
                           {p.distanceKm.toFixed(1)} km
                         </span>
                         {p.reason && (
-                          <span className="line-clamp-2 text-[9px] leading-tight text-pace-muted">
+                          <span className="line-clamp-2 text-[10px] leading-tight text-pace-muted">
                             {p.reason}
                           </span>
                         )}

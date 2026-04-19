@@ -258,7 +258,7 @@ export default function StepSourceChoice({
               <button
                 type="button"
                 onClick={() => void fetchSuggestions()}
-                className="pace-toolbar-btn shrink-0 px-3 py-1.5 text-[10px]"
+                className="pace-toolbar-btn shrink-0 px-3 py-1.5 text-[11px]"
                 title="Ask for fresh ideas"
               >
                 Ask again
@@ -303,7 +303,7 @@ export default function StepSourceChoice({
                         {s.title}
                       </span>
                       {s.iconic && (
-                        <span className="shrink-0 rounded-full bg-pace-blue/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-pace-blue">
+                        <span className="shrink-0 rounded-full bg-pace-blue/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-pace-blue">
                           Iconic
                         </span>
                       )}
@@ -312,7 +312,7 @@ export default function StepSourceChoice({
                       {s.description}
                     </p>
                     <span
-                      className={`inline-flex w-fit items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${diffColor}`}
+                      className={`inline-flex w-fit items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${diffColor}`}
                     >
                       {s.difficulty}
                     </span>
@@ -326,13 +326,13 @@ export default function StepSourceChoice({
                         Use this shape →
                       </button>
                     ) : (
-                      <p className="mt-1 text-[10px] italic leading-snug text-pace-muted">
+                      <p className="mt-1 text-[11px] italic leading-snug text-pace-muted">
                         No emoji match for this one — trace a reference image
                         or draw it freehand.
                       </p>
                     )}
                     {suggestionError === i && (
-                      <p className="text-[10px] text-red-600">
+                      <p className="text-[11px] text-red-600">
                         Couldn&apos;t convert this emoji to a shape. Try Photo
                         or Draw below.
                       </p>
@@ -342,7 +342,7 @@ export default function StepSourceChoice({
                         type="button"
                         onClick={onChooseImage}
                         title={`Trace a photo of "${s.title}"`}
-                        className="inline-flex items-center gap-1 rounded-full border border-pace-line bg-pace-white px-2 py-0.5 text-[9px] font-semibold text-pace-ink transition hover:border-pace-blue hover:bg-pace-blue/10 hover:text-pace-blue"
+                        className="inline-flex min-h-[34px] items-center gap-1 rounded-full border border-pace-line bg-pace-white px-2.5 py-1 text-[11px] font-semibold text-pace-ink transition hover:border-pace-blue hover:bg-pace-blue/10 hover:text-pace-blue focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-blue"
                         aria-label={`Trace a photo of ${s.title}`}
                       >
                         <ImageIcon className="h-3 w-3" aria-hidden />
@@ -352,7 +352,7 @@ export default function StepSourceChoice({
                         type="button"
                         onClick={onChooseFreehand}
                         title={`Draw "${s.title}" freehand on the map`}
-                        className="inline-flex items-center gap-1 rounded-full border border-pace-line bg-pace-white px-2 py-0.5 text-[9px] font-semibold text-pace-ink transition hover:border-pace-yellow hover:bg-pace-yellow/20"
+                        className="inline-flex min-h-[34px] items-center gap-1 rounded-full border border-pace-line bg-pace-white px-2.5 py-1 text-[11px] font-semibold text-pace-ink transition hover:border-pace-yellow hover:bg-pace-yellow/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow"
                         aria-label={`Draw ${s.title} freehand`}
                       >
                         <PencilLine className="h-3 w-3" aria-hidden />
@@ -375,7 +375,7 @@ export default function StepSourceChoice({
           <p className="mt-1 font-dm text-[11px] leading-relaxed text-pace-muted sm:text-xs">
             {AREA_TEMPLATE_INTRO}
           </p>
-          <p className="mt-1.5 font-dm text-[10px] leading-snug text-pace-muted sm:text-[11px]">
+          <p className="mt-1.5 font-dm text-[11px] leading-snug text-pace-muted sm:text-[11px]">
             Each starter gets snap-tested against {cityPreset?.label ?? "the city"} (top{" "}
             {AREA_TEMPLATE_SNAP_MAX_TRIES} placements). &quot;Street-ready&quot; means
             interpretation score ≥{MIN_SNAP_MATCH_PERCENT_TO_ADOPT}%.
@@ -393,7 +393,7 @@ export default function StepSourceChoice({
               if (tierTemplates.length === 0) return null;
               return (
                 <div key={tier} className="mt-4">
-                  <p className="mb-2 flex items-baseline gap-2 font-bebas text-[10px] tracking-[0.14em] text-pace-muted">
+                  <p className="mb-2 flex items-baseline gap-2 font-bebas text-[11px] tracking-[0.14em] text-pace-muted">
                     <span className="inline-block h-px w-6 bg-pace-yellow" aria-hidden />
                     {COMPLEXITY_LABEL[tier]}
                   </p>
@@ -402,15 +402,15 @@ export default function StepSourceChoice({
                       const row = templateSnap[t.id];
                       const snapBadge =
                         row?.status === "loading" ? (
-                          <span className="mt-1 block text-[9px] font-dm text-pace-muted">
+                          <span className="mt-1 block text-[10px] font-dm text-pace-muted">
                             Checking map…
                           </span>
                         ) : row?.status === "done" ? (
                           <span
                             className={
                               row.meetsThreshold
-                                ? "mt-1 inline-flex w-fit items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700"
-                                : "mt-1 block text-[9px] font-dm text-pace-muted"
+                                ? "mt-1 inline-flex w-fit items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700"
+                                : "mt-1 block text-[10px] font-dm text-pace-muted"
                             }
                           >
                             {row.meetsThreshold
@@ -426,7 +426,7 @@ export default function StepSourceChoice({
                           key={t.id}
                           type="button"
                           onClick={() => onPickAreaTemplate?.(t.contour)}
-                          className="pace-card-editorial group flex flex-col gap-1 overflow-hidden p-0 text-left text-[11px] shadow-sm transition hover:border-pace-yellow hover:shadow-md active:scale-[0.99]"
+                          className="pace-card-editorial group flex flex-col gap-1 overflow-hidden p-0 text-left text-[11px] shadow-sm transition hover:border-pace-yellow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2 active:scale-[0.99]"
                         >
                           <div className="relative flex aspect-[5/4] w-full items-center justify-center bg-gradient-to-br from-pace-panel to-pace-white">
                             <span

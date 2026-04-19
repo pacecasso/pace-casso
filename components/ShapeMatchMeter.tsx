@@ -30,7 +30,7 @@ export default function ShapeMatchMeter({
 
   return (
     <div className="min-w-0 w-full">
-      <div className="mb-1 flex items-center justify-between gap-2 font-bebas text-[10px] tracking-[0.12em] text-pace-muted">
+      <div className="mb-1 flex items-center justify-between gap-2 font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
         <span>{label}</span>
         <span className="tabular-nums text-pace-ink">{display}</span>
       </div>
@@ -47,7 +47,7 @@ export default function ShapeMatchMeter({
       </div>
       {showSecondary ? (
         <div className="mt-2">
-          <div className="mb-0.5 flex items-center justify-between gap-2 font-bebas text-[9px] tracking-[0.1em] text-pace-muted/90">
+          <div className="mb-0.5 flex items-center justify-between gap-2 font-bebas text-[10px] tracking-[0.1em] text-pace-muted/90">
             <span>{secondaryLabel}</span>
             <span className="tabular-nums text-pace-muted">
               {secondaryPercent}%

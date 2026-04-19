@@ -46,7 +46,7 @@ export default function StepCityGate({
               type="button"
               onClick={() => onSelectCityId(city.id)}
               aria-pressed={selected}
-              className={`group relative flex flex-col gap-1.5 overflow-hidden rounded-lg border p-3 text-left shadow-sm transition-all duration-150 ease-out sm:p-4 ${
+              className={`group relative flex flex-col gap-1.5 overflow-hidden rounded-lg border p-3 text-left shadow-sm transition-all duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-blue focus-visible:ring-offset-2 sm:p-4 ${
                 selected
                   ? "-translate-y-0.5 border-pace-yellow bg-pace-yellow/10 shadow-md ring-2 ring-pace-yellow/60"
                   : "border-pace-line bg-pace-white hover:-translate-y-0.5 hover:border-pace-yellow/60 hover:shadow-md"
@@ -57,13 +57,13 @@ export default function StepCityGate({
                   {city.label}
                 </span>
                 {selected && (
-                  <span className="rounded-full bg-pace-yellow px-2 py-0.5 font-bebas text-[9px] tracking-widest text-pace-ink">
+                  <span className="rounded-full bg-pace-yellow px-2 py-0.5 font-bebas text-[10px] tracking-widest text-pace-ink">
                     SELECTED
                   </span>
                 )}
               </div>
               {city.region && (
-                <span className="text-[10px] font-medium uppercase tracking-wider text-pace-muted">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-pace-muted">
                   {city.region}
                 </span>
               )}
@@ -73,7 +73,7 @@ export default function StepCityGate({
                 </span>
               )}
               <span className="mt-1 flex flex-wrap items-center gap-1">
-                <span className="inline-flex items-center gap-1 rounded-full bg-pace-line/40 px-1.5 py-0.5 text-[9px] font-medium text-pace-muted">
+                <span className="inline-flex items-center gap-1 rounded-full bg-pace-line/40 px-1.5 py-0.5 text-[10px] font-medium text-pace-muted">
                   <span
                     className="inline-block h-1.5 w-1.5 rounded-full bg-pace-yellow"
                     aria-hidden
@@ -89,7 +89,7 @@ export default function StepCityGate({
       </div>
 
       <div className="mt-2 flex flex-col items-center gap-2 rounded-lg border border-pace-line bg-pace-panel/50 px-4 py-2 text-center sm:flex-row sm:gap-4">
-        <span className="font-bebas text-[10px] tracking-[0.14em] text-pace-muted">
+        <span className="font-bebas text-[11px] tracking-[0.14em] text-pace-muted">
           Coverage
         </span>
         <span className="font-dm text-[11px] tabular-nums text-pace-muted">

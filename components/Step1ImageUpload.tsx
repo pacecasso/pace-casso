@@ -770,7 +770,7 @@ export default function Step1ImageUpload({
         </div>
       ) : null}
 
-      <p className="mb-1 max-w-xl text-center font-dm text-[10px] leading-snug text-pace-muted sm:mb-1.5 sm:text-[11px]">
+      <p className="mb-1 max-w-xl text-center font-dm text-[11px] leading-snug text-pace-muted sm:mb-1.5 sm:text-[11px]">
         Your photo is traced in the browser—we don’t upload the image to our
         servers. <span className="whitespace-nowrap">Photo threshold</span>{" "}
         rebuilds a <strong className="text-pace-ink">stroke outline</strong>{" "}
@@ -796,12 +796,12 @@ export default function Step1ImageUpload({
             aria-describedby="pace-trace-file-status"
             className="font-dm inline-flex shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap border border-pace-line bg-pace-white px-1.5 py-1 text-[11px] text-pace-ink hover:border-pace-yellow/50 sm:gap-1.5 sm:text-xs"
           >
-            <span className="shrink-0 rounded-sm bg-pace-yellow/15 px-1.5 py-0.5 text-[10px] font-semibold text-pace-ink sm:text-[10px]">
+            <span className="shrink-0 rounded-sm bg-pace-yellow/15 px-1.5 py-0.5 text-[11px] font-semibold text-pace-ink sm:text-[11px]">
               Choose file
             </span>
             <span
               id="pace-trace-file-status"
-              className="max-w-[5.5rem] truncate text-[10px] leading-tight text-pace-muted sm:max-w-[6.5rem]"
+              className="max-w-[5.5rem] truncate text-[11px] leading-tight text-pace-muted sm:max-w-[6.5rem]"
               title={
                 uploadedImage ? uploadedImage.file.name : "No file selected yet"
               }
@@ -820,12 +820,12 @@ export default function Step1ImageUpload({
               onChange={(e) => setThreshold(parseFloat(e.target.value))}
               className="w-[72px] accent-pace-yellow sm:w-[84px]"
             />
-            <span className="w-7 shrink-0 text-right text-[10px] tabular-nums text-pace-muted sm:text-[11px]">
+            <span className="w-7 shrink-0 text-right text-[11px] tabular-nums text-pace-muted sm:text-[11px]">
               {threshold.toFixed(2)}
             </span>
           </label>
           <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-x-1 pl-1">
-            <span className="shrink-0 font-bebas text-[10px] tracking-[0.1em] text-pace-muted sm:text-[11px]">
+            <span className="shrink-0 font-bebas text-[11px] tracking-[0.1em] text-pace-muted sm:text-[11px]">
               Line art
             </span>
             <div className="inline-flex shrink-0 rounded-full border border-pace-line bg-pace-panel p-0.5">
@@ -860,7 +860,7 @@ export default function Step1ImageUpload({
             >
               Undo
             </button>
-            <label className="font-dm flex shrink-0 items-center gap-1 text-[10px] text-pace-muted sm:gap-1.5 sm:text-[11px]">
+            <label className="font-dm flex shrink-0 items-center gap-1 text-[11px] text-pace-muted sm:gap-1.5 sm:text-[11px]">
               <span className="whitespace-nowrap">Brush</span>
               <input
                 type="range"
@@ -890,7 +890,7 @@ export default function Step1ImageUpload({
           <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
             <div className="flex min-w-0 flex-col items-center">
               <div className={columnTitleClass}>
-                <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-muted sm:text-xs">
+                <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted sm:text-xs">
                   1 · Original
                 </span>
               </div>
@@ -904,7 +904,7 @@ export default function Step1ImageUpload({
 
             <div className="flex min-w-0 flex-col items-center">
               <div className={columnTitleClass}>
-                <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-muted sm:text-xs">
+                <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted sm:text-xs">
                   2 · Line art
                 </span>
               </div>
@@ -926,7 +926,7 @@ export default function Step1ImageUpload({
 
             <div className="flex min-w-0 flex-col items-center">
               <div className={columnTitleClass}>
-                <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-muted sm:text-xs">
+                <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted sm:text-xs">
                   3 · Final contour
                 </span>
               </div>
@@ -937,13 +937,13 @@ export default function Step1ImageUpload({
                 className={panelCanvasClass}
               />
               {contourHint || contourComputing ? (
-                <p className="mt-1 max-w-[min(100vw-1rem,280px)] text-center font-dm text-[10px] leading-snug text-pace-muted sm:text-[11px]">
+                <p className="mt-1 max-w-[min(100vw-1rem,280px)] text-center font-dm text-[11px] leading-snug text-pace-muted sm:text-[11px]">
                   {contourComputing ? "Updating contour… " : null}
                   {contourHint}
                 </p>
               ) : null}
               {imageReady && contourBuilt ? (
-                <p className="mt-2 max-w-[min(100vw-1rem,280px)] rounded border-l-2 border-pace-blue bg-pace-blue/5 px-2 py-1.5 text-center font-dm text-[10px] leading-snug text-pace-ink sm:text-[11px]">
+                <p className="mt-2 max-w-[min(100vw-1rem,280px)] rounded border-l-2 border-pace-blue bg-pace-blue/5 px-2 py-1.5 text-center font-dm text-[11px] leading-snug text-pace-ink sm:text-[11px]">
                   <strong>Tip:</strong> a route is one continuous line. Inner
                   holes (like the eye of an R) are auto-bridged. If your image
                   has two separate pieces, use the <strong>Draw</strong> tool
@@ -979,7 +979,7 @@ export default function Step1ImageUpload({
                     onChange={(e) => setContourLevel(parseFloat(e.target.value))}
                     className="w-full accent-pace-yellow disabled:opacity-40"
                   />
-                  <span className="text-[10px] leading-snug text-pace-muted">
+                  <span className="text-[11px] leading-snug text-pace-muted">
                     {contourBuilt
                       ? "Adjust until the outline looks right."
                       : "Tap Done first, then adjust."}

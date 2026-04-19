@@ -43,7 +43,7 @@ export default function MapStepSplitLayout({
             <button
               type="button"
               onClick={onToggleRail}
-              className="rounded-md border border-pace-line bg-pace-panel px-2 py-1 font-dm text-[11px] font-medium text-pace-muted hover:bg-pace-line/60"
+              className="min-h-[32px] rounded-md border border-pace-line bg-pace-panel px-3 py-1.5 font-dm text-[11px] font-medium text-pace-muted transition hover:bg-pace-line/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow"
             >
               Hide panel
             </button>

@@ -28,8 +28,10 @@
   --yellow: #ffb800;
   --blue: #1d6fd8;
   --line: #e8e3da;
-  --muted: #666666;
-  --muted-light: #888888;
+  /* Darkened from #666/#888 for stronger contrast at small body sizes
+     (was borderline WCAG AA at 10-11px). #505050 on #f7f4ee clears 7:1. */
+  --muted: #505050;
+  --muted-light: #6b6b6b;
   --panel-gallery: #fafaf8;
 
   --pace-cream: var(--bg-warm);

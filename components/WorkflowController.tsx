@@ -317,13 +317,13 @@ export default function WorkflowController() {
                 >
                   {label}
                 </h2>
-                <p className="shrink-0 text-[10px] font-medium tracking-wide text-pace-muted sm:text-xs">
+                <p className="shrink-0 text-[11px] font-medium tracking-wide text-pace-muted sm:text-xs">
                   Step {stepNum} of {total}
                 </p>
               </div>
               {stepRecap ? (
                 <p
-                  className="font-dm min-w-0 truncate text-[10px] text-pace-muted sm:text-[11px]"
+                  className="font-dm min-w-0 truncate text-[11px] text-pace-muted sm:text-[11px]"
                   title={stepRecap}
                 >
                   {stepRecap}
@@ -354,7 +354,7 @@ export default function WorkflowController() {
                 <button
                   type="button"
                   onClick={handleStartOver}
-                  className="pace-start-over-header shrink-0 font-bebas text-[10px] tracking-[0.14em] text-pace-muted underline decoration-pace-line underline-offset-2 transition hover:text-pace-ink hover:decoration-pace-yellow sm:text-[11px]"
+                  className="pace-start-over-header shrink-0 font-bebas text-[11px] tracking-[0.14em] text-pace-muted underline decoration-pace-line underline-offset-2 transition hover:text-pace-ink hover:decoration-pace-yellow sm:text-[11px]"
                   aria-label="Start over — clear saved draft and return to city selection"
                 >
                   START OVER
