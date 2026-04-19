@@ -61,7 +61,7 @@ export default function WorkflowController() {
   >(null);
   /**
    * Original uploaded image as a data-URL. Populated by Step1ImageUpload and
-   * forwarded to Step2MapAnchor for Claude vision rescoring. Persisted to
+   * forwarded to Step2MapAnchor for PaceCasso AI vision rescoring. Persisted to
    * draft storage when small enough (~1.5 MB cap); if it's too large to fit
    * the image silently won't persist and vision degrades to snap-only order
    * on refresh. Typical downscaled JPEGs from Step1 are ~150–400 KB, well

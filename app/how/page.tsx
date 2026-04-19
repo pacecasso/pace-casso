@@ -61,9 +61,9 @@ export default function HowPage() {
                   <ul className="mt-2 ml-4 list-disc space-y-1">
                     <li>
                       <strong className="text-pace-ink">Auto-find placement</strong>
-                      — Claude searches the whole city for the best 5 placements
-                      and ranks them by how recognizable your shape will be once
-                      snapped to streets.
+                      — PaceCasso searches the whole city for the best 5
+                      placements and ranks them by how recognizable your shape
+                      will be once snapped to streets.
                     </li>
                     <li>
                       <strong className="text-pace-ink">Refine around my placement</strong>

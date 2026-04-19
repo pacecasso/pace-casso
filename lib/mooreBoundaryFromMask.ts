@@ -322,14 +322,18 @@ function labelAllInkComponents(
  *
  * A sibling is "significant" if its pixel area is above both an absolute
  * floor (`minPixels`) and a relative threshold (`minRelativeToLargest`).
- * This rejects small noise blobs while keeping real disjoint features.
+ * Defaults are intentionally inclusive — a real second letter is usually
+ * 10%+ of the largest piece, so we'd rather bridge too many than drop a
+ * legitimate one. The `maxSiblings` cap prevents pathological images with
+ * dozens of tiny flecks from producing spaghetti paths.
  */
 export function mooreSiblingOuterRings(
   src: Uint8Array,
   w: number,
   h: number,
-  minPixels = 150,
-  minRelativeToLargest = 0.18,
+  minPixels = 80,
+  minRelativeToLargest = 0.1,
+  maxSiblings = 6,
 ): [number, number][][] {
   const { labels, counts } = labelAllInkComponents(src, w, h);
   if (counts.length <= 2) return []; // no siblings
@@ -363,8 +367,11 @@ export function mooreSiblingOuterRings(
     }
   }
 
+  // Sort largest-first so the most significant pieces get bridged first
+  // (weaveInnerRingIntoOuter finds closest pairs — bridging the biggest
+  // ring first tends to produce the cleanest combined outline).
   siblings.sort((a, b) => b.area - a.area);
-  return siblings.map((s) => s.ring);
+  return siblings.slice(0, maxSiblings).map((s) => s.ring);
 }
 
 /** Single outer ring only (backwards-compatible helper). */

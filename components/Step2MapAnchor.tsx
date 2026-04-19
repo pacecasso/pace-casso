@@ -41,7 +41,8 @@ type Step2MapAnchorProps = {
   defaultCenter?: [number, number];
   /**
    * Original uploaded image as a data-URL. When provided, auto-find rescores
-   * the top snap candidates with Claude vision and picks by gestalt match.
+   * the top snap candidates with PaceCasso's AI vision and picks by gestalt
+   * match.
    */
   imageBase64?: string | null;
   onBack: () => void;
@@ -81,7 +82,7 @@ export default function Step2MapAnchor({
         mode === "refine" ? "Refining around your placement" : "Searching placements";
       setAutoHint(
         imageBase64
-          ? `${modeLabel} — Claude will rank the top 5…`
+          ? `${modeLabel} — PaceCasso AI will rank the top 5…`
           : `${modeLabel}…`,
       );
       setPicks([]);
@@ -116,7 +117,7 @@ export default function Step2MapAnchor({
         const modeNoun = mode === "refine" ? "refinements" : "options";
         setAutoHint(
           r.visionUsed
-            ? `Claude ranked ${r.picks.length} ${modeNoun} — tap any to try it.`
+            ? `PaceCasso ranked ${r.picks.length} ${modeNoun} — tap any to try it.`
             : `Showing ${r.picks.length} ${modeNoun} — tap any to try it.`,
         );
       } catch (err) {
@@ -303,7 +304,7 @@ export default function Step2MapAnchor({
             <div className="mt-3 flex flex-col gap-2 rounded border border-pace-line bg-pace-warm/50 p-2">
               <div className="flex items-center justify-between">
                 <span className="font-bebas text-[11px] tracking-[0.1em] text-pace-ink">
-                  {picksVisionUsed ? "Claude's top picks" : "Candidates"}
+                  {picksVisionUsed ? "PaceCasso top picks" : "Candidates"}
                 </span>
                 <button
                   type="button"

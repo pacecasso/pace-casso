@@ -58,10 +58,10 @@ export default function HelpPage() {
             <ul className="mt-2 ml-4 list-disc space-y-1">
               <li>
                 <strong className="text-pace-ink">Auto-find placement</strong> —
-                Claude searches the whole city (25 positions × 5–12 rotations ×
-                5–7 scales), snaps each candidate to streets, renders a small
-                map of each, and ranks the best 5 using vision. Ignores wherever
-                you have the shape currently.
+                PaceCasso searches the whole city (25 positions × 5–12 rotations
+                × 5–7 scales), snaps each candidate to streets, renders a small
+                map of each, and ranks the best 5 using AI vision. Ignores
+                wherever you have the shape currently.
               </li>
               <li>
                 <strong className="text-pace-ink">Refine around my placement</strong> —
@@ -72,7 +72,7 @@ export default function HelpPage() {
             </ul>
             <p className="mt-3">
               Both take ~30–60 seconds because Mapbox snaps 20 candidates and
-              Claude Opus analyzes them. Claude&apos;s picks appear as 5
+              PaceCasso&apos;s AI analyzes them. The top picks appear as 5
               thumbnails in the sidebar — click any to try it.
             </p>
           </Section>
@@ -117,18 +117,14 @@ export default function HelpPage() {
             </p>
           </Section>
 
-          <Section title="Claude vision / auto-find not running">
+          <Section title="PaceCasso AI / auto-find not running">
             <p>
-              Auto-find uses Claude to classify your shape and rank candidates.
-              If{" "}
-              <code className="rounded bg-pace-panel px-1 text-xs ring-1 ring-pace-line">
-                ANTHROPIC_API_KEY
-              </code>{" "}
-              isn&apos;t set on the server, auto-find silently falls back to
-              showing 5 diverse snap candidates ordered by survival — the
-              sidebar header will say &quot;Candidates&quot; instead of
-              &quot;Claude&apos;s top picks.&quot; The results will be less
-              tuned to your shape.
+              Auto-find uses PaceCasso&apos;s AI to classify your shape and
+              rank candidates. If the server isn&apos;t configured with an
+              AI key, auto-find silently falls back to showing 5 diverse snap
+              candidates ordered by survival — the sidebar header will say
+              &quot;Candidates&quot; instead of &quot;PaceCasso top picks.&quot;
+              The results will be less tuned to your shape.
             </p>
           </Section>
 

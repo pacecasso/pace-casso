@@ -34,7 +34,7 @@ type UploadedImage = {
 };
 
 type Step1ImageUploadProps = {
-  /** `imageBase64` is a data-URL of the uploaded image (for Claude vision scoring in Step 2). */
+  /** `imageBase64` is a data-URL of the uploaded image (for PaceCasso AI vision scoring in Step 2). */
   onComplete: (
     normalizedContour: NormalizedPoint[],
     imageBase64: string | null,
@@ -44,7 +44,7 @@ type Step1ImageUploadProps = {
 };
 
 /**
- * Decode the uploaded image and re-encode at a predictable size for the Claude
+ * Decode the uploaded image and re-encode at a predictable size for the PaceCasso
  * vision API. Downscales only — small images are kept at native size.
  * Returns a JPEG data-URL.
  */

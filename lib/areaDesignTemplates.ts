@@ -15,6 +15,9 @@ export type AreaDesignTemplate = {
   blurb: string;
   contour: AreaDesignContour[];
   complexity: AreaDesignComplexity;
+  /** Visual icon for the card — emoji or single-glyph letter. Shown big so
+   *  users see the *subject* at a glance, not the jagged contour. */
+  icon: string;
 };
 
 function normalizeContourToBox(
@@ -233,6 +236,7 @@ export const AREA_DESIGN_TEMPLATES: AreaDesignTemplate[] = [
     blurb: "Smooth oval — easiest to snap cleanly across any grid.",
     contour: stadiumOvalRaw(),
     complexity: "simple",
+    icon: "⭕",
   },
   {
     id: "heart",
@@ -240,6 +244,7 @@ export const AREA_DESIGN_TEMPLATES: AreaDesignTemplate[] = [
     blurb: "Classic loop; reads well when snapped to long blocks.",
     contour: heartRaw(),
     complexity: "simple",
+    icon: "❤️",
   },
   {
     id: "arrow",
@@ -247,6 +252,7 @@ export const AREA_DESIGN_TEMPLATES: AreaDesignTemplate[] = [
     blurb: "Straight shaft + triangular head — crisp and readable.",
     contour: arrowRightRaw(),
     complexity: "simple",
+    icon: "➡️",
   },
   {
     id: "house",
@@ -254,6 +260,7 @@ export const AREA_DESIGN_TEMPLATES: AreaDesignTemplate[] = [
     blurb: "Square body + triangle roof. A kids'-drawing classic.",
     contour: houseRaw(),
     complexity: "medium",
+    icon: "🏠",
   },
   {
     id: "block-r",
@@ -261,6 +268,7 @@ export const AREA_DESIGN_TEMPLATES: AreaDesignTemplate[] = [
     blurb: "Stem, bowl, and leg — a flex for your first letter run.",
     contour: blockRRaw(),
     complexity: "medium",
+    icon: "R",
   },
   {
     id: "block-m",
@@ -268,6 +276,7 @@ export const AREA_DESIGN_TEMPLATES: AreaDesignTemplate[] = [
     blurb: "Verticals and a deep V — lots of corners for street turns.",
     contour: blockMRaw(),
     complexity: "medium",
+    icon: "M",
   },
   {
     id: "star",
@@ -275,6 +284,7 @@ export const AREA_DESIGN_TEMPLATES: AreaDesignTemplate[] = [
     blurb: "Sharp points; snaps best when stretched across many blocks.",
     contour: fivePointStarRaw(),
     complexity: "medium",
+    icon: "⭐",
   },
   {
     id: "fish",
@@ -282,6 +292,7 @@ export const AREA_DESIGN_TEMPLATES: AreaDesignTemplate[] = [
     blurb: "Teardrop body + forked tail; needs a wide, open neighborhood.",
     contour: fishRaw(),
     complexity: "elaborate",
+    icon: "🐟",
   },
   {
     id: "zig-avenue",
@@ -289,6 +300,7 @@ export const AREA_DESIGN_TEMPLATES: AreaDesignTemplate[] = [
     blurb: "Alternating diagonals that ride the grid like switchbacks.",
     contour: zigZGridRaw(),
     complexity: "elaborate",
+    icon: "⚡",
   },
   {
     id: "bolt",
@@ -296,6 +308,7 @@ export const AREA_DESIGN_TEMPLATES: AreaDesignTemplate[] = [
     blurb: "Sharp turns — punchy and angular when snapped.",
     contour: lightningRaw(),
     complexity: "elaborate",
+    icon: "🌩️",
   },
 ];
 

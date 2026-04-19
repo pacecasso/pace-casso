@@ -7,7 +7,6 @@ import {
   AREA_TEMPLATE_INTRO,
   COMPLEXITY_LABEL,
   COMPLEXITY_ORDER,
-  contourToSvgPath,
   type AreaDesignComplexity,
   type AreaDesignContour,
 } from "../lib/areaDesignTemplates";
@@ -229,7 +228,7 @@ export default function StepSourceChoice({
                 Ideas for {cityPreset.label}
               </p>
               <p className="mt-1 font-dm text-[11px] leading-relaxed text-pace-muted sm:text-xs">
-                Ask Claude for 5 shape ideas tailored to {cityPreset.label} —
+                Ask PaceCasso for 5 shape ideas tailored to {cityPreset.label} —
                 from simple to elaborate, including local landmarks.
               </p>
             </div>
@@ -239,7 +238,7 @@ export default function StepSourceChoice({
                 onClick={() => void fetchSuggestions()}
                 className="pace-toolbar-btn shrink-0 px-3 py-2 text-[11px]"
               >
-                Get ideas (AI)
+                Ask PaceCasso
               </button>
             )}
             {suggestions && !suggestionsBusy && (
@@ -247,9 +246,9 @@ export default function StepSourceChoice({
                 type="button"
                 onClick={() => void fetchSuggestions()}
                 className="pace-toolbar-btn shrink-0 px-3 py-1.5 text-[10px]"
-                title="Regenerate ideas"
+                title="Ask for fresh ideas"
               >
-                Refresh
+                Ask again
               </button>
             )}
           </div>
@@ -276,7 +275,7 @@ export default function StepSourceChoice({
                 return (
                   <div
                     key={i}
-                    className="flex flex-col gap-1.5 rounded-lg border border-pace-line bg-pace-white p-3 shadow-sm"
+                    className="flex flex-col gap-1.5 rounded-lg border border-pace-line bg-pace-white p-3 shadow-sm transition hover:border-pace-yellow/60 hover:shadow-md"
                   >
                     <div className="flex items-baseline justify-between gap-2">
                       <span className="font-bebas text-sm tracking-[0.08em] text-pace-ink">
@@ -291,24 +290,39 @@ export default function StepSourceChoice({
                     <p className="text-[11px] leading-snug text-pace-muted">
                       {s.description}
                     </p>
-                    <span
-                      className={`inline-flex w-fit items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${diffColor}`}
-                    >
-                      {s.difficulty}
-                    </span>
+                    <div className="flex items-center justify-between gap-2">
+                      <span
+                        className={`inline-flex w-fit items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${diffColor}`}
+                      >
+                        {s.difficulty}
+                      </span>
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          onClick={onChooseImage}
+                          title={`Trace a photo of "${s.title}"`}
+                          className="inline-flex items-center gap-1 rounded-full border border-pace-line bg-pace-white px-2 py-0.5 text-[9px] font-semibold text-pace-ink transition hover:border-pace-blue hover:bg-pace-blue/10 hover:text-pace-blue"
+                          aria-label={`Trace a photo of ${s.title}`}
+                        >
+                          <ImageIcon className="h-3 w-3" aria-hidden />
+                          Photo
+                        </button>
+                        <button
+                          type="button"
+                          onClick={onChooseFreehand}
+                          title={`Draw "${s.title}" freehand on the map`}
+                          className="inline-flex items-center gap-1 rounded-full border border-pace-line bg-pace-white px-2 py-0.5 text-[9px] font-semibold text-pace-ink transition hover:border-pace-yellow hover:bg-pace-yellow/20"
+                          aria-label={`Draw ${s.title} freehand`}
+                        >
+                          <PencilLine className="h-3 w-3" aria-hidden />
+                          Draw
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 );
               })}
             </div>
-          )}
-          {suggestions && suggestions.length > 0 && (
-            <p className="mt-2 font-dm text-[10px] italic leading-snug text-pace-muted">
-              To design one of these, go back and choose{" "}
-              <strong className="not-italic text-pace-ink">From a photo</strong>{" "}
-              (trace a reference image) or{" "}
-              <strong className="not-italic text-pace-ink">Draw on the map</strong>{" "}
-              (sketch it freehand).
-            </p>
           )}
         </div>
       ) : null}
@@ -375,22 +389,16 @@ export default function StepSourceChoice({
                           className="pace-card-editorial group flex flex-col gap-1 overflow-hidden p-0 text-left text-[11px] shadow-sm transition hover:border-pace-yellow hover:shadow-md active:scale-[0.99]"
                         >
                           <div className="relative flex aspect-[5/4] w-full items-center justify-center bg-gradient-to-br from-pace-panel to-pace-white">
-                            <svg
-                              viewBox="0 0 100 100"
-                              width="64"
-                              height="64"
+                            <span
                               aria-hidden
-                              className="opacity-90 transition group-hover:opacity-100"
+                              className={`select-none leading-none transition group-hover:scale-110 ${
+                                t.icon.length === 1
+                                  ? "font-bebas text-[3.25rem] tracking-tight text-pace-ink"
+                                  : "text-[2.75rem]"
+                              }`}
                             >
-                              <path
-                                d={contourToSvgPath(t.contour, 100)}
-                                fill="none"
-                                stroke="var(--pace-ink)"
-                                strokeWidth={4}
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              />
-                            </svg>
+                              {t.icon}
+                            </span>
                           </div>
                           <div className="flex flex-col gap-0.5 p-2.5 sm:p-3">
                             <span className="font-bebas text-sm tracking-[0.1em] text-pace-ink">
