@@ -24,6 +24,11 @@ type CitySuggestion = {
   description: string;
   difficulty: "simple" | "medium" | "elaborate";
   iconic: boolean;
+  /** Single Unicode emoji representing the shape. We render it to a canvas
+   *  and extract a contour from the silhouette — so the suggestion is
+   *  actually usable, not just inspiration text. Null when no suitable
+   *  emoji exists (user falls back to Photo/Draw). */
+  emoji: string | null;
 };
 
 function buildPrompt(
@@ -49,9 +54,10 @@ Suggest exactly 5 shape ideas, ordered simple → elaborate. Include at least 1�
 - "description": one short sentence saying what it is and why it fits ${cityLabel}
 - "difficulty": "simple" | "medium" | "elaborate"
 - "iconic": true if the shape is specifically ${cityLabel}/local, false if it's a universal shape
+- "emoji": a single Unicode emoji that best represents the shape's silhouette (🗽 for Statue of Liberty, 🚕 for Taxi cab, 🌉 for Golden Gate Bridge, 🍎 for Apple, 🐟 for Fish, ❤️ for Heart, 🏠 for House, ⚡ for Lightning, 🐻 for Bear, 🚴 for Bicycle, etc.). This is critical — we render the emoji to produce the actual traceable shape. If no reasonable emoji exists for the concept, return null, but prefer to suggest a concept that HAS an emoji when possible.
 
 Return ONLY a JSON array, no markdown fences, no other prose:
-[{"title": "...", "description": "...", "difficulty": "simple", "iconic": true}, ...]`;
+[{"title": "...", "description": "...", "difficulty": "simple", "iconic": true, "emoji": "🗽"}, ...]`;
 }
 
 const ALLOWED_DIFFICULTY = new Set(["simple", "medium", "elaborate"]);
@@ -161,8 +167,16 @@ export async function POST(req: Request) {
           ? (rec.difficulty as CitySuggestion["difficulty"])
           : "medium";
       const iconic = rec.iconic === true;
+      // Accept emoji strings of 1–8 chars (covers compound / skin-tone emoji).
+      // Normalise whitespace, reject anything that looks like prose.
+      const rawEmoji =
+        typeof rec.emoji === "string" ? rec.emoji.trim() : "";
+      const emoji =
+        rawEmoji.length > 0 && rawEmoji.length <= 8 && !/\s/.test(rawEmoji)
+          ? rawEmoji
+          : null;
       if (!title) continue;
-      suggestions.push({ title, description, difficulty, iconic });
+      suggestions.push({ title, description, difficulty, iconic, emoji });
       if (suggestions.length >= 5) break;
     }
 

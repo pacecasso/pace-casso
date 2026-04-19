@@ -15,6 +15,7 @@ import {
   saveCachedSuggestions,
   type CitySuggestion,
 } from "../lib/citySuggestionCache";
+import { emojiToContour } from "../lib/emojiToContour";
 import {
   AREA_TEMPLATE_SNAP_MAX_TRIES,
   bestPlacementBySnapMatch,
@@ -60,6 +61,18 @@ export default function StepSourceChoice({
   const [suggestions, setSuggestions] = useState<CitySuggestion[] | null>(null);
   const [suggestionsBusy, setSuggestionsBusy] = useState(false);
   const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
+  const [suggestionError, setSuggestionError] = useState<number | null>(null);
+
+  function handleUseSuggestion(s: CitySuggestion, idx: number): void {
+    setSuggestionError(null);
+    if (!s.emoji || !onPickAreaTemplate) return;
+    const contour = emojiToContour(s.emoji);
+    if (!contour || contour.length < 4) {
+      setSuggestionError(idx);
+      return;
+    }
+    onPickAreaTemplate(contour);
+  }
 
   // Reset + try cache whenever city changes.
   useEffect(() => {
@@ -277,8 +290,16 @@ export default function StepSourceChoice({
                     key={i}
                     className="flex flex-col gap-1.5 rounded-lg border border-pace-line bg-pace-white p-3 shadow-sm transition hover:border-pace-yellow/60 hover:shadow-md"
                   >
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="font-bebas text-sm tracking-[0.08em] text-pace-ink">
+                    <div className="flex items-center gap-2">
+                      {s.emoji && (
+                        <span
+                          aria-hidden
+                          className="select-none text-2xl leading-none"
+                        >
+                          {s.emoji}
+                        </span>
+                      )}
+                      <span className="min-w-0 flex-1 font-bebas text-sm tracking-[0.08em] text-pace-ink">
                         {s.title}
                       </span>
                       {s.iconic && (
@@ -290,34 +311,53 @@ export default function StepSourceChoice({
                     <p className="text-[11px] leading-snug text-pace-muted">
                       {s.description}
                     </p>
-                    <div className="flex items-center justify-between gap-2">
-                      <span
-                        className={`inline-flex w-fit items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${diffColor}`}
+                    <span
+                      className={`inline-flex w-fit items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${diffColor}`}
+                    >
+                      {s.difficulty}
+                    </span>
+                    {s.emoji && onPickAreaTemplate ? (
+                      <button
+                        type="button"
+                        onClick={() => handleUseSuggestion(s, i)}
+                        className="pace-toolbar-btn-primary mt-1 w-full px-3 py-2 text-[11px] tracking-[0.08em]"
+                        title={`Use the ${s.emoji} silhouette`}
                       >
-                        {s.difficulty}
-                      </span>
-                      <div className="flex gap-1">
-                        <button
-                          type="button"
-                          onClick={onChooseImage}
-                          title={`Trace a photo of "${s.title}"`}
-                          className="inline-flex items-center gap-1 rounded-full border border-pace-line bg-pace-white px-2 py-0.5 text-[9px] font-semibold text-pace-ink transition hover:border-pace-blue hover:bg-pace-blue/10 hover:text-pace-blue"
-                          aria-label={`Trace a photo of ${s.title}`}
-                        >
-                          <ImageIcon className="h-3 w-3" aria-hidden />
-                          Photo
-                        </button>
-                        <button
-                          type="button"
-                          onClick={onChooseFreehand}
-                          title={`Draw "${s.title}" freehand on the map`}
-                          className="inline-flex items-center gap-1 rounded-full border border-pace-line bg-pace-white px-2 py-0.5 text-[9px] font-semibold text-pace-ink transition hover:border-pace-yellow hover:bg-pace-yellow/20"
-                          aria-label={`Draw ${s.title} freehand`}
-                        >
-                          <PencilLine className="h-3 w-3" aria-hidden />
-                          Draw
-                        </button>
-                      </div>
+                        Use this shape →
+                      </button>
+                    ) : (
+                      <p className="mt-1 text-[10px] italic leading-snug text-pace-muted">
+                        No emoji match for this one — trace a reference image
+                        or draw it freehand.
+                      </p>
+                    )}
+                    {suggestionError === i && (
+                      <p className="text-[10px] text-red-600">
+                        Couldn&apos;t convert this emoji to a shape. Try Photo
+                        or Draw below.
+                      </p>
+                    )}
+                    <div className="flex items-center justify-end gap-1 border-t border-pace-line/70 pt-1.5">
+                      <button
+                        type="button"
+                        onClick={onChooseImage}
+                        title={`Trace a photo of "${s.title}"`}
+                        className="inline-flex items-center gap-1 rounded-full border border-pace-line bg-pace-white px-2 py-0.5 text-[9px] font-semibold text-pace-ink transition hover:border-pace-blue hover:bg-pace-blue/10 hover:text-pace-blue"
+                        aria-label={`Trace a photo of ${s.title}`}
+                      >
+                        <ImageIcon className="h-3 w-3" aria-hidden />
+                        Photo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={onChooseFreehand}
+                        title={`Draw "${s.title}" freehand on the map`}
+                        className="inline-flex items-center gap-1 rounded-full border border-pace-line bg-pace-white px-2 py-0.5 text-[9px] font-semibold text-pace-ink transition hover:border-pace-yellow hover:bg-pace-yellow/20"
+                        aria-label={`Draw ${s.title} freehand`}
+                      >
+                        <PencilLine className="h-3 w-3" aria-hidden />
+                        Draw
+                      </button>
                     </div>
                   </div>
                 );

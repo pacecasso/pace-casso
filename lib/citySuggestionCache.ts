@@ -9,6 +9,9 @@ export type CitySuggestion = {
   description: string;
   difficulty: "simple" | "medium" | "elaborate";
   iconic: boolean;
+  /** Single Unicode emoji — rendered to canvas to produce a traceable shape
+   *  when the user clicks "Use this shape". Null when no good match. */
+  emoji: string | null;
 };
 
 type CachedEntry = {
