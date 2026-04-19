@@ -53,14 +53,14 @@
   --font-body: var(--font-dm-sans), "DM Sans", system-ui, sans-serif;
 
   /* Create page: sticky header + step bar — map steps fill below. Tuned for
-     the compact workflow chrome (tight nav + step indicator row). Leaves
-     headroom so the header won't clip if nav links wrap on narrow screens. */
-  --pace-create-chrome-height: 8rem;
+     the compact workflow chrome (tight nav + step indicator row). Logo is
+     bigger on /create now to match the marketing pages, so chrome grew ~1rem. */
+  --pace-create-chrome-height: 9rem;
 }
 
 @media (min-width: 1024px) {
   :root {
-    --pace-create-chrome-height: 7rem;
+    --pace-create-chrome-height: 8rem;
   }
 }
 

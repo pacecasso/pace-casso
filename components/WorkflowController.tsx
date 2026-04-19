@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -9,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { emojiToContour } from "../lib/emojiToContour";
 
 const CREATE_INTRO_STORAGE_KEY = "pacecasso-create-intro-dismissed-v1";
 import type { RouteLineString } from "../lib/routeTypes";
@@ -80,6 +82,21 @@ export default function WorkflowController() {
   const [showCreateIntro, setShowCreateIntro] = useState(false);
   const stepTitleRef = useRef<HTMLHeadingElement>(null);
 
+  // Gallery → /create?shape=🗽 hand-off. Consumed once the user picks a city;
+  // we then auto-skip source-choice and jump them straight into placement with
+  // the emoji-derived contour. URL is left alone so the link is shareable.
+  const searchParams = useSearchParams();
+  const [pendingShape, setPendingShape] = useState<string | null>(null);
+  useEffect(() => {
+    const raw = searchParams.get("shape");
+    if (!raw) return;
+    // Accept emoji up to ~8 chars (covers compound / skin-tone emoji)
+    const trimmed = raw.trim();
+    if (trimmed.length > 0 && trimmed.length <= 16 && !/\s/.test(trimmed)) {
+      setPendingShape(trimmed);
+    }
+  }, [searchParams]);
+
   useLayoutEffect(() => {
     const raw = loadCreateDraft();
     if (raw) {
@@ -121,6 +138,24 @@ export default function WorkflowController() {
       setShowCreateIntro(true);
     }
   }, []);
+
+  // Gallery hand-off: when user lands on source-choice with a pendingShape
+  // and no existing work, convert emoji → contour and jump straight to Step 2
+  // placement. If conversion fails (font missing, degenerate), silently drop
+  // the pending shape so the user sees the normal source-choice UI.
+  useEffect(() => {
+    if (!draftHydrated) return;
+    if (!pendingShape) return;
+    if (currentStep !== 1) return;
+    if (sourceKind !== null) return;
+    if (contourCoordinates !== null) return;
+    const contour = emojiToContour(pendingShape);
+    setPendingShape(null);
+    if (!contour || contour.length < 4) return;
+    setSourceKind("image");
+    setContourCoordinates(contour as NormalizedPoint[]);
+    setCurrentStep(3);
+  }, [draftHydrated, pendingShape, currentStep, sourceKind, contourCoordinates]);
 
   const dismissCreateIntro = useCallback(() => {
     try {
@@ -273,7 +308,7 @@ export default function WorkflowController() {
             className="inline-block shrink-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2"
             aria-label="PaceCasso home"
           >
-            <BrandLogo className="h-[clamp(2.5rem,7vw,3.75rem)] w-auto max-w-[min(360px,60vw)] object-contain object-left" />
+            <BrandLogo className="h-[clamp(3.5rem,10vw,5rem)] w-auto max-w-[min(440px,70vw)] object-contain object-left" />
           </Link>
           <nav
             className="flex shrink-0 items-center gap-x-3 gap-y-1 sm:gap-x-5"

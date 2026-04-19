@@ -1,6 +1,6 @@
 "use client";
 
-import { ImageIcon, PencilLine, Sparkles } from "lucide-react";
+import { ImageIcon, PencilLine } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   AREA_DESIGN_TEMPLATES,
@@ -10,12 +10,6 @@ import {
   type AreaDesignComplexity,
   type AreaDesignContour,
 } from "../lib/areaDesignTemplates";
-import {
-  loadCachedSuggestions,
-  saveCachedSuggestions,
-  type CitySuggestion,
-} from "../lib/citySuggestionCache";
-import { emojiToContour } from "../lib/emojiToContour";
 import {
   AREA_TEMPLATE_SNAP_MAX_TRIES,
   bestPlacementBySnapMatch,
@@ -57,72 +51,6 @@ export default function StepSourceChoice({
   const [templateSnap, setTemplateSnap] = useState<
     Partial<Record<string, TemplateSnapRow>>
   >({});
-
-  const [suggestions, setSuggestions] = useState<CitySuggestion[] | null>(null);
-  const [suggestionsBusy, setSuggestionsBusy] = useState(false);
-  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
-  const [suggestionError, setSuggestionError] = useState<number | null>(null);
-
-  function handleUseSuggestion(s: CitySuggestion, idx: number): void {
-    setSuggestionError(null);
-    if (!s.emoji || !onPickAreaTemplate) return;
-    const contour = emojiToContour(s.emoji);
-    if (!contour || contour.length < 4) {
-      setSuggestionError(idx);
-      return;
-    }
-    onPickAreaTemplate(contour);
-  }
-
-  // Reset + try cache whenever city changes.
-  useEffect(() => {
-    setSuggestions(null);
-    setSuggestionsError(null);
-    if (!cityPreset) return;
-    const cached = loadCachedSuggestions(cityPreset.id);
-    if (cached) setSuggestions(cached);
-  }, [cityPreset?.id, cityPreset]);
-
-  async function fetchSuggestions(): Promise<void> {
-    if (!cityPreset) return;
-    setSuggestionsBusy(true);
-    setSuggestionsError(null);
-    try {
-      const res = await fetch("/api/city-suggestions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cityLabel: cityPreset.label,
-          cityRegion: cityPreset.region,
-          gridBearings: cityPreset.dominantGridBearingsDeg,
-        }),
-      });
-      if (!res.ok) {
-        const errText = await res.text().catch(() => "");
-        setSuggestionsError(
-          res.status === 503
-            ? "AI suggestions aren't configured on this deployment."
-            : `Couldn't get ideas (${res.status})`,
-        );
-        console.warn("[city-suggestions] http", res.status, errText);
-        return;
-      }
-      const json = (await res.json()) as {
-        suggestions?: CitySuggestion[];
-      };
-      if (!json.suggestions?.length) {
-        setSuggestionsError("No suggestions returned. Try again?");
-        return;
-      }
-      setSuggestions(json.suggestions);
-      saveCachedSuggestions(cityPreset.id, json.suggestions);
-    } catch (err) {
-      console.warn("[city-suggestions] fetch failed:", err);
-      setSuggestionsError("Couldn't reach the AI — try again.");
-    } finally {
-      setSuggestionsBusy(false);
-    }
-  }
 
   useEffect(() => {
     if (!showTemplates || !cityPreset) {
@@ -231,141 +159,6 @@ export default function StepSourceChoice({
           </span>
         </button>
       </div>
-
-      {cityPreset ? (
-        <div className="mt-6 w-full max-w-4xl border-t border-pace-line pt-5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <p className="flex items-center gap-1.5 font-bebas text-[11px] tracking-[0.14em] text-pace-muted">
-                <Sparkles className="h-3 w-3 text-pace-yellow" aria-hidden />
-                Ideas for {cityPreset.label}
-              </p>
-              <p className="mt-1 font-dm text-[11px] leading-relaxed text-pace-muted sm:text-xs">
-                Ask PaceCasso for 5 shape ideas tailored to {cityPreset.label} —
-                from simple to elaborate, including local landmarks.
-              </p>
-            </div>
-            {!suggestions && !suggestionsBusy && (
-              <button
-                type="button"
-                onClick={() => void fetchSuggestions()}
-                className="pace-toolbar-btn shrink-0 px-3 py-2 text-[11px]"
-              >
-                Ask PaceCasso
-              </button>
-            )}
-            {suggestions && !suggestionsBusy && (
-              <button
-                type="button"
-                onClick={() => void fetchSuggestions()}
-                className="pace-toolbar-btn shrink-0 px-3 py-1.5 text-[11px]"
-                title="Ask for fresh ideas"
-              >
-                Ask again
-              </button>
-            )}
-          </div>
-
-          {suggestionsBusy && (
-            <p className="mt-3 font-dm text-[11px] italic text-pace-muted">
-              Thinking up shapes for {cityPreset.label}…
-            </p>
-          )}
-          {suggestionsError && (
-            <p className="mt-3 font-dm text-[11px] text-red-600">
-              {suggestionsError}
-            </p>
-          )}
-          {suggestions && suggestions.length > 0 && (
-            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {suggestions.map((s, i) => {
-                const diffColor =
-                  s.difficulty === "simple"
-                    ? "bg-emerald-100 text-emerald-700"
-                    : s.difficulty === "medium"
-                      ? "bg-pace-yellow/25 text-pace-ink"
-                      : "bg-red-100 text-red-700";
-                return (
-                  <div
-                    key={i}
-                    className="flex flex-col gap-1.5 rounded-lg border border-pace-line bg-pace-white p-3 shadow-sm transition hover:border-pace-yellow/60 hover:shadow-md"
-                  >
-                    <div className="flex items-center gap-2">
-                      {s.emoji && (
-                        <span
-                          aria-hidden
-                          className="select-none text-2xl leading-none"
-                        >
-                          {s.emoji}
-                        </span>
-                      )}
-                      <span className="min-w-0 flex-1 font-bebas text-sm tracking-[0.08em] text-pace-ink">
-                        {s.title}
-                      </span>
-                      {s.iconic && (
-                        <span className="shrink-0 rounded-full bg-pace-blue/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-pace-blue">
-                          Iconic
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-[11px] leading-snug text-pace-muted">
-                      {s.description}
-                    </p>
-                    <span
-                      className={`inline-flex w-fit items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${diffColor}`}
-                    >
-                      {s.difficulty}
-                    </span>
-                    {s.emoji && onPickAreaTemplate ? (
-                      <button
-                        type="button"
-                        onClick={() => handleUseSuggestion(s, i)}
-                        className="pace-toolbar-btn-primary mt-1 w-full px-3 py-2 text-[11px] tracking-[0.08em]"
-                        title={`Use the ${s.emoji} silhouette`}
-                      >
-                        Use this shape →
-                      </button>
-                    ) : (
-                      <p className="mt-1 text-[11px] italic leading-snug text-pace-muted">
-                        No emoji match for this one — trace a reference image
-                        or draw it freehand.
-                      </p>
-                    )}
-                    {suggestionError === i && (
-                      <p className="text-[11px] text-red-600">
-                        Couldn&apos;t convert this emoji to a shape. Try Photo
-                        or Draw below.
-                      </p>
-                    )}
-                    <div className="flex items-center justify-end gap-1 border-t border-pace-line/70 pt-1.5">
-                      <button
-                        type="button"
-                        onClick={onChooseImage}
-                        title={`Trace a photo of "${s.title}"`}
-                        className="inline-flex min-h-[34px] items-center gap-1 rounded-full border border-pace-line bg-pace-white px-2.5 py-1 text-[11px] font-semibold text-pace-ink transition hover:border-pace-blue hover:bg-pace-blue/10 hover:text-pace-blue focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-blue"
-                        aria-label={`Trace a photo of ${s.title}`}
-                      >
-                        <ImageIcon className="h-3 w-3" aria-hidden />
-                        Photo
-                      </button>
-                      <button
-                        type="button"
-                        onClick={onChooseFreehand}
-                        title={`Draw "${s.title}" freehand on the map`}
-                        className="inline-flex min-h-[34px] items-center gap-1 rounded-full border border-pace-line bg-pace-white px-2.5 py-1 text-[11px] font-semibold text-pace-ink transition hover:border-pace-yellow hover:bg-pace-yellow/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow"
-                        aria-label={`Draw ${s.title} freehand`}
-                      >
-                        <PencilLine className="h-3 w-3" aria-hidden />
-                        Draw
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      ) : null}
 
       {showTemplates ? (
         <div className="mt-6 w-full max-w-4xl border-t border-pace-line pt-5">

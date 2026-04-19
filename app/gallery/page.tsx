@@ -78,11 +78,18 @@ export default function GalleryPage() {
             exported route length comes from the map and the snap engine.
           </p>
 
-          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <p className="mt-2 max-w-2xl text-xs text-pace-muted">
+            Click any card to send the shape straight into the create flow —
+            pick a city and drop into placement without tracing a thing.
+          </p>
+
+          <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {CURATED_ROUTES.map((item) => (
-              <article
+              <Link
                 key={item.title}
-                className="pace-card-editorial group flex flex-col overflow-hidden shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                href={`/create?shape=${encodeURIComponent(item.icon)}`}
+                className="pace-card-editorial group flex flex-col overflow-hidden shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2"
+                title={`Design a ${item.title} route`}
               >
                 <div
                   className="relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden"
@@ -116,8 +123,11 @@ export default function GalleryPage() {
                   <p className="mt-2 text-xs leading-relaxed text-pace-muted">
                     {item.blurb}
                   </p>
+                  <p className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-pace-blue">
+                    Design this →
+                  </p>
                 </div>
-              </article>
+              </Link>
             ))}
           </div>
 
