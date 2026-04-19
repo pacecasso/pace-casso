@@ -11,7 +11,7 @@ const LOGO_URLS = [
 ] as const;
 
 const DEFAULT_CLASS =
-  "h-[clamp(4rem,14vw,6.5rem)] w-auto max-w-[min(480px,90vw)] object-contain object-left";
+  "h-[clamp(5rem,16vw,8rem)] w-auto max-w-[min(560px,92vw)] object-contain object-left";
 
 type Props = {
   className?: string;

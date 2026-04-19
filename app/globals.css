@@ -50,15 +50,15 @@
   --font-accent: var(--font-marker), "Permanent Marker", cursive;
   --font-body: var(--font-dm-sans), "DM Sans", system-ui, sans-serif;
 
-  /* Create page: sticky header + step bar — map steps fill below. Tightened
-     so the workflow fits in a viewport without scrolling. Matches the trimmed
-     header chrome in WorkflowController. */
-  --pace-create-chrome-height: 7rem;
+  /* Create page: sticky header + step bar — map steps fill below. Tuned for
+     the compact workflow chrome (tight nav + step indicator row). Leaves
+     headroom so the header won't clip if nav links wrap on narrow screens. */
+  --pace-create-chrome-height: 8rem;
 }
 
 @media (min-width: 1024px) {
   :root {
-    --pace-create-chrome-height: 6rem;
+    --pace-create-chrome-height: 7rem;
   }
 }
 
@@ -148,8 +148,18 @@ body {
   padding-right: clamp(1.25rem, 4vw, 2.5rem);
 }
 
-/* Primary nav row — landing .nav */
+/* Primary nav row — mirrors landing .nav geometry so users don't see the
+   header jump when navigating between landing.html and marketing pages. */
 .pace-app-nav {
+  background: var(--white);
+  border-bottom: 2px solid var(--yellow);
+  padding: 1rem clamp(1rem, 4vw, 2.5rem);
+}
+
+/* Tighter variant used by the create workflow — that flow is height-
+   constrained (map + controls must fit a viewport), so it can't afford the
+   marketing nav's padding. */
+.pace-app-nav--compact {
   background: var(--white);
   border-bottom: 2px solid var(--yellow);
   padding: 0.5rem clamp(1rem, 4vw, 2.5rem);

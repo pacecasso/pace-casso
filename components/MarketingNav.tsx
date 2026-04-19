@@ -20,6 +20,12 @@ export default function MarketingNav() {
           aria-label="Main"
         >
           <Link
+            href="/landing.html"
+            className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
+          >
+            Home
+          </Link>
+          <Link
             href="/gallery"
             className="pace-nav-link font-bebas text-sm tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow"
           >

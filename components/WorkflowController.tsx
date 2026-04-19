@@ -267,7 +267,7 @@ export default function WorkflowController() {
   return (
     <main className="flex min-h-screen flex-col bg-pace-warm">
       <header className="sticky top-0 z-40 bg-pace-white">
-        <div className="pace-app-nav flex items-center justify-between gap-3">
+        <div className="pace-app-nav--compact flex items-center justify-between gap-3">
           <Link
             href="/landing.html"
             className="inline-block shrink-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2"
@@ -276,9 +276,15 @@ export default function WorkflowController() {
             <BrandLogo className="h-[clamp(2.5rem,7vw,3.75rem)] w-auto max-w-[min(360px,60vw)] object-contain object-left" />
           </Link>
           <nav
-            className="flex shrink-0 items-center gap-x-4 gap-y-1 sm:gap-x-6"
+            className="flex shrink-0 items-center gap-x-3 gap-y-1 sm:gap-x-5"
             aria-label="Marketing links"
           >
+            <Link
+              href="/landing.html"
+              className="pace-nav-link font-bebas text-xs tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow sm:text-sm"
+            >
+              Home
+            </Link>
             <Link
               href="/gallery"
               className="pace-nav-link font-bebas text-xs tracking-[0.14em] text-pace-ink transition hover:text-pace-yellow sm:text-sm"
