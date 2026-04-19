@@ -276,6 +276,97 @@ export function mooreContourRingsFromLineMask(
   return rings;
 }
 
+/**
+ * Label every ink component on the line mask and return per-component pixel
+ * counts, so the caller can decide which "sibling" components are worth
+ * bridging into the main shape.
+ */
+function labelAllInkComponents(
+  src: Uint8Array,
+  w: number,
+  h: number,
+): { labels: Int32Array; counts: number[] } {
+  const labels = new Int32Array(w * h);
+  const counts: number[] = [0];
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!isInk(src[i]!) || labels[i] !== 0) continue;
+      const next = counts.length;
+      counts.push(0);
+      const stack: number[] = [i];
+      while (stack.length) {
+        const j = stack.pop()!;
+        if (labels[j] !== 0) continue;
+        if (!isInk(src[j]!)) continue;
+        labels[j] = next;
+        counts[next] = (counts[next] ?? 0) + 1;
+        const jx = j % w;
+        const jy = (j / w) | 0;
+        if (jx > 0) stack.push(j - 1);
+        if (jx < w - 1) stack.push(j + 1);
+        if (jy > 0) stack.push(j - w);
+        if (jy < h - 1) stack.push(j + w);
+      }
+    }
+  }
+  return { labels, counts };
+}
+
+/**
+ * Outer boundary rings of every SIGNIFICANT ink component EXCEPT the largest.
+ * Used by the contour extractor to bridge multiple disconnected pieces (e.g.,
+ * two side-by-side letters) into one continuous path. Returns rings in
+ * pixel-center image coordinates, sorted largest-first.
+ *
+ * A sibling is "significant" if its pixel area is above both an absolute
+ * floor (`minPixels`) and a relative threshold (`minRelativeToLargest`).
+ * This rejects small noise blobs while keeping real disjoint features.
+ */
+export function mooreSiblingOuterRings(
+  src: Uint8Array,
+  w: number,
+  h: number,
+  minPixels = 150,
+  minRelativeToLargest = 0.18,
+): [number, number][][] {
+  const { labels, counts } = labelAllInkComponents(src, w, h);
+  if (counts.length <= 2) return []; // no siblings
+
+  let largestLabel = 1;
+  let largestCount = 0;
+  for (let L = 1; L < counts.length; L++) {
+    if ((counts[L] ?? 0) > largestCount) {
+      largestCount = counts[L]!;
+      largestLabel = L;
+    }
+  }
+  const threshold = Math.max(minPixels, largestCount * minRelativeToLargest);
+
+  type SiblingEntry = { ring: [number, number][]; area: number };
+  const siblings: SiblingEntry[] = [];
+
+  for (let L = 1; L < counts.length; L++) {
+    if (L === largestLabel) continue;
+    const c = counts[L] ?? 0;
+    if (c < threshold) continue;
+
+    const compMask = new Uint8Array(w * h);
+    for (let i = 0; i < labels.length; i++) {
+      if (labels[i] === L) compMask[i] = 1;
+    }
+    const { buf, pw, ph } = padBinary(compMask, w, h);
+    const outer = mooreTracePaddedInk(buf, pw, ph);
+    if (outer && outer.length >= 4) {
+      siblings.push({ ring: outer, area: ringAreaAbs(outer) });
+    }
+  }
+
+  siblings.sort((a, b) => b.area - a.area);
+  return siblings.map((s) => s.ring);
+}
+
 /** Single outer ring only (backwards-compatible helper). */
 export function mooreBoundaryPixelCenters(
   lineMask: Uint8Array,

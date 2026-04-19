@@ -8,12 +8,16 @@ import { simplifyCartesian } from "./douglasPeucker";
 import {
   medianMinDistBetweenRings,
   stitchNestedHoleRingsInPlace,
+  weaveInnerRingIntoOuter,
 } from "./contourRingStitch";
 import {
   centerlinePolylineFromPreparedBinary,
   prepareTracedBinaryMask,
 } from "./centerlineFromMask";
-import { mooreContourRingsFromLineMask } from "./mooreBoundaryFromMask";
+import {
+  mooreContourRingsFromLineMask,
+  mooreSiblingOuterRings,
+} from "./mooreBoundaryFromMask";
 
 export type NormalizedContourPoint = { x: number; y: number };
 
@@ -325,7 +329,19 @@ export function extractNormalizedContourFromLineMask(
       usedMoore = true;
       const rings = mooreRings.map((r) => r.slice());
       stitchNestedHoleRingsInPlace(rings);
-      ring = rings[0] ?? null;
+      let combined = rings[0] ?? null;
+
+      // Bridge disconnected sibling components into one continuous path.
+      // Lets a user upload an image with two separate letters (or any shape
+      // that broke into multiple pieces during line-art extraction) without
+      // having to hand-draw a connector in Step 1.
+      if (combined) {
+        const siblings = mooreSiblingOuterRings(traceMask, w, h);
+        for (const sib of siblings) {
+          combined = weaveInnerRingIntoOuter(combined, sib);
+        }
+      }
+      ring = combined;
     }
   }
   if (!ring) {

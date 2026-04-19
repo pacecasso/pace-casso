@@ -1,6 +1,6 @@
 "use client";
 
-import { ImageIcon, PencilLine } from "lucide-react";
+import { ImageIcon, PencilLine, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   AREA_DESIGN_TEMPLATES,
@@ -11,6 +11,11 @@ import {
   type AreaDesignComplexity,
   type AreaDesignContour,
 } from "../lib/areaDesignTemplates";
+import {
+  loadCachedSuggestions,
+  saveCachedSuggestions,
+  type CitySuggestion,
+} from "../lib/citySuggestionCache";
 import {
   AREA_TEMPLATE_SNAP_MAX_TRIES,
   bestPlacementBySnapMatch,
@@ -52,6 +57,60 @@ export default function StepSourceChoice({
   const [templateSnap, setTemplateSnap] = useState<
     Partial<Record<string, TemplateSnapRow>>
   >({});
+
+  const [suggestions, setSuggestions] = useState<CitySuggestion[] | null>(null);
+  const [suggestionsBusy, setSuggestionsBusy] = useState(false);
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
+
+  // Reset + try cache whenever city changes.
+  useEffect(() => {
+    setSuggestions(null);
+    setSuggestionsError(null);
+    if (!cityPreset) return;
+    const cached = loadCachedSuggestions(cityPreset.id);
+    if (cached) setSuggestions(cached);
+  }, [cityPreset?.id, cityPreset]);
+
+  async function fetchSuggestions(): Promise<void> {
+    if (!cityPreset) return;
+    setSuggestionsBusy(true);
+    setSuggestionsError(null);
+    try {
+      const res = await fetch("/api/city-suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cityLabel: cityPreset.label,
+          cityRegion: cityPreset.region,
+          gridBearings: cityPreset.dominantGridBearingsDeg,
+        }),
+      });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        setSuggestionsError(
+          res.status === 503
+            ? "AI suggestions aren't configured on this deployment."
+            : `Couldn't get ideas (${res.status})`,
+        );
+        console.warn("[city-suggestions] http", res.status, errText);
+        return;
+      }
+      const json = (await res.json()) as {
+        suggestions?: CitySuggestion[];
+      };
+      if (!json.suggestions?.length) {
+        setSuggestionsError("No suggestions returned. Try again?");
+        return;
+      }
+      setSuggestions(json.suggestions);
+      saveCachedSuggestions(cityPreset.id, json.suggestions);
+    } catch (err) {
+      console.warn("[city-suggestions] fetch failed:", err);
+      setSuggestionsError("Couldn't reach the AI — try again.");
+    } finally {
+      setSuggestionsBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!showTemplates || !cityPreset) {
@@ -160,6 +219,99 @@ export default function StepSourceChoice({
           </span>
         </button>
       </div>
+
+      {cityPreset ? (
+        <div className="mt-6 w-full max-w-4xl border-t border-pace-line pt-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="flex items-center gap-1.5 font-bebas text-[11px] tracking-[0.14em] text-pace-muted">
+                <Sparkles className="h-3 w-3 text-pace-yellow" aria-hidden />
+                Ideas for {cityPreset.label}
+              </p>
+              <p className="mt-1 font-dm text-[11px] leading-relaxed text-pace-muted sm:text-xs">
+                Ask Claude for 5 shape ideas tailored to {cityPreset.label} —
+                from simple to elaborate, including local landmarks.
+              </p>
+            </div>
+            {!suggestions && !suggestionsBusy && (
+              <button
+                type="button"
+                onClick={() => void fetchSuggestions()}
+                className="pace-toolbar-btn shrink-0 px-3 py-2 text-[11px]"
+              >
+                Get ideas (AI)
+              </button>
+            )}
+            {suggestions && !suggestionsBusy && (
+              <button
+                type="button"
+                onClick={() => void fetchSuggestions()}
+                className="pace-toolbar-btn shrink-0 px-3 py-1.5 text-[10px]"
+                title="Regenerate ideas"
+              >
+                Refresh
+              </button>
+            )}
+          </div>
+
+          {suggestionsBusy && (
+            <p className="mt-3 font-dm text-[11px] italic text-pace-muted">
+              Thinking up shapes for {cityPreset.label}…
+            </p>
+          )}
+          {suggestionsError && (
+            <p className="mt-3 font-dm text-[11px] text-red-600">
+              {suggestionsError}
+            </p>
+          )}
+          {suggestions && suggestions.length > 0 && (
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {suggestions.map((s, i) => {
+                const diffColor =
+                  s.difficulty === "simple"
+                    ? "bg-emerald-100 text-emerald-700"
+                    : s.difficulty === "medium"
+                      ? "bg-pace-yellow/25 text-pace-ink"
+                      : "bg-red-100 text-red-700";
+                return (
+                  <div
+                    key={i}
+                    className="flex flex-col gap-1.5 rounded-lg border border-pace-line bg-pace-white p-3 shadow-sm"
+                  >
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="font-bebas text-sm tracking-[0.08em] text-pace-ink">
+                        {s.title}
+                      </span>
+                      {s.iconic && (
+                        <span className="shrink-0 rounded-full bg-pace-blue/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-pace-blue">
+                          Iconic
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] leading-snug text-pace-muted">
+                      {s.description}
+                    </p>
+                    <span
+                      className={`inline-flex w-fit items-center rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${diffColor}`}
+                    >
+                      {s.difficulty}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {suggestions && suggestions.length > 0 && (
+            <p className="mt-2 font-dm text-[10px] italic leading-snug text-pace-muted">
+              To design one of these, go back and choose{" "}
+              <strong className="not-italic text-pace-ink">From a photo</strong>{" "}
+              (trace a reference image) or{" "}
+              <strong className="not-italic text-pace-ink">Draw on the map</strong>{" "}
+              (sketch it freehand).
+            </p>
+          )}
+        </div>
+      ) : null}
 
       {showTemplates ? (
         <div className="mt-6 w-full max-w-4xl border-t border-pace-line pt-5">
