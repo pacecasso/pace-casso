@@ -408,11 +408,15 @@ export default function Step2MapAnchor({
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
                           src={p.previewDataUrl}
-                          alt={`Option ${idx + 1}`}
+                          alt={`${isTopPick ? "Top pick: " : `Option ${idx + 1}: `}${p.distanceKm.toFixed(1)} km${p.reason ? ` — ${p.reason}` : ""}`}
                           className="aspect-square w-full object-cover"
                         />
                       ) : (
-                        <div className="aspect-square w-full bg-pace-line/30" />
+                        <div
+                          className="aspect-square w-full bg-pace-line/30"
+                          role="img"
+                          aria-label={`Option ${idx + 1}: preview unavailable`}
+                        />
                       )}
                       <span
                         className={`absolute left-1.5 top-1.5 rounded-full px-2 py-0.5 font-bebas text-[11px] tracking-wider shadow-sm transition ${

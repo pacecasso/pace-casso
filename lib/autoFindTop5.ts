@@ -504,6 +504,7 @@ function parseImageBase64(imageBase64: string): ParsedImage {
 async function getVisionHint(
   originalData: string,
   originalMediaType: string,
+  cityLabel: string,
 ): Promise<ShapeHint | null> {
   console.log("[autoFindTop5] requesting vision hint…");
   try {
@@ -513,6 +514,7 @@ async function getVisionHint(
       body: JSON.stringify({
         imageBase64: originalData,
         mediaType: originalMediaType,
+        cityLabel,
       }),
     });
     if (!res.ok) {
@@ -553,9 +555,10 @@ async function visionRank(
   count: number,
   topK: number,
   userHistory: FinalizedRouteMemory[],
+  cityLabel: string,
 ): Promise<{ id: number; reason: string }[] | null> {
   console.log(
-    `[autoFindTop5] calling vision-rank with count=${count}, topK=${topK}, gridB64=${gridRawBase64.length}ch, origB64=${originalData.length}ch, historyEntries=${userHistory.length}`,
+    `[autoFindTop5] calling vision-rank with count=${count}, topK=${topK}, gridB64=${gridRawBase64.length}ch, origB64=${originalData.length}ch, historyEntries=${userHistory.length}, city=${cityLabel}`,
   );
   try {
     const res = await fetch("/api/vision-rank", {
@@ -567,6 +570,7 @@ async function visionRank(
         originalMediaType,
         count,
         topK,
+        cityLabel,
         userHistory: userHistory.map((h) => ({
           center: h.center,
           rotationDeg: h.rotationDeg,
@@ -646,7 +650,11 @@ export async function autoFindTop5(
   let parsedOrig: ParsedImage | null = null;
   if (options.imageBase64) {
     parsedOrig = parseImageBase64(options.imageBase64);
-    hint = await getVisionHint(parsedOrig.data, parsedOrig.mediaType);
+    hint = await getVisionHint(
+      parsedOrig.data,
+      parsedOrig.mediaType,
+      preset.label,
+    );
   }
 
   const raw = enumerateCandidates(
@@ -711,6 +719,7 @@ export async function autoFindTop5(
     snapped.length,
     topK,
     userHistory,
+    preset.label,
   );
 
   if (!ranked || ranked.length === 0) {

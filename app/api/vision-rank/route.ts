@@ -40,6 +40,7 @@ function buildPrompt(
   count: number,
   topK: number,
   userHistory: UserHistoryEntry[],
+  cityLabel: string,
 ): string {
   const historyBlock =
     userHistory.length > 0
@@ -54,22 +55,24 @@ ${userHistory
   .join("\n")}`
       : "";
 
+  const city = cityLabel || "the selected city";
+
   return `You are seeing two images:
-1. A grid of ${count} candidate GPS walking routes, numbered 1–${count} in the top-left of each tile. Each tile shows the route drawn in red on a real Manhattan map — you can see streets (light gray), water (pale blue), and parks (pale green) underneath.
+1. A grid of ${count} candidate GPS walking routes, numbered 1–${count} in the top-left of each tile. Each tile shows the route drawn in red on a real map of **${city}** — you can see streets (light gray), water (pale blue), and parks (pale green) underneath.
 2. A reference image showing the target subject the route is trying to draw.
 
-The route follows real city streets, so every line is a blocky step-staircase; curves become jagged. Exact shape matching is impossible — treat them as etch-a-sketch interpretations. That is fine.
+The route follows real ${city} streets, so every line is a blocky step-staircase that reflects that city's grid character (Manhattan's 29° skew, Brooklyn's mixed orientations, Chicago's strict north-south grid, San Francisco's hills, DC's diagonal avenues, etc.). Curves become jagged. Exact shape matching is impossible — treat them as etch-a-sketch interpretations of the subject at ${city}'s street scale. That is fine.
 
 Rank by TWO things, in this priority order:
 
-A) **Geographic plausibility** — the route must sit on walkable streets. IMMEDIATELY disqualify any candidate whose red line crosses water, sits mostly in a park or cemetery, hugs the river shoreline in a way that doesn't match the subject, or has long straight segments cutting through non-street areas. A route that fails here should not appear in your top ${topK}, no matter how good the shape is.
+A) **Geographic plausibility in ${city}** — the route must sit on walkable streets **in ${city}**. IMMEDIATELY disqualify any candidate whose red line crosses water, sits mostly in a park or cemetery, hugs a shoreline in a way that doesn't match the subject, cuts across non-walkable infrastructure (rail yards, freeways, bridges-as-shortcuts), or has long straight segments jumping across non-street areas. A route that fails here should not appear in your top ${topK}, no matter how good the shape is.
 
-B) **Shape recognizability** — among the geographically valid candidates, pick the ones where a person would most likely recognize the reference subject. Focus on gestalt: silhouette, proportions, distinctive features, correct orientation (not upside-down or mirrored in a way that breaks the subject).${historyBlock}
+B) **Shape recognizability** — among the geographically valid candidates, pick the ones where a person would most likely recognize the reference subject. Focus on gestalt: silhouette, proportions, distinctive features, correct orientation (not upside-down or mirrored in a way that breaks the subject). A shape that reads clearly against ${city}'s particular grid character is worth more than one that is geometrically closer to the reference but fights the street layout.${historyBlock}
 
 Return ONLY a JSON array of exactly ${topK} objects ordered best-first:
 [{"id": N, "reason": "short phrase"}]
 
-In "reason", lead with why the candidate is geographically sound ("solid grid placement", "all on streets") AND why the shape reads (e.g. "clear R silhouette", "apple proportions with stem"). No other text, no markdown code fences.`;
+In "reason", lead with why the candidate is geographically sound in ${city} ("solid grid placement", "all on ${city} streets", "walkable corridor") AND why the shape reads (e.g. "clear R silhouette", "apple proportions with stem"). No other text, no markdown code fences.`;
 }
 
 export async function POST(req: Request) {
@@ -91,6 +94,7 @@ export async function POST(req: Request) {
     count?: unknown;
     topK?: unknown;
     userHistory?: unknown;
+    cityLabel?: unknown;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -117,6 +121,10 @@ export async function POST(req: Request) {
     typeof body.topK === "number" && Number.isFinite(body.topK)
       ? Math.floor(body.topK)
       : 5;
+  const cityLabel =
+    typeof body.cityLabel === "string" && body.cityLabel.trim().length > 0
+      ? body.cityLabel.trim().slice(0, 80)
+      : "";
 
   // User's previously-finalized placements, if any. Validated loosely —
   // anything malformed is just dropped and the prompt proceeds without history.
@@ -188,7 +196,10 @@ export async function POST(req: Request) {
                 data: orig,
               },
             },
-            { type: "text", text: buildPrompt(count, topK, userHistory) },
+            {
+              type: "text",
+              text: buildPrompt(count, topK, userHistory, cityLabel),
+            },
           ],
         },
       ],

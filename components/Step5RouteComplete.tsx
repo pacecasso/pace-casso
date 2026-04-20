@@ -49,7 +49,7 @@ function routeToGeoJSONFeature(route: RouteLineString) {
   return {
     type: "Feature" as const,
     properties: {
-      name: "Pacecasso walking route",
+      name: "PaceCasso walking route",
       distanceMeters: route.distanceMeters ?? null,
       waypointCount: route.blockWaypoints?.length ?? null,
       pathVertexCount: coords.length,
@@ -91,7 +91,7 @@ function routeToGpx(route: RouteLineString, cues: WalkingCue[]): string {
         `    <trkpt lat="${lat.toFixed(7)}" lon="${lng.toFixed(7)}"></trkpt>`,
     )
     .join("\n");
-  const name = "Pacecasso route";
+  const name = "PaceCasso route";
   // Guard cue coords too — a non-finite lat/lng would emit <wpt lat="NaN">
   // which breaks every GPX parser.
   const safeCues = cues.filter(
@@ -112,7 +112,7 @@ function routeToGpx(route: RouteLineString, cues: WalkingCue[]): string {
           .join("\n")}\n`
       : "";
   return `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="Pacecasso" xmlns="http://www.topografix.com/GPX/1/1">
+<gpx version="1.1" creator="PaceCasso" xmlns="http://www.topografix.com/GPX/1/1">
 ${wptBlock}  <trk>
     <name>${escapeXml(name)}</name>
     <trkseg>

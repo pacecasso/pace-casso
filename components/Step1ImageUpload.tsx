@@ -806,7 +806,7 @@ export default function Step1ImageUpload({
                 uploadedImage ? uploadedImage.file.name : "No file selected yet"
               }
             >
-              {uploadedImage ? uploadedImage.file.name : "NO FILE YET"}
+              {uploadedImage ? uploadedImage.file.name : "No file selected"}
             </span>
           </label>
           <label className="font-dm flex shrink-0 items-center gap-1.5 pr-0.5 text-[11px] text-pace-ink sm:gap-2 sm:text-xs">

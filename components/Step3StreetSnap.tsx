@@ -262,8 +262,12 @@ export default function Step3StreetSnap({
               aria-live="polite"
               aria-busy="true"
             >
-              <div className="max-w-[14rem] rounded-md border border-pace-line bg-pace-white/95 px-4 py-3 text-center font-dm text-xs font-medium leading-snug text-pace-ink shadow-sm">
-                Snapping to streets…
+              <div className="flex max-w-[16rem] items-center gap-2.5 rounded-md border border-pace-line bg-pace-white/95 px-4 py-3 text-center font-dm text-xs font-medium leading-snug text-pace-ink shadow-sm">
+                <span
+                  aria-hidden
+                  className="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-pace-yellow border-t-transparent"
+                />
+                <span>Snapping to streets…</span>
               </div>
             </div>
           ) : null}

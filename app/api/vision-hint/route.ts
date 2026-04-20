@@ -27,9 +27,14 @@ function clientKey(req: Request): string {
   return req.headers.get("x-real-ip")?.trim() || "unknown";
 }
 
-const PROMPT = `Look at this image. It will be turned into a GPS art route — a walking path drawn on city streets.
+function buildPrompt(cityLabel: string | null): string {
+  const cityLine = cityLabel
+    ? `\n\nThe route will be placed in ${cityLabel}, so consider how the shape will read against that city's street layout when you pick the rotation strategy.\n`
+    : "";
+  return `Look at this image. It will be turned into a GPS art route — a walking path drawn on city streets.${cityLine}\n\n${PROMPT_BODY}`;
+}
 
-Classify it so we can generate better candidate placements. Return ONLY a JSON object with these exact keys, no other text, no markdown fences:
+const PROMPT_BODY = `Classify it so we can generate better candidate placements. Return ONLY a JSON object with these exact keys, no other text, no markdown fences:
 
 {
   "shapeClass": "letter" | "creature" | "geometric" | "abstract",
@@ -67,7 +72,7 @@ export async function POST(req: Request) {
     );
   }
 
-  let body: { imageBase64?: unknown; mediaType?: unknown };
+  let body: { imageBase64?: unknown; mediaType?: unknown; cityLabel?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -80,6 +85,10 @@ export async function POST(req: Request) {
     typeof body.mediaType === "string" && ALLOWED_MEDIA.has(body.mediaType)
       ? body.mediaType
       : "image/png";
+  const cityLabel =
+    typeof body.cityLabel === "string" && body.cityLabel.trim().length > 0
+      ? body.cityLabel.trim().slice(0, 80)
+      : null;
 
   if (!data) {
     return NextResponse.json(
@@ -113,7 +122,7 @@ export async function POST(req: Request) {
                 data,
               },
             },
-            { type: "text", text: PROMPT },
+            { type: "text", text: buildPrompt(cityLabel) },
           ],
         },
       ],

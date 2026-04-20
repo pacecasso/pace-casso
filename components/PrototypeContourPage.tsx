@@ -103,7 +103,7 @@ export default function PrototypeContourPage() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-neutral-950 px-4 py-8 text-neutral-100">
       <div className="mb-6 text-center">
-        <h1 className="text-2xl font-semibold">Pacecasso Prototype</h1>
+        <h1 className="text-2xl font-semibold">PaceCasso Prototype</h1>
         <p className="mt-2 text-sm text-neutral-400">
           Upload the provided heart image to see a simple black outline extracted from it.
         </p>

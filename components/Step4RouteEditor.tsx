@@ -618,6 +618,12 @@ export default function Step4RouteEditor({
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
   const [undoPast, setUndoPast] = useState<Waypoint[][]>([]);
   const [redoFuture, setRedoFuture] = useState<Waypoint[][]>([]);
+  /**
+   * One-shot toast the first time a user deletes a middle waypoint, so they
+   * learn that the line is intentionally preserved (polyline-first edits).
+   * Remembered in localStorage so returning users don't see it again.
+   */
+  const [deleteHint, setDeleteHint] = useState<string | null>(null);
 
   const mapRef = useRef<LeafletMap | null>(null);
   const waypointsRef = useRef(waypoints);
@@ -879,10 +885,30 @@ export default function Step4RouteEditor({
     (index: number) => {
       const wp = waypointsRef.current;
       if (wp.length <= 1) return;
+      const isMiddle = index > 0 && index < wp.length - 1;
       setSelectedWaypointIndex((sel) => adjustIndexAfterRemoval(sel, index));
       setShiftSelectedIndices((ids) =>
         adjustMultiSelectAfterRemoval(ids, index),
       );
+      if (isMiddle) {
+        try {
+          const seen = window.localStorage.getItem(
+            "pacecasso-step4-middle-delete-hint-v1",
+          );
+          if (!seen) {
+            setDeleteHint(
+              "Handle removed — line preserved. Delete more to simplify, or edit waypoints to reshape.",
+            );
+            window.localStorage.setItem(
+              "pacecasso-step4-middle-delete-hint-v1",
+              "1",
+            );
+            window.setTimeout(() => setDeleteHint(null), 5000);
+          }
+        } catch {
+          /* ignore private-mode / quota errors */
+        }
+      }
       const next = wp.filter((_, i) => i !== index);
       /**
        * Preserve the VISIBLE red line across a delete. If you're removing a
@@ -1387,6 +1413,17 @@ export default function Step4RouteEditor({
               ) : null}
             </span>
           </div>
+
+          {deleteHint ? (
+            <div
+              className="mt-3 flex items-start gap-2 rounded-md border border-pace-blue/40 bg-pace-blue/5 px-2.5 py-2 text-[11px] leading-snug text-pace-ink"
+              role="status"
+              aria-live="polite"
+            >
+              <span aria-hidden className="mt-0.5 text-pace-blue">ℹ</span>
+              <span>{deleteHint}</span>
+            </div>
+          ) : null}
 
           {spurLegIndices.length > 0 && !spurBusy ? (
             /* Straight-line "teleport" segments — Mapbox couldn't route them.
