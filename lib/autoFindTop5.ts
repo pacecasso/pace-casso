@@ -32,7 +32,13 @@ import {
 
 const MARGIN = 0.012;
 const MIN_PERIMETER_KM = 3;
-const MAX_PERIMETER_KM = 25;
+/**
+ * Accommodates hero-scale placements (e.g. an island-sized heart on Manhattan,
+ * perimeter ≈ 28–32 km). The snap-ratio filter + vision rank still weed out
+ * candidates that don't read at that size, so widening here only expands the
+ * candidate *pool*, not the output quality bar.
+ */
+const MAX_PERIMETER_KM = 35;
 const CANDIDATES_TO_SNAP = 20;
 const SNAP_BATCH_SIZE = 4;
 const SNAP_BATCH_GAP_MS = 100;
@@ -113,17 +119,27 @@ export type AutoFindTop5Options = {
  * categories so a misclassification (e.g., Claude says "compact" when the
  * shape wanted "medium") can't lock us out of the right scale. The common
  * middle values 1.0 / 1.4 / 1.8 appear in every category.
+ *
+ * "sprawling" + the default (no-hint) sweep now reach hero scales up to ~5×.
+ * That's what unlocks island-sized placements (HEART.webp-style hearts that
+ * fill Manhattan from midtown to Battery) alongside neighborhood variants.
+ * Compact / medium stay bounded — a 9 km letter is just unreadable spaghetti,
+ * the vision ranker shouldn't even have to consider it.
+ *
+ * Letters / fine shapes need tight scales; big silhouettes want to roam.
  */
 function scalesFromHint(hint: ShapeHint | null): number[] {
   switch (hint?.scaleHint) {
     case "compact":
       return [0.7, 0.9, 1.1, 1.4, 1.7, 2.0];
     case "medium":
-      return [0.9, 1.2, 1.5, 1.8, 2.1, 2.4];
+      return [0.9, 1.2, 1.6, 2.0, 2.6, 3.2];
     case "sprawling":
-      return [1.4, 1.8, 2.2, 2.6, 3.0, 3.4];
+      return [1.4, 2.0, 2.8, 3.6, 4.5, 5.5];
     default:
-      return [0.5, 0.75, 1.0, 1.4, 1.9, 2.5, 3.2];
+      // No hint (vision-hint unavailable) — sweep tiny → hero so the AI sees
+      // the full range and picks whatever actually reads best.
+      return [0.6, 1.0, 1.6, 2.4, 3.4, 4.5, 5.5];
   }
 }
 
@@ -148,7 +164,7 @@ function scalesFromTargetDistance(
   const targetScale = targetDistanceKm / ref.approxDistanceKm;
   return [0.85, 0.93, 1.0, 1.08, 1.15]
     .map((m) => targetScale * m)
-    .map((s) => Math.max(0.3, Math.min(3.5, s)));
+    .map((s) => Math.max(0.3, Math.min(6.0, s)));
 }
 
 /**
