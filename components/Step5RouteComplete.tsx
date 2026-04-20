@@ -359,8 +359,8 @@ export default function Step5RouteComplete({
             Route ready — preview & export
           </h2>
           <p className="font-dm mt-1 max-w-2xl text-xs leading-snug text-pace-muted sm:text-[13px]">
-            Export a GPX for your watch, or GeoJSON for maps and tools. Turn
-            cues ship as GPX waypoints—some devices only draw the line.
+            Your route is ready. Download it for your watch, share a preview,
+            or keep tweaking.
           </p>
         </div>
       </div>
@@ -453,41 +453,74 @@ export default function Step5RouteComplete({
               <span className="mt-2 font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
                 Export
               </span>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={downloadGeoJSON}
-                  disabled={pathVertices < 2}
-                  className="pace-toolbar-btn-primary px-3 py-2 disabled:opacity-40"
-                >
-                  GeoJSON
-                </button>
+              <div className="flex flex-col gap-2">
+                {/* GPX is the hero: 90 %+ of users are sending this to a
+                    watch. Full-width primary button + clear subtitle removes
+                    the "which file do I use" guessing. */}
                 <button
                   type="button"
                   onClick={downloadGpx}
                   disabled={pathVertices < 2}
-                  className="pace-toolbar-btn-primary px-3 py-2 disabled:opacity-40"
+                  className="pace-toolbar-btn-primary flex flex-col items-start gap-0.5 px-3 py-2.5 text-left disabled:opacity-40"
+                  aria-label="Download GPX for your watch (Garmin, Coros, Apple Watch, Suunto)"
                 >
-                  GPX
+                  <span className="flex w-full items-center justify-between gap-2">
+                    <span className="font-bebas text-sm tracking-[0.08em]">
+                      GPX — for your watch
+                    </span>
+                    <span className="font-bebas text-[10px] tracking-[0.14em] text-pace-ink/70">
+                      .gpx
+                    </span>
+                  </span>
+                  <span className="font-dm text-[11px] font-normal leading-snug text-pace-ink/75">
+                    Garmin · Coros · Apple Watch · Suunto · most Strava imports
+                  </span>
                 </button>
-                <button
-                  type="button"
-                  onClick={downloadCueSheet}
-                  disabled={turnCues.length === 0}
-                  className="pace-toolbar-btn px-3 py-2 disabled:opacity-40"
-                  title="Plain list of turns"
-                >
-                  Cues (.txt)
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={downloadGeoJSON}
+                    disabled={pathVertices < 2}
+                    className="pace-toolbar-btn flex flex-1 flex-col items-start gap-0.5 px-3 py-2 text-left disabled:opacity-40"
+                    aria-label="Download GeoJSON for maps and analysis tools"
+                  >
+                    <span className="font-bebas text-[12px] tracking-[0.08em]">
+                      GeoJSON
+                    </span>
+                    <span className="font-dm text-[10px] font-normal leading-snug text-pace-muted">
+                      Google My Maps, Mapbox, GIS tools
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadCueSheet}
+                    disabled={turnCues.length === 0}
+                    className="pace-toolbar-btn flex flex-1 flex-col items-start gap-0.5 px-3 py-2 text-left disabled:opacity-40"
+                    aria-label="Download turn-by-turn cue sheet as plain text"
+                  >
+                    <span className="font-bebas text-[12px] tracking-[0.08em]">
+                      Cues (.txt)
+                    </span>
+                    <span className="font-dm text-[10px] font-normal leading-snug text-pace-muted">
+                      Printable turn list
+                    </span>
+                  </button>
+                </div>
                 {animSupported && (
                   <button
                     type="button"
                     onClick={() => void downloadAnimation()}
                     disabled={animBusy || pathVertices < 2}
-                    className="pace-toolbar-btn px-3 py-2 disabled:opacity-40"
+                    className="pace-toolbar-btn flex flex-col items-start gap-0.5 px-3 py-2 text-left disabled:opacity-40"
+                    aria-label="Download an animated video of the route drawing itself"
                     title="Download a ~4-second animation of the route drawing itself — great for social."
                   >
-                    {animBusy ? "Recording…" : "Animation (.webm)"}
+                    <span className="font-bebas text-[12px] tracking-[0.08em]">
+                      {animBusy ? "Recording…" : "Animation (.webm)"}
+                    </span>
+                    <span className="font-dm text-[10px] font-normal leading-snug text-pace-muted">
+                      4-second video — great for Instagram / Strava social
+                    </span>
                   </button>
                 )}
               </div>
@@ -531,14 +564,6 @@ export default function Step5RouteComplete({
                   {shareHint}
                 </p>
               ) : null}
-
-              <p className="text-[11px] leading-snug text-pace-muted">
-                GPX embeds{" "}
-                <code className="rounded bg-pace-panel px-1 text-pace-ink ring-1 ring-pace-line">
-                  &lt;wpt&gt;
-                </code>{" "}
-                per turn when cues are available.
-              </p>
 
               <div className="mt-4 rounded-lg border border-pace-line bg-pace-panel/80 p-3">
                 <h3 className="font-bebas text-[11px] tracking-[0.12em] text-pace-yellow">

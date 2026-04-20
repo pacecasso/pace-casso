@@ -329,9 +329,40 @@ export default function Step2MapAnchor({
 
           {picks.length > 0 && (
             <div className="mt-3 flex flex-col gap-2 rounded border border-pace-line bg-pace-warm/50 p-2">
-              <div className="flex items-center justify-between">
-                <span className="font-bebas text-[11px] tracking-[0.1em] text-pace-ink">
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 font-bebas text-[11px] tracking-[0.1em] text-pace-ink">
                   {picksVisionUsed ? "PaceCasso top picks" : "Candidates"}
+                  {picksVisionUsed && (
+                    /* Keyboard-accessible "Why these picks?" tooltip. `summary`
+                       toggles on click AND Enter; screen readers announce the
+                       open/closed state automatically. */
+                    <details className="group relative">
+                      <summary
+                        className="flex h-5 w-5 cursor-pointer list-none items-center justify-center rounded-full border border-pace-line bg-white text-[10px] font-bold text-pace-muted transition hover:border-pace-blue hover:text-pace-blue focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-blue [&::-webkit-details-marker]:hidden"
+                        aria-label="How PaceCasso ranks these picks"
+                        title="How PaceCasso ranks these picks"
+                      >
+                        ?
+                      </summary>
+                      <div
+                        role="tooltip"
+                        className="absolute left-0 top-7 z-10 w-[260px] rounded-md border border-pace-line bg-white p-2.5 text-[11px] leading-snug text-pace-ink shadow-md"
+                      >
+                        PaceCasso ranks placements by two things, in order:
+                        <ol className="mt-1.5 space-y-1 pl-4 [list-style-type:decimal]">
+                          <li>
+                            <span className="font-semibold">Walkability</span> —
+                            the route stays on real streets, no water or park
+                            detours.
+                          </li>
+                          <li>
+                            <span className="font-semibold">Shape match</span> —
+                            the silhouette reads clearly from above.
+                          </li>
+                        </ol>
+                      </div>
+                    </details>
+                  )}
                 </span>
                 <button
                   type="button"
@@ -358,6 +389,7 @@ export default function Step2MapAnchor({
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 {picks.map((p, idx) => {
                   const selected = selectedPickIdx === idx;
+                  const isTopPick = picksVisionUsed && idx === 0;
                   return (
                     <button
                       key={idx}
@@ -366,7 +398,9 @@ export default function Step2MapAnchor({
                       className={`group relative flex flex-col overflow-hidden rounded-lg border bg-white text-left shadow-sm transition-all duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-blue focus-visible:ring-offset-2 ${
                         selected
                           ? "-translate-y-0.5 border-pace-yellow shadow-md ring-2 ring-pace-yellow/60"
-                          : "border-pace-line hover:-translate-y-0.5 hover:border-pace-yellow/60 hover:shadow-md"
+                          : isTopPick
+                            ? "border-pace-yellow/70 hover:-translate-y-0.5 hover:shadow-md"
+                            : "border-pace-line hover:-translate-y-0.5 hover:border-pace-yellow/60 hover:shadow-md"
                       }`}
                       title={p.reason || `Option ${idx + 1}`}
                     >
@@ -389,12 +423,17 @@ export default function Step2MapAnchor({
                       >
                         {idx + 1}
                       </span>
-                      <div className="flex flex-col gap-0.5 px-2 py-1.5">
-                        <span className="text-[11px] font-semibold tabular-nums text-pace-ink">
+                      {isTopPick && (
+                        <span className="absolute right-1.5 top-1.5 rounded-full bg-pace-yellow px-2 py-0.5 font-bebas text-[10px] tracking-[0.1em] text-pace-ink shadow-sm">
+                          ★ TOP PICK
+                        </span>
+                      )}
+                      <div className="flex flex-col gap-1 px-2 py-2">
+                        <span className="text-[12px] font-semibold tabular-nums text-pace-ink">
                           {p.distanceKm.toFixed(1)} km
                         </span>
                         {p.reason && (
-                          <span className="line-clamp-2 text-[10px] leading-tight text-pace-muted">
+                          <span className="text-[11px] leading-snug text-pace-ink/75">
                             {p.reason}
                           </span>
                         )}
