@@ -597,8 +597,15 @@ export default function Step4RouteEditor({
   const [waypoints, setWaypoints] = useState<Waypoint[]>(() =>
     initialWaypoints(snappedRoute),
   );
-  /** Image: on by default (contour vs streets). Freehand: unused (overlay hidden). */
-  const [showOriginalArt, setShowOriginalArt] = useState(showArtControls);
+  /**
+   * Default OFF even for image uploads. When it was on by default, users
+   * would see stray bits of their traced outline (parts the street snap
+   * couldn't follow — e.g. pen jitter, a hooked stroke) and think they were
+   * routing artifacts they should edit away. Waypoint tools can't touch this
+   * overlay, so the UX dead-ended. Off by default keeps the view clean; the
+   * toggle is still available for users who want the shape-vs-route compare.
+   */
+  const [showOriginalArt, setShowOriginalArt] = useState(false);
   /** When off, hide full Mapbox polyline so stray tails past your waypoints disappear. */
   const [showFullSnapReference, setShowFullSnapReference] = useState(false);
   /** When off, hide orange waypoint handles to preview the final red route only. */
@@ -1493,14 +1500,17 @@ export default function Step4RouteEditor({
               <div className="flex flex-wrap items-center gap-4">
                 {showArtControls ? (
                   <div className="flex items-center gap-3">
-                    <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
-                      Your art
+                    <span
+                      className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted"
+                      title="Show the original outline you traced in Step 1, dashed in green, on top of the route. Useful for comparing the shape to the walkable path."
+                    >
+                      Traced outline
                     </span>
                     <button
                       type="button"
                       role="switch"
                       aria-checked={showOriginalArt}
-                      aria-label="Toggle original artwork overlay"
+                      aria-label="Toggle the green dashed overlay of your traced outline from Step 1"
                       onClick={() => setShowOriginalArt((v) => !v)}
                       className={`relative h-7 w-12 shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
                         showOriginalArt ? "bg-emerald-500" : "bg-pace-line"
@@ -1559,11 +1569,13 @@ export default function Step4RouteEditor({
               </div>
               {showArtControls ? (
                 <p className="font-dm text-[11px] leading-snug text-pace-muted">
-                  Dashed <span className="text-emerald-600">green</span> is your
-                  traced outline (vs the red street route). It can cut across
-                  blocks where streets go around — not a second route. Toggle{" "}
-                  <strong className="text-pace-ink">Your art</strong> off for a
-                  clean view.
+                  The dashed <span className="text-emerald-600">green</span>{" "}
+                  overlay is the outline you traced in Step 1 — a reference for
+                  comparison, not part of the route. Bits that stick out from
+                  the red line are places streets can&apos;t follow your shape
+                  exactly; you can&apos;t edit those with waypoints. Toggle{" "}
+                  <strong className="text-pace-ink">Traced outline</strong> off
+                  if it&apos;s distracting.
                 </p>
               ) : (
                 <p className="font-dm text-[11px] leading-snug text-pace-muted">
