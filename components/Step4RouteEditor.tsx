@@ -1507,75 +1507,73 @@ export default function Step4RouteEditor({
             <div
               className={`flex flex-col gap-3 ${mobileOptionsOpen ? "" : "hidden"} lg:flex`}
             >
-              <div className="flex flex-wrap items-center gap-4">
+              {/* Chip-style toggles in a 3-column grid so "Outline · Full snap ·
+                  Dots" always fit on one row instead of wrapping. On/off is
+                  carried by background color, not a separate switch widget —
+                  the whole chip is the button, bigger touch target, less
+                  horizontal budget spent. */}
+              <div
+                className={`grid gap-2 ${showArtControls ? "grid-cols-3" : "grid-cols-2"}`}
+              >
                 {showArtControls ? (
-                  <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={showOriginalArt}
+                    aria-label="Toggle the green dashed overlay of your traced outline from Step 1"
+                    title="Show the outline you traced in Step 1 on top of the route — for comparing shape vs. walkable path."
+                    onClick={() => setShowOriginalArt((v) => !v)}
+                    className={`flex min-h-[32px] items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 font-bebas text-[11px] tracking-[0.08em] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
+                      showOriginalArt
+                        ? "border-emerald-500 bg-emerald-500/10 text-emerald-800"
+                        : "border-pace-line bg-pace-white text-pace-muted hover:border-emerald-400 hover:text-pace-ink"
+                    }`}
+                  >
                     <span
-                      className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted"
-                      title="Show the original outline you traced in Step 1, dashed in green, on top of the route. Useful for comparing the shape to the walkable path."
-                    >
-                      Traced outline
-                    </span>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={showOriginalArt}
-                      aria-label="Toggle the green dashed overlay of your traced outline from Step 1"
-                      onClick={() => setShowOriginalArt((v) => !v)}
-                      className={`relative h-7 w-12 shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
-                        showOriginalArt ? "bg-emerald-500" : "bg-pace-line"
-                      }`}
-                    >
-                      <span
-                        className={`absolute top-1 left-1 block h-5 w-5 rounded-full bg-pace-white shadow transition-transform ${
-                          showOriginalArt ? "translate-x-5" : "translate-x-0"
-                        }`}
-                      />
-                    </button>
-                  </div>
+                      aria-hidden
+                      className={`inline-block h-2 w-2 shrink-0 rounded-full ${showOriginalArt ? "bg-emerald-500" : "bg-pace-line"}`}
+                    />
+                    Outline
+                  </button>
                 ) : null}
-                <div className="flex items-center gap-3">
-                  <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
-                    Full snap
-                  </span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={showFullSnapReference}
-                    aria-label="Show full Mapbox snapped polyline behind your route"
-                    onClick={() => setShowFullSnapReference((v) => !v)}
-                    className={`relative h-7 w-12 shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow ${
-                      showFullSnapReference ? "bg-pace-yellow" : "bg-pace-line"
-                    }`}
-                  >
-                    <span
-                      className={`absolute top-1 left-1 block h-5 w-5 rounded-full bg-pace-white shadow transition-transform ${
-                        showFullSnapReference ? "translate-x-5" : "translate-x-0"
-                      }`}
-                    />
-                  </button>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
-                    Dots
-                  </span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={showWaypointDots}
-                    aria-label="Show waypoint handles on the map"
-                    onClick={() => setShowWaypointDots((v) => !v)}
-                    className={`relative h-7 w-12 shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-blue/50 ${
-                      showWaypointDots ? "bg-pace-blue" : "bg-pace-line"
-                    }`}
-                  >
-                    <span
-                      className={`absolute top-1 left-1 block h-5 w-5 rounded-full bg-pace-white shadow transition-transform ${
-                        showWaypointDots ? "translate-x-5" : "translate-x-0"
-                      }`}
-                    />
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={showFullSnapReference}
+                  aria-label="Show full Mapbox snapped polyline behind your route"
+                  title="Show the full original snap as a faint reference under your current route."
+                  onClick={() => setShowFullSnapReference((v) => !v)}
+                  className={`flex min-h-[32px] items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 font-bebas text-[11px] tracking-[0.08em] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow ${
+                    showFullSnapReference
+                      ? "border-pace-yellow bg-pace-yellow/15 text-pace-ink"
+                      : "border-pace-line bg-pace-white text-pace-muted hover:border-pace-yellow hover:text-pace-ink"
+                  }`}
+                >
+                  <span
+                    aria-hidden
+                    className={`inline-block h-2 w-2 shrink-0 rounded-full ${showFullSnapReference ? "bg-pace-yellow" : "bg-pace-line"}`}
+                  />
+                  Full snap
+                </button>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={showWaypointDots}
+                  aria-label="Show waypoint handles on the map"
+                  title="Show the orange waypoint dots so you can drag or double-tap to edit the route."
+                  onClick={() => setShowWaypointDots((v) => !v)}
+                  className={`flex min-h-[32px] items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 font-bebas text-[11px] tracking-[0.08em] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-blue/50 ${
+                    showWaypointDots
+                      ? "border-pace-blue bg-pace-blue/10 text-pace-ink"
+                      : "border-pace-line bg-pace-white text-pace-muted hover:border-pace-blue hover:text-pace-ink"
+                  }`}
+                >
+                  <span
+                    aria-hidden
+                    className={`inline-block h-2 w-2 shrink-0 rounded-full ${showWaypointDots ? "bg-pace-blue" : "bg-pace-line"}`}
+                  />
+                  Dots
+                </button>
               </div>
               {showArtControls ? (
                 <p className="font-dm text-[11px] leading-snug text-pace-muted">

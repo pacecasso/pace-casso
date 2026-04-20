@@ -32,25 +32,29 @@ export default function MapStepSplitLayout({
   return (
     <div className="pace-map-step-root">
       <aside
-        className={`order-1 flex min-h-0 flex-col overflow-hidden border-b-2 border-pace-yellow bg-pace-white shadow-sm ${asideMobileMaxH} lg:order-none lg:w-[min(100%,22rem)] lg:max-h-none lg:shrink-0 lg:overflow-hidden lg:border-b-0 lg:border-r lg:border-pace-line lg:px-4 lg:py-3 lg:shadow-none xl:w-96 lg:transition-[width,opacity,padding,border-width] lg:duration-200 ${
+        className={`order-1 flex min-h-0 flex-col overflow-hidden border-b-2 border-pace-yellow bg-pace-white shadow-sm ${asideMobileMaxH} lg:relative lg:order-none lg:w-[min(100%,22rem)] lg:max-h-none lg:shrink-0 lg:overflow-hidden lg:border-b-0 lg:border-r lg:border-pace-line lg:px-4 lg:pt-2 lg:pb-0 lg:shadow-none xl:w-96 lg:transition-[width,opacity,padding,border-width] lg:duration-200 ${
           railCollapsed
             ? "lg:w-0 lg:max-w-0 lg:overflow-hidden lg:border-0 lg:px-0 lg:py-0 lg:opacity-0 lg:pointer-events-none"
             : ""
         }`}
       >
-        <div className="mb-2 hidden shrink-0 items-center justify-end lg:flex">
-          {!railCollapsed ? (
-            <button
-              type="button"
-              onClick={onToggleRail}
-              className="min-h-[32px] rounded-md border border-pace-line bg-pace-panel px-3 py-1.5 font-dm text-[11px] font-medium text-pace-muted transition hover:bg-pace-line/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow"
-            >
-              Hide panel
-            </button>
-          ) : null}
-        </div>
+        {/* Floating collapse control — absolutely positioned in the top-right
+            so it doesn't shift the sidebar content down. The sidebar's first
+            row (usually the yellow "Tune your route" accent) now lines up
+            flush with the map's top edge. */}
+        {!railCollapsed ? (
+          <button
+            type="button"
+            onClick={onToggleRail}
+            className="absolute right-2 top-2 z-10 hidden h-7 w-7 items-center justify-center rounded-md border border-pace-line bg-pace-white/95 font-dm text-xs font-medium text-pace-muted shadow-sm transition hover:bg-pace-panel hover:text-pace-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow lg:inline-flex"
+            title="Hide panel for a larger map"
+            aria-label="Hide panel"
+          >
+            ◀
+          </button>
+        ) : null}
         <div
-          className={`min-h-0 flex-1 overflow-y-auto px-[clamp(1rem,4vw,2.5rem)] py-3 lg:px-0 lg:py-0 ${sidebarFooter ? "pb-2" : ""}`}
+          className={`min-h-0 flex-1 overflow-y-auto px-[clamp(1rem,4vw,2.5rem)] py-3 lg:px-0 lg:py-0 lg:pr-8 ${sidebarFooter ? "pb-2" : ""}`}
         >
           {sidebar}
         </div>

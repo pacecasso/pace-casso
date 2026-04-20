@@ -305,45 +305,48 @@ export default function WorkflowController() {
         {/* Identical geometry + sizing to MarketingNav + landing.html so the
             header never changes between pages. Right-slot is Start Over here
             (instead of Start Creating, since we're already mid-create). */}
-        <div className="pace-app-nav flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+        <div className="pace-app-nav--create flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
           <Link
             href="/landing.html"
             className="inline-block shrink-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2"
             aria-label="PaceCasso home"
           >
-            <BrandLogo />
+            {/* Deliberately smaller than the marketing nav — the map steps
+                are height-constrained. Still clickable, still branded, just
+                doesn't eat half the viewport. */}
+            <BrandLogo className="h-[clamp(2.75rem,8vw,4rem)] w-auto object-contain object-left" />
           </Link>
           <nav
-            className="order-3 flex w-full flex-wrap items-center justify-center gap-x-[clamp(1rem,3vw,2rem)] gap-y-2 border-t border-pace-line pt-3 lg:order-1 lg:flex-1 lg:w-auto lg:border-t-0 lg:pt-0"
+            className="order-3 flex w-full flex-wrap items-center justify-center gap-x-[clamp(0.75rem,2.5vw,1.5rem)] gap-y-1 border-t border-pace-line pt-1.5 lg:order-1 lg:flex-1 lg:w-auto lg:border-t-0 lg:pt-0"
             aria-label="Main"
           >
             <Link
               href="/landing.html"
-              className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
+              className="pace-nav-link font-bebas text-[0.95rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
             >
               Home
             </Link>
             <Link
               href="/gallery"
-              className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
+              className="pace-nav-link font-bebas text-[0.95rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
             >
               Gallery
             </Link>
             <Link
               href="/how"
-              className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
+              className="pace-nav-link font-bebas text-[0.95rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
             >
               How It Works
             </Link>
             <Link
               href="/community"
-              className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
+              className="pace-nav-link font-bebas text-[0.95rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
             >
               Community
             </Link>
             <Link
               href="/help"
-              className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
+              className="pace-nav-link font-bebas text-[0.95rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
             >
               Help
             </Link>
@@ -352,18 +355,18 @@ export default function WorkflowController() {
             <button
               type="button"
               onClick={handleStartOver}
-              className="order-2 shrink-0 rounded border-2 border-pace-line bg-pace-white px-4 py-2 font-bebas text-xs tracking-[0.14em] text-pace-muted uppercase transition hover:border-pace-ink hover:text-pace-ink sm:text-sm lg:order-3"
+              className="order-2 shrink-0 rounded border-2 border-pace-line bg-pace-white px-3 py-1 font-bebas text-[11px] tracking-[0.14em] text-pace-muted uppercase transition hover:border-pace-ink hover:text-pace-ink sm:px-4 sm:py-1.5 sm:text-xs lg:order-3"
               aria-label="Start over — clear saved draft and return to city selection"
             >
               Start Over
             </button>
           ) : (
-            <span className="hidden shrink-0 lg:order-3 lg:block lg:w-[9rem]" aria-hidden />
+            <span className="hidden shrink-0 lg:order-3 lg:block lg:w-[7rem]" aria-hidden />
           )}
         </div>
 
-        <div className="border-b border-pace-line bg-pace-white px-[clamp(1rem,4vw,2.5rem)] py-1.5 sm:py-2">
-          <div className="mx-auto flex max-w-5xl flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <div className="border-b border-pace-line bg-pace-white px-[clamp(1rem,4vw,2.5rem)] py-1 sm:py-1.5">
+          <div className="mx-auto flex max-w-5xl flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
             <div className="pace-highlight flex min-w-0 flex-col gap-0.5">
               <div className="flex min-w-0 flex-row flex-wrap items-center gap-x-2 gap-y-0">
                 <h2

@@ -52,17 +52,15 @@
   --font-accent: var(--font-marker), "Permanent Marker", cursive;
   --font-body: var(--font-dm-sans), "DM Sans", system-ui, sans-serif;
 
-  /* Create page: sticky header + step bar — map steps fill below. Matches
-     the full marketing nav (big logo + wrapped centered menu on mobile) so
-     the header is identical across /landing.html, /gallery, /community, and
-     /create. On mobile the nav wraps to a second row; on desktop it's a
-     single row, so chrome is considerably shorter. */
-  --pace-create-chrome-height: 14rem;
+  /* Create page: sticky header + step bar — map steps fill below. Tighter
+     than marketing pages (smaller logo, less nav padding) so the map has
+     more real estate without losing brand consistency. */
+  --pace-create-chrome-height: 11rem;
 }
 
 @media (min-width: 1024px) {
   :root {
-    --pace-create-chrome-height: 10rem;
+    --pace-create-chrome-height: 7rem;
   }
 }
 
@@ -160,6 +158,15 @@ body {
   background: var(--white);
   border-bottom: 2px solid var(--yellow);
   padding: 0.875rem clamp(1rem, 4vw, 2.5rem) 0.375rem;
+}
+
+/* /create variant — same structure as the marketing nav so the header
+   doesn't visually jump between pages, but tighter padding + smaller logo
+   so the map step has more vertical real estate. */
+.pace-app-nav--create {
+  background: var(--white);
+  border-bottom: 2px solid var(--yellow);
+  padding: 0.4rem clamp(1rem, 4vw, 2.5rem) 0.35rem;
 }
 
 /* Tighter variant used by the create workflow — that flow is height-
