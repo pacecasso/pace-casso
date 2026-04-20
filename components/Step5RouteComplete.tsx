@@ -14,6 +14,13 @@ import { getShareTwitterHandle } from "../lib/siteConfig";
 import { getSiteUrl } from "../lib/siteUrl";
 import { saveFinalizedRoute } from "../lib/finalizedRouteMemory";
 import {
+  estimateSeconds,
+  formatDistance,
+  formatDuration,
+  useRunnerProfile,
+} from "../lib/runnerProfile";
+import RunnerProfileEditor from "./RunnerProfileEditor";
+import {
   isRouteAnimationSupported,
   recordRouteAnimation,
 } from "../lib/recordRouteAnimation";
@@ -165,6 +172,7 @@ export default function Step5RouteComplete({
   const [turnCues, setTurnCues] = useState<WalkingCue[]>([]);
   const [cuesLoading, setCuesLoading] = useState(false);
   const [cuesError, setCuesError] = useState<string | null>(null);
+  const [runnerProfile, setRunnerProfile] = useRunnerProfile();
   /** Bumped to force the cues useEffect to re-run. Used by the Retry button. */
   const [cuesRetryNonce, setCuesRetryNonce] = useState(0);
   const [shareHint, setShareHint] = useState<string | null>(null);
@@ -313,20 +321,33 @@ export default function Step5RouteComplete({
     }
   }, [routeLine, route.distanceMeters]);
 
-  const distanceKm =
-    route.distanceMeters != null
-      ? (route.distanceMeters / 1000).toFixed(2)
+  const distanceKmNumeric =
+    route.distanceMeters != null && Number.isFinite(route.distanceMeters)
+      ? route.distanceMeters / 1000
       : null;
+  const distanceDisplay =
+    distanceKmNumeric != null
+      ? formatDistance(distanceKmNumeric, runnerProfile.unit)
+      : "—";
+  const etaSeconds =
+    distanceKmNumeric != null
+      ? estimateSeconds(distanceKmNumeric, runnerProfile.paceSecPerKm)
+      : 0;
+  const etaDisplay = etaSeconds > 0 ? formatDuration(etaSeconds) : "—";
   const waypointCount = route.blockWaypoints?.length ?? 0;
   const pathVertices = routeLine.length;
 
   const shareBlurb = useMemo(() => {
     const base = getSiteUrl();
-    const kmBit =
-      distanceKm != null ? `${distanceKm} km` : "a route";
+    const statBit =
+      distanceKmNumeric != null && etaSeconds > 0
+        ? `${distanceDisplay} / ${etaDisplay}`
+        : distanceKmNumeric != null
+          ? distanceDisplay
+          : "a route";
     const handle = getShareTwitterHandle();
-    return `I designed a ${kmBit} street route with PaceCasso — turn your city into art. Try it: ${base}/create\n\n@${handle}`;
-  }, [distanceKm]);
+    return `I designed a ${statBit} street route with PaceCasso — turn your city into art. Try it: ${base}/create\n\n@${handle}`;
+  }, [distanceKmNumeric, distanceDisplay, etaSeconds, etaDisplay]);
 
   const copyShareBlurb = useCallback(async () => {
     try {
@@ -378,7 +399,18 @@ export default function Step5RouteComplete({
                   Distance
                 </dt>
                 <dd className="font-bold tabular-nums text-pace-ink">
-                  {distanceKm != null ? `${distanceKm} km` : "—"}
+                  {distanceDisplay}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-6 border-b border-pace-line pb-3">
+                <dt
+                  className="font-bebas text-xs tracking-[0.1em] text-pace-muted"
+                  title="Estimated running time at your easy pace (edit below)"
+                >
+                  Est. time
+                </dt>
+                <dd className="font-bold tabular-nums text-pace-ink">
+                  {etaDisplay}
                 </dd>
               </div>
               <div className="flex justify-between gap-6 border-b border-pace-line pb-3">
@@ -398,6 +430,18 @@ export default function Step5RouteComplete({
                 </dd>
               </div>
             </dl>
+
+            <div className="mt-4 border-t border-pace-line pt-4">
+              <RunnerProfileEditor
+                profile={runnerProfile}
+                onChange={setRunnerProfile}
+                compact
+              />
+              <p className="mt-1.5 text-[10px] leading-snug text-pace-muted">
+                Time estimates across every step use this pace. Saved in your
+                browser.
+              </p>
+            </div>
 
             <div className="mt-5 flex flex-col gap-2 border-t border-pace-line pt-5">
               <div className="flex items-center justify-between gap-2">

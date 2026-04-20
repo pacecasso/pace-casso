@@ -11,6 +11,12 @@ import {
 } from "../lib/autoFindTop5";
 import { MANHATTAN_PRESET, type CityPreset } from "../lib/cityPresets";
 import { buildAnchorLatLngsFromContour } from "../lib/placementFromContour";
+import {
+  estimateSeconds,
+  formatDistance,
+  formatDuration,
+  useRunnerProfile,
+} from "../lib/runnerProfile";
 import { OSM_TILE_ATTRIBUTION, OSM_TILE_URL } from "../lib/mapAttribution";
 import { useLeafletContainerId } from "../lib/useLeafletContainerId";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
@@ -74,6 +80,7 @@ export default function Step2MapAnchor({
   const [picksVisionUsed, setPicksVisionUsed] = useState(false);
   const [picksHint, setPicksHint] = useState<ShapeHint | null>(null);
   const [selectedPickIdx, setSelectedPickIdx] = useState<number | null>(null);
+  const [runnerProfile] = useRunnerProfile();
 
   const runAutoFind = useCallback(
     async (mode: "full" | "refine") => {
@@ -408,7 +415,7 @@ export default function Step2MapAnchor({
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
                           src={p.previewDataUrl}
-                          alt={`${isTopPick ? "Top pick: " : `Option ${idx + 1}: `}${p.distanceKm.toFixed(1)} km${p.reason ? ` — ${p.reason}` : ""}`}
+                          alt={`${isTopPick ? "Top pick: " : `Option ${idx + 1}: `}${formatDistance(p.distanceKm, runnerProfile.unit)}${p.reason ? ` — ${p.reason}` : ""}`}
                           className="aspect-square w-full object-cover"
                         />
                       ) : (
@@ -433,8 +440,19 @@ export default function Step2MapAnchor({
                         </span>
                       )}
                       <div className="flex flex-col gap-1 px-2 py-2">
-                        <span className="text-[12px] font-semibold tabular-nums text-pace-ink">
-                          {p.distanceKm.toFixed(1)} km
+                        <span className="flex items-baseline gap-1.5 tabular-nums text-pace-ink">
+                          <span className="text-[12px] font-semibold">
+                            {formatDistance(p.distanceKm, runnerProfile.unit)}
+                          </span>
+                          <span className="text-[11px] font-medium text-pace-muted">
+                            ·{" "}
+                            {formatDuration(
+                              estimateSeconds(
+                                p.distanceKm,
+                                runnerProfile.paceSecPerKm,
+                              ),
+                            )}
+                          </span>
                         </span>
                         {p.reason && (
                           <span className="text-[11px] leading-snug text-pace-ink/75">

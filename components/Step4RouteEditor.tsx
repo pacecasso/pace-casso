@@ -12,6 +12,12 @@ import type { Map as LeafletMap } from "leaflet";
 import type { AnchorLocation, RouteLineString } from "./WorkflowController";
 import { fetchMapboxWalkingDirectionsJson } from "../lib/mapboxClient";
 import { simplifyPolylineToBendWaypoints } from "../lib/simplifyPolylineToBendWaypoints";
+import {
+  estimateSeconds,
+  formatDistance,
+  formatDuration,
+  useRunnerProfile,
+} from "../lib/runnerProfile";
 import MapChunkFallback from "./MapChunkFallback";
 import MapStepSplitLayout from "./MapStepSplitLayout";
 import ShapeMatchMeter from "./ShapeMatchMeter";
@@ -633,6 +639,7 @@ export default function Step4RouteEditor({
   /** Collapsed by default on mobile so the toggles + meters row doesn't
    *  dominate the short sidebar. Always visible on desktop via `lg:block`. */
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
+  const [runnerProfile] = useRunnerProfile();
   const [undoPast, setUndoPast] = useState<Waypoint[][]>([]);
   const [redoFuture, setRedoFuture] = useState<Waypoint[][]>([]);
   /**
@@ -1680,8 +1687,17 @@ export default function Step4RouteEditor({
                   −
                 </button>
               </div>
-              <span className="font-semibold tabular-nums text-pace-ink">
-                ~{distanceKm.toFixed(2)} km
+              <span
+                className="font-semibold tabular-nums text-pace-ink"
+                title="Distance · estimated time at your easy pace (edit on the final step)"
+              >
+                ~{formatDistance(distanceKm, runnerProfile.unit)}
+                <span className="ml-1 text-pace-muted">
+                  ·{" "}
+                  {formatDuration(
+                    estimateSeconds(distanceKm, runnerProfile.paceSecPerKm),
+                  )}
+                </span>
               </span>
             </div>
           </div>
