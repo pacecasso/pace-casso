@@ -798,6 +798,68 @@ export default function Step4RouteEditor({
     return out;
   }, [waypoints, legOverrides, sequentialStreetLegs]);
 
+  /**
+   * Traffic-light verdict for "is this route good enough to run?". Replaces
+   * the raw interpretation-% meter as the primary signal Dan sees — the %
+   * stays available in View Options for users who want the detail, but
+   * most users just need the green/amber/red call. Inputs are all things
+   * we already track: waypoint count, spur legs, interpretation score.
+   */
+  const verdict = useMemo((): {
+    tone: "ready" | "check" | "blocked";
+    title: string;
+    detail: string;
+  } => {
+    if (waypoints.length < 2) {
+      return {
+        tone: "blocked",
+        title: "No route yet",
+        detail:
+          "Add at least two waypoints by double-tapping the map to get started.",
+      };
+    }
+    const spurs = spurLegIndices.length;
+    if (spurs > 0) {
+      return {
+        tone: "check",
+        title: `${spurs} segment${spurs === 1 ? "" : "s"} not street-snapped`,
+        detail:
+          "Amber dashed = straight-line placeholders. Tap the re-snap button above the options, or drag those handles onto walkable streets.",
+      };
+    }
+    if (waypoints.length < 4) {
+      return {
+        tone: "check",
+        title: "Looks short",
+        detail:
+          "Only a few waypoints — fine if that's the shape, otherwise double-tap the map to drop more.",
+      };
+    }
+    if (
+      routeSource === "image" &&
+      Number.isFinite(routeInterpretationPct) &&
+      routeInterpretationPct > 0 &&
+      routeInterpretationPct < 35
+    ) {
+      return {
+        tone: "check",
+        title: "Shape doesn't read well",
+        detail:
+          "The street route strays a lot from your outline. Try re-running auto-find at a different scale, or keep editing.",
+      };
+    }
+    return {
+      tone: "ready",
+      title: "Ready to run",
+      detail: "Clean route, all on walkable streets. Hit Looks good below.",
+    };
+  }, [
+    waypoints.length,
+    spurLegIndices,
+    routeInterpretationPct,
+    routeSource,
+  ]);
+
   const activeRouteLine = useMemo(
     () => mergeLegPolylinesWithWaypoints(legPolylines, waypoints),
     [legPolylines, waypoints],
@@ -1410,6 +1472,55 @@ export default function Step4RouteEditor({
       onToggleRail={() => setRailCollapsed((c) => !c)}
       sidebar={
         <>
+          {/* Traffic-light verdict — the primary "is this good?" signal, lifted
+              out of the raw interpretation % meter. Tells the user whether to
+              keep editing or commit. Detailed shape-match meter stays behind
+              View Options for users who want the number. */}
+          <div
+            className={`mb-3 flex items-start gap-2 rounded-md border-2 px-3 py-2 text-[11px] leading-snug ${
+              verdict.tone === "ready"
+                ? "border-emerald-500/70 bg-emerald-50 text-emerald-900"
+                : verdict.tone === "check"
+                  ? "border-amber-400 bg-amber-50 text-amber-900"
+                  : "border-red-400 bg-red-50 text-red-900"
+            }`}
+            role="status"
+            aria-live="polite"
+          >
+            <span
+              aria-hidden
+              className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white ${
+                verdict.tone === "ready"
+                  ? "bg-emerald-500"
+                  : verdict.tone === "check"
+                    ? "bg-amber-500"
+                    : "bg-red-500"
+              }`}
+            >
+              {verdict.tone === "ready" ? "✓" : verdict.tone === "check" ? "!" : "×"}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span
+                className={`block font-bebas tracking-[0.12em] ${
+                  verdict.tone === "ready"
+                    ? "text-emerald-800"
+                    : verdict.tone === "check"
+                      ? "text-amber-800"
+                      : "text-red-800"
+                }`}
+              >
+                {verdict.tone === "ready"
+                  ? "READY TO RUN"
+                  : verdict.tone === "check"
+                    ? "CHECK THIS"
+                    : "NOT YET"}
+                <span className="ml-2 font-dm text-[11px] font-normal normal-case tracking-normal opacity-80">
+                  {verdict.title}
+                </span>
+              </span>
+              <span className="mt-0.5 block font-dm">{verdict.detail}</span>
+            </span>
+          </div>
           <div className="pace-highlight flex flex-col gap-1">
             <span className="font-bebas text-xs tracking-[0.12em] text-pace-yellow">
               Tune your route
