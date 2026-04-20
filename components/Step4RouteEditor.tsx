@@ -560,17 +560,27 @@ function initialWaypoints(route: RouteLineString): Waypoint[] {
       coords.length < 2 || blockWaypointsSpanPolyline(coords, block);
     if (useBlock) {
       if (coords.length >= 2) {
-        const distM = route.distanceMeters ?? 0;
-        const maxStraight = Math.min(
-          420,
-          Math.max(200, distM > 0 ? distM / 42 : 280),
-        );
+        /**
+         * Waypoints only at direction changes. The previous config forced a
+         * handle every ~286 m on straight streets so the user always had
+         * something to drag mid-block, but that made long straights look
+         * cluttered (6+ identical dots along one block face) and trained
+         * users to think each dot meant a turn. With polyline-first editing
+         * in place (double-tap the line to drop a handle anywhere), the
+         * forced mid-straight anchors are no longer useful — users can add
+         * one in a single tap when they actually want to pull the route
+         * sideways.
+         *
+         * maxStraightRunM effectively disabled (50 km > any real route);
+         * minTurnDeg raised slightly so only meaningful turns count, not
+         * gentle bearing drift along curvy streets.
+         */
         const bends = simplifyPolylineToBendWaypoints(
           coords as [number, number][],
           {
-            minTurnDeg: 22,
-            maxStraightRunM: maxStraight,
-            minCornerSeparationM: 14,
+            minTurnDeg: 28,
+            maxStraightRunM: 50_000,
+            minCornerSeparationM: 20,
           },
         );
         if (bends.length >= 2) {
