@@ -13,6 +13,10 @@ import { fillLineMaskPrimaryPlusEnclosedHoles } from "../lib/inkMaskUnionEnclose
 import { extractNormalizedContourFromLineMask } from "../lib/extractNormalizedContourFromLineMask";
 import { describeLineMaskHealth } from "../lib/lineMaskHealth";
 import type { PhotoContourWorkerResponse } from "../lib/photoContourWorkerMessages";
+import {
+  looksLikeSvgFile,
+  svgFileToContourAndPreview,
+} from "../lib/svgToContour";
 
 export type NormalizedPoint = { x: number; y: number };
 
@@ -309,6 +313,10 @@ export default function Step1ImageUpload({
   /** Bumps when line mask bytes change so contour preview can refresh. */
   const [lineMaskVersion, setLineMaskVersion] = useState(0);
   const [contourHint, setContourHint] = useState<string | null>(null);
+  /** SVG fast-path spinner — set while we sample the vector paths before jumping to Step 2. */
+  const [svgBusy, setSvgBusy] = useState(false);
+  /** Set if the SVG parser failed or returned a degenerate contour — we'll fall back to raster tracing. */
+  const [svgError, setSvgError] = useState<string | null>(null);
   const [contourComputing, setContourComputing] = useState(false);
   const imageCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lineArtCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -743,6 +751,45 @@ export default function Step1ImageUpload({
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+
+    /**
+     * Fast path for SVG uploads — corporate logos are typically available as
+     * SVG and are already clean vector data. Sample the paths directly and
+     * skip the trace UI entirely so the user lands straight on Step 2.
+     * Falls back to the raster pipeline if parsing / sampling fails.
+     */
+    if (looksLikeSvgFile(file)) {
+      setSvgBusy(true);
+      setSvgError(null);
+      void (async () => {
+        try {
+          const result = await svgFileToContourAndPreview(file);
+          if (result && result.contour.length >= 4) {
+            onComplete(result.contour, result.imageBase64);
+            return;
+          }
+          console.warn(
+            "[Step1] SVG extraction returned no usable contour; falling back to raster",
+          );
+          setSvgError(
+            "Couldn't read that SVG cleanly. Falling back to the trace tool.",
+          );
+        } catch (err) {
+          console.warn("[Step1] SVG extraction failed:", err);
+          setSvgError(
+            "Couldn't read that SVG. Falling back to the trace tool.",
+          );
+        } finally {
+          setSvgBusy(false);
+        }
+        // Fallback: treat as raster (browser renders SVG to the canvas fine)
+        const url = URL.createObjectURL(file);
+        setImageReady(false);
+        setUploadedImage({ url, file });
+      })();
+      return;
+    }
+
     const url = URL.createObjectURL(file);
     setImageReady(false);
     setUploadedImage({ url, file });
@@ -772,7 +819,9 @@ export default function Step1ImageUpload({
 
       <p className="mb-1 max-w-xl text-center font-dm text-[11px] leading-snug text-pace-muted sm:mb-1.5 sm:text-[11px]">
         Your photo is traced in the browser—we don’t upload the image to our
-        servers. <span className="whitespace-nowrap">Photo threshold</span>{" "}
+        servers. <strong className="text-pace-ink">Got an SVG?</strong> Upload
+        it and we&apos;ll skip tracing entirely.{" "}
+        <span className="whitespace-nowrap">Photo threshold</span>{" "}
         rebuilds a <strong className="text-pace-ink">stroke outline</strong>{" "}
         (not a solid fill) when you have not drawn yet; use{" "}
         <strong className="text-pace-ink">Line art</strong> draw / erase to
@@ -781,6 +830,29 @@ export default function Step1ImageUpload({
         mask. Small blobs fully inside a letter hole are merged from the photo
         automatically.
       </p>
+
+      {svgBusy ? (
+        <div
+          className="mb-2 flex items-center gap-2 rounded-md border border-pace-blue/40 bg-pace-blue/5 px-3 py-2 text-[11px] leading-snug text-pace-ink"
+          role="status"
+          aria-live="polite"
+        >
+          <span
+            aria-hidden
+            className="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-pace-blue border-t-transparent"
+          />
+          <span>Reading vector paths from your SVG…</span>
+        </div>
+      ) : null}
+
+      {svgError ? (
+        <div
+          className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-900"
+          role="status"
+        >
+          {svgError}
+        </div>
+      ) : null}
 
       <div className="pace-card mb-1 w-full max-w-4xl p-1.5 sm:p-2">
         <div className="pace-card-editorial flex w-full min-w-0 flex-nowrap items-center gap-2 overflow-x-auto py-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
