@@ -90,6 +90,74 @@ async function mapboxWalkingPolylineWithRetry(
 /** Per-leg override: geometry plus whether it's a straight-line fallback. */
 type LegOverride = { coords: Waypoint[]; isSpur: boolean };
 
+/**
+ * Click-on-line threshold. If the user double-clicks (or drops a drag) within
+ * this distance of the visible red route, the editor treats it as a polyline
+ * edit — snap to the line, no Mapbox call. Beyond this, it's a detour request
+ * and Mapbox routes a real walking path.
+ *
+ * 60 m covers double-click imprecision on a phone (two-finger zoom range) and
+ * small drag-along-same-street moves. Anything farther is clearly intentional.
+ */
+const NEAR_LINE_SNAP_METERS = 60;
+
+type LegClosest = {
+  legIndex: number;
+  segIndex: number;
+  t: number;
+  point: Waypoint;
+  dist: number;
+};
+
+/**
+ * Closest point on any leg polyline to `p`. Returned `legIndex` tells us which
+ * leg to split (for insert) or which legs flank the drop (for drag).
+ */
+function closestPointOnLegs(legs: Waypoint[][], p: Waypoint): LegClosest | null {
+  let best: LegClosest | null = null;
+  for (let li = 0; li < legs.length; li++) {
+    const leg = legs[li];
+    for (let i = 0; i < leg.length - 1; i++) {
+      const a = leg[i];
+      const b = leg[i + 1];
+      const t = projectScalarOnSegment(a, b, p);
+      const cx = a[0] + t * (b[0] - a[0]);
+      const cy = a[1] + t * (b[1] - a[1]);
+      const d = haversineMetersLatLng(p, [cx, cy]);
+      if (!best || d < best.dist) {
+        best = { legIndex: li, segIndex: i, t, point: [cx, cy], dist: d };
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Split a leg at `(segIndex, t)` into two new legs. Each half includes the
+ * split point; no duplicate-vertex noise after the merge pass.
+ */
+function splitLegAt(
+  leg: Waypoint[],
+  segIndex: number,
+  splitPoint: Waypoint,
+): { left: Waypoint[]; right: Waypoint[] } {
+  const left: Waypoint[] = [...leg.slice(0, segIndex + 1), splitPoint];
+  const right: Waypoint[] = [splitPoint, ...leg.slice(segIndex + 1)];
+  return { left, right };
+}
+
+/** Concat two legs that share a joint — drops duplicate joint if within 1 m. */
+function mergeLegs(left: Waypoint[], right: Waypoint[]): Waypoint[] {
+  if (left.length === 0) return right.slice();
+  if (right.length === 0) return left.slice();
+  const joint = left[left.length - 1];
+  const out = [...left];
+  const start =
+    haversineMetersLatLng(joint, right[0]) < 1 ? 1 : 0;
+  for (let i = start; i < right.length; i++) out.push(right[i]);
+  return out;
+}
+
 function snapToStreetLine(line: [number, number][], raw: Waypoint): Waypoint {
   if (line.length < 2) return raw;
   try {
@@ -554,6 +622,9 @@ export default function Step4RouteEditor({
   const mapRef = useRef<LeafletMap | null>(null);
   const waypointsRef = useRef(waypoints);
   const legOverridesRef = useRef(legOverrides);
+  /** Snapshot of the current rendered legs; callbacks use this for polyline-
+   *  first edits (snap-to-line, split-on-insert) without a render round-trip. */
+  const legPolylinesRef = useRef<Waypoint[][]>([]);
   const initialRef = useRef(snappedRoute);
 
   waypointsRef.current = waypoints;
@@ -673,6 +744,8 @@ export default function Step4RouteEditor({
     }
     return legs;
   }, [waypoints, legOverrides, sequentialStreetLegs]);
+
+  legPolylinesRef.current = legPolylines;
 
   /**
    * Which legs are currently rendered as straight-line spurs rather than real
@@ -811,9 +884,45 @@ export default function Step4RouteEditor({
         adjustMultiSelectAfterRemoval(ids, index),
       );
       const next = wp.filter((_, i) => i !== index);
-      commitWaypoints(orderWaypointsAlongLine(streetLine, next));
+      /**
+       * Preserve the VISIBLE red line across a delete. If you're removing a
+       * middle waypoint, legs (index-1) and (index) merge into one override
+       * so the route doesn't snap back to a stale sequentialStreetLegs slice
+       * (and doesn't need a Mapbox reroute that could produce a detour). If
+       * you're removing the first or last waypoint, the tail simply drops.
+       */
+      const legs = legPolylinesRef.current;
+      const prevOv = legOverridesRef.current;
+      const nLegsNew = Math.max(0, next.length - 1);
+      const newOv: (LegOverride | null)[] = new Array(nLegsNew).fill(null);
+
+      for (let j = 0; j < index - 1; j++) {
+        newOv[j] = prevOv[j] ?? (legs[j] ? { coords: legs[j], isSpur: false } : null);
+      }
+      // Merged leg: spans what used to be wp[index-1] → wp[index] → wp[index+1]
+      if (index > 0 && index < wp.length - 1) {
+        const leftLeg = legs[index - 1];
+        const rightLeg = legs[index];
+        if (leftLeg && rightLeg && leftLeg.length >= 2 && rightLeg.length >= 2) {
+          newOv[index - 1] = {
+            coords: mergeLegs(leftLeg, rightLeg),
+            // Merged override inherits spur-ness from either half so the
+            // warning/overlay surfaces if any piece was a fallback.
+            isSpur:
+              (prevOv[index - 1]?.isSpur ?? false) ||
+              (prevOv[index]?.isSpur ?? false),
+          };
+        }
+      }
+      // Legs after the removed waypoint shift left by one
+      for (let j = index + 1; j < wp.length - 1; j++) {
+        const src = prevOv[j];
+        const fallback = legs[j] ? { coords: legs[j], isSpur: false } : null;
+        newOv[j - 1] = src ?? fallback;
+      }
+      commitWaypoints(next, newOv);
     },
-    [commitWaypoints, streetLine],
+    [commitWaypoints],
   );
 
   const handleMapDoubleClick = useCallback(
@@ -832,6 +941,50 @@ export default function Step4RouteEditor({
         return;
       }
 
+      /**
+       * Polyline-first insert. When the double-click lands within 60 m of the
+       * visible red route, we snap the new handle onto the nearest leg and
+       * split that leg locally — no Mapbox call, no detour risk, instant
+       * feedback. The insert goes between the waypoints that currently flank
+       * the nearest leg, which is what the user naturally expects.
+       */
+      const legs = legPolylinesRef.current;
+      const closest = legs.length > 0 ? closestPointOnLegs(legs, P) : null;
+      if (closest && closest.dist <= NEAR_LINE_SNAP_METERS) {
+        const { legIndex, segIndex, point } = closest;
+        const leg = legs[legIndex];
+        if (leg && leg.length >= 2) {
+          const { left, right } = splitLegAt(leg, segIndex, point);
+          const newWp: Waypoint[] = [
+            ...wp.slice(0, legIndex + 1),
+            point,
+            ...wp.slice(legIndex + 1),
+          ];
+          const prevOv = legOverridesRef.current;
+          const newOv: (LegOverride | null)[] = [];
+          for (let j = 0; j < legs.length; j++) {
+            if (j === legIndex) {
+              const parentSpur = prevOv[j]?.isSpur ?? false;
+              newOv.push({ coords: left, isSpur: parentSpur });
+              newOv.push({ coords: right, isSpur: parentSpur });
+            } else {
+              newOv.push(
+                prevOv[j] ?? { coords: legs[j], isSpur: false },
+              );
+            }
+          }
+          commitWaypoints(newWp, newOv);
+          setShiftSelectedIndices([]);
+          setSelectedWaypointIndex(legIndex + 1);
+          return;
+        }
+      }
+
+      /**
+       * Far from the route — user wants an explicit detour. Route through the
+       * click via Mapbox so the new segment follows real streets, not a
+       * straight chord across blocks.
+       */
       if (spurBusy) return;
       setSpurBusy(true);
       try {
@@ -848,10 +1001,18 @@ export default function Step4RouteEditor({
         const W = wp[nearestI];
         const newWp = [...wp.slice(0, nearestI + 1), P, ...wp.slice(nearestI + 1)];
         const nLegs = newWp.length - 1;
+        // Preserve every other existing leg so the original route doesn't
+        // vanish during the off-line detour fetch.
+        const prevOv = legOverridesRef.current;
         const newOv = new Array(nLegs).fill(null) as (LegOverride | null)[];
+        for (let j = 0; j < nearestI; j++) {
+          newOv[j] = prevOv[j] ?? (legs[j] ? { coords: legs[j], isSpur: false } : null);
+        }
+        for (let j = nearestI + 1; j < wp.length - 1; j++) {
+          newOv[j + 1] = prevOv[j] ?? (legs[j] ? { coords: legs[j], isSpur: false } : null);
+        }
 
         newOv[nearestI] = await mapboxWalkingPolylineWithRetry(W, P);
-
         if (nearestI < wp.length - 1) {
           const oldRight = wp[nearestI + 1];
           newOv[nearestI + 1] = await mapboxWalkingPolylineWithRetry(P, oldRight);
@@ -973,21 +1134,121 @@ export default function Step4RouteEditor({
     async (index: number, lat: number, lng: number) => {
       const wp = [...waypointsRef.current];
       if (index < 0 || index >= wp.length) return;
-      wp[index] = [lat, lng];
+      const drop: Waypoint = [lat, lng];
 
       const nLegs = Math.max(0, wp.length - 1);
       if (nLegs === 0) {
+        wp[index] = drop;
         commitWaypoints(wp);
         setShiftSelectedIndices([]);
         setSelectedWaypointIndex(index);
         return;
       }
 
+      const legs = legPolylinesRef.current;
       const prevOv = legOverridesRef.current;
+
+      /**
+       * Polyline-first drag. If the drop is within 60 m of the current red
+       * route, we snap to the nearest point on either adjacent leg and
+       * rebuild those legs locally (no Mapbox, no detour). This makes
+       * small moves — e.g., sliding a handle one block along the same
+       * street — feel instant and predictable. The full active line is
+       * searched so you can drag toward either neighbour; the adjacent
+       * legs are then resliced so the red line stays connected.
+       */
+      const neighborLegIndices: number[] = [];
+      if (index > 0) neighborLegIndices.push(index - 1);
+      if (index < wp.length - 1) neighborLegIndices.push(index);
+
+      const localLegs = neighborLegIndices
+        .map((li) => ({ li, coords: legs[li] }))
+        .filter((r) => r.coords && r.coords.length >= 2);
+
+      let snapped: { legIndex: number; segIndex: number; point: Waypoint; dist: number } | null = null;
+      for (const { li, coords } of localLegs) {
+        const c = closestPointOnLegs([coords], drop);
+        if (c && (!snapped || c.dist < snapped.dist)) {
+          snapped = { legIndex: li, segIndex: c.segIndex, point: c.point, dist: c.dist };
+        }
+      }
+
+      if (snapped && snapped.dist <= NEAR_LINE_SNAP_METERS) {
+        // Snap the handle to the route.
+        wp[index] = snapped.point;
+        const nextOv: (LegOverride | null)[] = new Array(nLegs).fill(null);
+        for (let i = 0; i < nLegs; i++) {
+          nextOv[i] = prevOv[i] ?? (legs[i] ? { coords: legs[i], isSpur: false } : null);
+        }
+
+        if (snapped.legIndex === index - 1 && index > 0) {
+          // Drop landed on the LEFT neighbor leg. Split it and merge right
+          // half into the right-neighbor leg, so the handle still lives on
+          // the visible line between wp[index-1] and wp[index+1].
+          const leftLeg = legs[index - 1]!;
+          const { left: splitLeft, right: splitRight } = splitLegAt(
+            leftLeg,
+            snapped.segIndex,
+            snapped.point,
+          );
+          nextOv[index - 1] = {
+            coords: splitLeft,
+            isSpur: prevOv[index - 1]?.isSpur ?? false,
+          };
+          if (index < wp.length - 1) {
+            const rightLeg = legs[index]!;
+            nextOv[index] = {
+              coords: mergeLegs(splitRight, rightLeg),
+              isSpur:
+                (prevOv[index - 1]?.isSpur ?? false) ||
+                (prevOv[index]?.isSpur ?? false),
+            };
+          } else {
+            // Dragged handle is the last waypoint — truncate to splitRight side.
+            nextOv[index - 1] = {
+              coords: splitLeft,
+              isSpur: prevOv[index - 1]?.isSpur ?? false,
+            };
+          }
+        } else if (snapped.legIndex === index && index < wp.length - 1) {
+          // Drop landed on the RIGHT neighbor leg. Symmetric case.
+          const rightLeg = legs[index]!;
+          const { left: splitLeft, right: splitRight } = splitLegAt(
+            rightLeg,
+            snapped.segIndex,
+            snapped.point,
+          );
+          nextOv[index] = {
+            coords: splitRight,
+            isSpur: prevOv[index]?.isSpur ?? false,
+          };
+          if (index > 0) {
+            const leftLeg = legs[index - 1]!;
+            nextOv[index - 1] = {
+              coords: mergeLegs(leftLeg, splitLeft),
+              isSpur:
+                (prevOv[index - 1]?.isSpur ?? false) ||
+                (prevOv[index]?.isSpur ?? false),
+            };
+          }
+        }
+
+        commitWaypoints(wp, nextOv);
+        setShiftSelectedIndices([]);
+        setSelectedWaypointIndex(index);
+        return;
+      }
+
+      /**
+       * Drop is far from the current route — user is re-routing through a
+       * new area. Fetch real walking paths to/from the dropped position.
+       * All non-adjacent legs are preserved from the previous overrides.
+       */
+      wp[index] = drop;
       const nextOv: (LegOverride | null)[] = new Array(nLegs).fill(null);
       for (let i = 0; i < nLegs; i++) {
         if (i !== index - 1 && i !== index) {
-          nextOv[i] = prevOv[i] ?? null;
+          nextOv[i] = prevOv[i] ?? (legs[i] ? { coords: legs[i], isSpur: false } : null);
         }
       }
 
@@ -1104,11 +1365,10 @@ export default function Step4RouteEditor({
               Tune your route
             </span>
             <span className="font-dm text-[11px] leading-relaxed text-pace-muted">
-              <strong className="text-pace-ink">Double-tap</strong> the map to
-              add a waypoint · <strong className="text-pace-ink">Drag</strong>{" "}
-              dots · <strong className="text-pace-ink">Shift+click</strong>{" "}
-              multi-select · <strong className="text-pace-ink">Delete</strong> key
-              removes selected.{" "}
+              <strong className="text-pace-ink">Double-tap</strong> near the
+              red line to add a handle · <strong className="text-pace-ink">Drag</strong>{" "}
+              along the line to slide it · <strong className="text-pace-ink">Delete</strong>{" "}
+              joins neighbours. Double-tap far away to route a detour there.{" "}
               {showArtControls ? (
                 <>
                   <span className="text-emerald-600">Green dashed</span> = your
