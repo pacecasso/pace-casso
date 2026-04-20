@@ -194,6 +194,48 @@ function luminanceFromRgba(data: Uint8ClampedArray, idx: number): number {
 }
 
 /**
+ * Fraction of pixels with meaningful transparency. A transparent-background
+ * PNG (typical corporate logo) scores near the non-shape area ratio; JPEGs
+ * and flattened-on-white PNGs score 0 because alpha is always 255.
+ */
+function transparentPixelFraction(data: Uint8ClampedArray): number {
+  let n = 0;
+  const total = data.length / 4;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 128) n++;
+  }
+  return total > 0 ? n / total : 0;
+}
+
+/**
+ * Build a binary "foreground" Float32Array purely from the alpha channel —
+ * ignoring color entirely. Same shape as the luminance output so downstream
+ * `buildPhotoComponents` can treat it identically. MAX-pooled over the 2×2
+ * supersample cell (opposite of luminance's min-pool) because any opaque
+ * subpixel means the cell contains foreground.
+ */
+function buildAlphaMaskFloat32(imageData: ImageData, superW: number): Float32Array {
+  const data = imageData.data;
+  const mask = new Float32Array(BOX_SIZE * BOX_SIZE);
+  for (let y = 0; y < BOX_SIZE; y++) {
+    for (let x = 0; x < BOX_SIZE; x++) {
+      let maxA = 0;
+      for (let dy = 0; dy < LUM_SAMPLE_SUPER; dy++) {
+        for (let dx = 0; dx < LUM_SAMPLE_SUPER; dx++) {
+          const sx = x * LUM_SAMPLE_SUPER + dx;
+          const sy = y * LUM_SAMPLE_SUPER + dy;
+          const idx = (sy * superW + sx) * 4;
+          const a = data[idx + 3];
+          if (a > maxA) maxA = a;
+        }
+      }
+      mask[y * BOX_SIZE + x] = maxA >= 128 ? 1 : 0;
+    }
+  }
+  return mask;
+}
+
+/**
  * Downsample supersampled ImageData to BOX_SIZE using a 2×2 min on ink strength.
  * Any subpixel that is still paper white keeps the cell below threshold, so
  * anti-aliased hole interiors don’t “fill in” as one solid blob.
@@ -317,6 +359,13 @@ export default function Step1ImageUpload({
   const [svgBusy, setSvgBusy] = useState(false);
   /** Set if the SVG parser failed or returned a degenerate contour — we'll fall back to raster tracing. */
   const [svgError, setSvgError] = useState<string | null>(null);
+  /**
+   * Alpha-channel fast-path (transparent PNG logos). When the upload has
+   * significant transparency, the alpha channel IS the foreground mask —
+   * no threshold fiddling needed. Set while we run the extraction.
+   */
+  const [alphaBusy, setAlphaBusy] = useState(false);
+  const [alphaError, setAlphaError] = useState<string | null>(null);
   const [contourComputing, setContourComputing] = useState(false);
   const imageCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lineArtCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -566,6 +615,72 @@ export default function Step1ImageUpload({
       octx.drawImage(img, offsetXHi, offsetYHi, drawWHi, drawHHi);
 
       const hiData = octx.getImageData(0, 0, LUM_SAMPLE_PX, LUM_SAMPLE_PX);
+
+      /**
+       * Alpha-channel fast-path. For transparent-background PNGs (typical
+       * corporate logo), the alpha channel already IS the foreground mask —
+       * no color, no threshold, no user fiddling. If we can extract a clean
+       * contour from alpha, short-circuit to Step 2 the same way the SVG
+       * path does. Fallback is the usual luminance pipeline, so opaque
+       * uploads and JPEGs are unaffected.
+       */
+      const alphaFrac = transparentPixelFraction(hiData.data);
+      if (alphaFrac > 0.1) {
+        setAlphaBusy(true);
+        setAlphaError(null);
+        void (async () => {
+          try {
+            const alphaLum = buildAlphaMaskFloat32(hiData, LUM_SAMPLE_PX);
+            const { labels, entries } = buildPhotoComponents(alphaLum, 0.5);
+            if (entries.length === 0) throw new Error("no foreground");
+            const filled = new Uint8Array(BOX_SIZE * BOX_SIZE);
+            fillLineMaskPrimaryPlusEnclosedHoles(
+              labels,
+              entries,
+              0,
+              filled,
+              BOX_SIZE,
+              BOX_SIZE,
+            );
+            const outline = filledSilhouetteToLineArtMask(
+              filled,
+              BOX_SIZE,
+              BOX_SIZE,
+              PHOTO_LINE_ART_OUTLINE_LAYERS,
+            );
+            const contour = extractNormalizedContourFromLineMask(
+              outline,
+              DEFAULT_CONTOUR_LEVEL,
+              BOX_SIZE,
+              BOX_SIZE,
+            );
+            if (!contour || contour.length < 4) throw new Error("contour too short");
+            let b64: string | null = null;
+            try {
+              b64 = await imageFileToSizedDataUrl(uploadedImage.file);
+            } catch {
+              b64 = null;
+            }
+            onComplete(contour as NormalizedPoint[], b64);
+            return;
+          } catch (err) {
+            console.warn(
+              "[Step1] alpha fast-path failed; falling back to threshold",
+              err,
+            );
+            setAlphaError(
+              "Couldn't extract from alpha channel. Use the threshold slider + brush to refine.",
+            );
+          } finally {
+            setAlphaBusy(false);
+          }
+        })();
+        // The async branch either short-circuits (onComplete) or falls
+        // through to let the existing luminance pipeline below run. We
+        // always run the luminance pipeline synchronously so if the
+        // async path fails, the raster UI is already ready.
+      }
+
       const lum = buildLuminanceMinPool2x2(hiData, LUM_SAMPLE_PX);
       luminanceRef.current = gaussianBlurFloat32(lum, BOX_SIZE, BOX_SIZE, PHOTO_BLUR_SIGMA);
       setThreshold(0.5);
@@ -819,8 +934,9 @@ export default function Step1ImageUpload({
 
       <p className="mb-1 max-w-xl text-center font-dm text-[11px] leading-snug text-pace-muted sm:mb-1.5 sm:text-[11px]">
         Your photo is traced in the browser—we don’t upload the image to our
-        servers. <strong className="text-pace-ink">Got an SVG?</strong> Upload
-        it and we&apos;ll skip tracing entirely.{" "}
+        servers.{" "}
+        <strong className="text-pace-ink">Got an SVG or a transparent PNG?</strong>{" "}
+        Upload it and we&apos;ll skip the threshold + brush entirely.{" "}
         <span className="whitespace-nowrap">Photo threshold</span>{" "}
         rebuilds a <strong className="text-pace-ink">stroke outline</strong>{" "}
         (not a solid fill) when you have not drawn yet; use{" "}
@@ -831,7 +947,7 @@ export default function Step1ImageUpload({
         automatically.
       </p>
 
-      {svgBusy ? (
+      {svgBusy || alphaBusy ? (
         <div
           className="mb-2 flex items-center gap-2 rounded-md border border-pace-blue/40 bg-pace-blue/5 px-3 py-2 text-[11px] leading-snug text-pace-ink"
           role="status"
@@ -841,16 +957,20 @@ export default function Step1ImageUpload({
             aria-hidden
             className="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-pace-blue border-t-transparent"
           />
-          <span>Reading vector paths from your SVG…</span>
+          <span>
+            {svgBusy
+              ? "Reading vector paths from your SVG…"
+              : "Reading the transparent PNG — no tracing needed…"}
+          </span>
         </div>
       ) : null}
 
-      {svgError ? (
+      {svgError || alphaError ? (
         <div
           className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-900"
           role="status"
         >
-          {svgError}
+          {svgError || alphaError}
         </div>
       ) : null}
 
