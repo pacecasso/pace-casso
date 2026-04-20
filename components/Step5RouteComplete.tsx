@@ -165,6 +165,8 @@ export default function Step5RouteComplete({
   const [turnCues, setTurnCues] = useState<WalkingCue[]>([]);
   const [cuesLoading, setCuesLoading] = useState(false);
   const [cuesError, setCuesError] = useState<string | null>(null);
+  /** Bumped to force the cues useEffect to re-run. Used by the Retry button. */
+  const [cuesRetryNonce, setCuesRetryNonce] = useState(0);
   const [shareHint, setShareHint] = useState<string | null>(null);
   const [canNativeShare, setCanNativeShare] = useState(false);
 
@@ -234,7 +236,9 @@ export default function Step5RouteComplete({
     return () => {
       cancelled = true;
     };
-  }, [route.blockWaypoints, route.coordinates]);
+  }, [route.blockWaypoints, route.coordinates, cuesRetryNonce]);
+
+  const retryCues = useCallback(() => setCuesRetryNonce((n) => n + 1), []);
 
   const downloadGeoJSON = useCallback(() => {
     const fc =
@@ -413,21 +417,26 @@ export default function Step5RouteComplete({
                     {turnCues.length} steps
                   </span>
                 ) : cuesError ? (
-                  <span
-                    className="text-[11px] font-medium text-red-600"
+                  <button
+                    type="button"
+                    onClick={retryCues}
+                    className="min-h-[28px] rounded border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700 transition hover:border-red-400 hover:bg-red-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                     title={cuesError}
+                    aria-label={`Cues failed to load: ${cuesError}. Retry.`}
                   >
-                    Unavailable
-                  </span>
+                    ↻ Retry cues
+                  </button>
                 ) : null}
               </div>
               {cuesError ? (
                 <p
-                  className="text-[11px] text-red-600"
+                  className="text-[11px] leading-snug text-red-600"
                   role="alert"
                   aria-live="assertive"
                 >
-                  {cuesError}
+                  Couldn&apos;t load turn-by-turn cues — {cuesError}. The route
+                  line itself is fine; export GPX or tap{" "}
+                  <strong>↻ Retry cues</strong>.
                 </p>
               ) : null}
               {turnCues.length > 0 ? (

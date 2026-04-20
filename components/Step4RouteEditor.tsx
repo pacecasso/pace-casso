@@ -53,6 +53,43 @@ function greatCircleSpur(from: Waypoint, to: Waypoint, steps = 20): Waypoint[] {
   return out;
 }
 
+/**
+ * Retry the walking-polyline fetch a few times before falling back to a
+ * straight-line spur. Most single-leg failures are transient 5xx / timeout /
+ * rate-limit; retrying with short backoff recovers silently so users don't
+ * see a "teleport" segment that won't walk.
+ *
+ * Returns both the coordinates and whether we had to fall back — callers tag
+ * the leg so the UI can warn the user that this segment isn't street-snapped.
+ */
+async function mapboxWalkingPolylineWithRetry(
+  from: Waypoint,
+  to: Waypoint,
+  maxAttempts = 3,
+): Promise<{ coords: Waypoint[]; isSpur: boolean }> {
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) {
+      const backoffMs = 250 * 2 ** (attempt - 1); // 250, 500, 1000…
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    }
+    try {
+      const coords = await mapboxWalkingPolyline(from, to);
+      return { coords, isSpur: false };
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  console.warn(
+    "[Step4RouteEditor] walking-polyline failed after retries; using spur",
+    lastErr,
+  );
+  return { coords: greatCircleSpur(from, to), isSpur: true };
+}
+
+/** Per-leg override: geometry plus whether it's a straight-line fallback. */
+type LegOverride = { coords: Waypoint[]; isSpur: boolean };
+
 function snapToStreetLine(line: [number, number][], raw: Waypoint): Waypoint {
   if (line.length < 2) return raw;
   try {
@@ -504,10 +541,13 @@ export default function Step4RouteEditor({
   /** Shift+click toggles indices; Delete removes all selected (or one). */
   const [shiftSelectedIndices, setShiftSelectedIndices] = useState<number[]>([]);
   /** Per-leg geometry when Mapbox spur replaces lineSlice (length = waypoints.length - 1). */
-  const [legOverrides, setLegOverrides] = useState<(Waypoint[] | null)[]>([]);
+  const [legOverrides, setLegOverrides] = useState<(LegOverride | null)[]>([]);
   const [spurBusy, setSpurBusy] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [quickTipsOpen, setQuickTipsOpen] = useState(true);
+  /** Collapsed by default on mobile so the toggles + meters row doesn't
+   *  dominate the short sidebar. Always visible on desktop via `lg:block`. */
+  const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
   const [undoPast, setUndoPast] = useState<Waypoint[][]>([]);
   const [redoFuture, setRedoFuture] = useState<Waypoint[][]>([]);
 
@@ -584,7 +624,7 @@ export default function Step4RouteEditor({
     const wpSnap = waypoints.map((p) => [p[0], p[1]] as Waypoint);
 
     void (async () => {
-      const fetched: (Waypoint[] | null)[] = new Array(
+      const fetched: (LegOverride | null)[] = new Array(
         wpSnap.length - 1,
       ).fill(null);
       for (const i of weakIndices) {
@@ -592,12 +632,8 @@ export default function Step4RouteEditor({
         const a = wpSnap[i];
         const b = wpSnap[i + 1];
         if (!a || !b) continue;
-        try {
-          const line = await mapboxWalkingPolyline(a, b);
-          if (line.length >= 2) fetched[i] = line;
-        } catch {
-          /* keep null */
-        }
+        const r = await mapboxWalkingPolylineWithRetry(a, b);
+        if (r.coords.length >= 2) fetched[i] = r;
       }
       if (cancelled) return;
       setLegOverrides((prev) => {
@@ -627,18 +663,37 @@ export default function Step4RouteEditor({
     const legs: Waypoint[][] = [];
     for (let i = 0; i < waypoints.length - 1; i++) {
       const ov = legOverrides[i];
-      if (ov && ov.length >= 2) {
-        legs.push(ov);
+      if (ov && ov.coords.length >= 2) {
+        legs.push(ov.coords);
       } else if (sequentialStreetLegs[i]?.length >= 2) {
         legs.push(sequentialStreetLegs[i]!);
-      } else if (streetLine.length >= 2) {
-        legs.push(greatCircleSpur(waypoints[i], waypoints[i + 1]));
       } else {
         legs.push(greatCircleSpur(waypoints[i], waypoints[i + 1]));
       }
     }
     return legs;
-  }, [waypoints, legOverrides, streetLine, sequentialStreetLegs]);
+  }, [waypoints, legOverrides, sequentialStreetLegs]);
+
+  /**
+   * Which legs are currently rendered as straight-line spurs rather than real
+   * walking paths. Picked up by the sidebar warning banner and by the map so
+   * spur segments render with an amber dashed overlay.
+   */
+  const spurLegIndices = useMemo(() => {
+    if (waypoints.length < 2) return [] as number[];
+    const out: number[] = [];
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      const ov = legOverrides[i];
+      if (ov) {
+        if (ov.isSpur) out.push(i);
+        continue;
+      }
+      if (!sequentialStreetLegs[i] || sequentialStreetLegs[i]!.length < 2) {
+        out.push(i);
+      }
+    }
+    return out;
+  }, [waypoints, legOverrides, sequentialStreetLegs]);
 
   const activeRouteLine = useMemo(
     () => mergeLegPolylinesWithWaypoints(legPolylines, waypoints),
@@ -673,7 +728,7 @@ export default function Step4RouteEditor({
   }, [snappedRoute]);
 
   const commitWaypoints = useCallback(
-    (next: Waypoint[], nextLegOverrides?: (Waypoint[] | null)[]) => {
+    (next: Waypoint[], nextLegOverrides?: (LegOverride | null)[]) => {
       setUndoPast((past) => [...past, waypointsRef.current]);
       setRedoFuture([]);
       setWaypoints(next);
@@ -793,23 +848,13 @@ export default function Step4RouteEditor({
         const W = wp[nearestI];
         const newWp = [...wp.slice(0, nearestI + 1), P, ...wp.slice(nearestI + 1)];
         const nLegs = newWp.length - 1;
-        const newOv = new Array(nLegs).fill(null) as (Waypoint[] | null)[];
+        const newOv = new Array(nLegs).fill(null) as (LegOverride | null)[];
 
-        let segWtoP: Waypoint[];
-        try {
-          segWtoP = await mapboxWalkingPolyline(W, P);
-        } catch {
-          segWtoP = greatCircleSpur(W, P);
-        }
-        newOv[nearestI] = segWtoP;
+        newOv[nearestI] = await mapboxWalkingPolylineWithRetry(W, P);
 
         if (nearestI < wp.length - 1) {
           const oldRight = wp[nearestI + 1];
-          try {
-            newOv[nearestI + 1] = await mapboxWalkingPolyline(P, oldRight);
-          } catch {
-            newOv[nearestI + 1] = greatCircleSpur(P, oldRight);
-          }
+          newOv[nearestI + 1] = await mapboxWalkingPolylineWithRetry(P, oldRight);
         }
 
         commitWaypoints(newWp, newOv);
@@ -860,16 +905,15 @@ export default function Step4RouteEditor({
     setSpurBusy(true);
     try {
       const nL = next.length - 1;
-      const ovs: Waypoint[][] = [];
+      const ovs: (LegOverride | null)[] = [];
       for (let i = 0; i < nL; i++) {
         const a = next[i];
         const b = next[i + 1];
-        if (!a || !b) continue;
-        try {
-          ovs.push(await mapboxWalkingPolyline(a, b));
-        } catch {
-          ovs.push(greatCircleSpur(a, b));
+        if (!a || !b) {
+          ovs.push(null);
+          continue;
         }
+        ovs.push(await mapboxWalkingPolylineWithRetry(a, b));
       }
       commitWaypoints(next, ovs);
       setSelectedWaypointIndex(0);
@@ -911,13 +955,11 @@ export default function Step4RouteEditor({
     setSpurBusy(true);
     try {
       const nL = ordered.length - 1;
-      const ovs: Waypoint[][] = [];
+      const ovs: (LegOverride | null)[] = [];
       for (let i = 0; i < nL; i++) {
-        try {
-          ovs.push(await mapboxWalkingPolyline(ordered[i], ordered[i + 1]));
-        } catch {
-          ovs.push(greatCircleSpur(ordered[i], ordered[i + 1]));
-        }
+        ovs.push(
+          await mapboxWalkingPolylineWithRetry(ordered[i], ordered[i + 1]),
+        );
       }
       commitWaypoints(ordered, ovs);
       setShiftSelectedIndices([]);
@@ -942,7 +984,7 @@ export default function Step4RouteEditor({
       }
 
       const prevOv = legOverridesRef.current;
-      const nextOv: (Waypoint[] | null)[] = new Array(nLegs).fill(null);
+      const nextOv: (LegOverride | null)[] = new Array(nLegs).fill(null);
       for (let i = 0; i < nLegs; i++) {
         if (i !== index - 1 && i !== index) {
           nextOv[i] = prevOv[i] ?? null;
@@ -954,20 +996,12 @@ export default function Step4RouteEditor({
         if (index > 0) {
           const from = wp[index - 1];
           const to = wp[index];
-          try {
-            nextOv[index - 1] = await mapboxWalkingPolyline(from, to);
-          } catch {
-            nextOv[index - 1] = greatCircleSpur(from, to);
-          }
+          nextOv[index - 1] = await mapboxWalkingPolylineWithRetry(from, to);
         }
         if (index < wp.length - 1) {
           const from = wp[index];
           const to = wp[index + 1];
-          try {
-            nextOv[index] = await mapboxWalkingPolyline(from, to);
-          } catch {
-            nextOv[index] = greatCircleSpur(from, to);
-          }
+          nextOv[index] = await mapboxWalkingPolylineWithRetry(from, to);
         }
         commitWaypoints(wp, nextOv);
         setShiftSelectedIndices([]);
@@ -1012,6 +1046,30 @@ export default function Step4RouteEditor({
     removeAt,
     deleteSelectedWaypoints,
   ]);
+
+  const resnapSpurLegs = useCallback(async () => {
+    if (spurBusy) return;
+    const wp = waypointsRef.current;
+    if (wp.length < 2) return;
+    const indices = [...spurLegIndices];
+    if (indices.length === 0) return;
+
+    setSpurBusy(true);
+    try {
+      const prev = legOverridesRef.current;
+      const next = prev.slice();
+      while (next.length < wp.length - 1) next.push(null);
+      for (const i of indices) {
+        const a = wp[i];
+        const b = wp[i + 1];
+        if (!a || !b) continue;
+        next[i] = await mapboxWalkingPolylineWithRetry(a, b);
+      }
+      setLegOverrides(next);
+    } finally {
+      setSpurBusy(false);
+    }
+  }, [spurBusy, spurLegIndices]);
 
   function zoomBy(delta: number) {
     const m = mapRef.current;
@@ -1070,6 +1128,33 @@ export default function Step4RouteEditor({
             </span>
           </div>
 
+          {spurLegIndices.length > 0 && !spurBusy ? (
+            /* Straight-line "teleport" segments — Mapbox couldn't route them.
+               Surface this so users fix it before exporting (otherwise the
+               GPX has invisible chords that won't walk). */
+            <div
+              className="mt-3 flex flex-col gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11px] leading-snug text-amber-900"
+              role="alert"
+            >
+              <span className="flex items-center gap-1.5 font-bebas text-[11px] tracking-[0.12em] text-amber-900">
+                <span aria-hidden>⚠</span>
+                {spurLegIndices.length} segment
+                {spurLegIndices.length === 1 ? "" : "s"} not street-snapped
+              </span>
+              <span>
+                Shown as amber dashed lines on the map. Mapbox couldn&apos;t
+                route these — usually a transient hiccup.
+              </span>
+              <button
+                type="button"
+                onClick={resnapSpurLegs}
+                className="mt-0.5 w-fit rounded border border-amber-400 bg-white px-2.5 py-1 font-bebas text-[11px] tracking-[0.12em] text-amber-900 transition hover:border-amber-600 hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+              >
+                ↻ Re-snap {spurLegIndices.length === 1 ? "this segment" : "all"}
+              </button>
+            </div>
+          ) : null}
+
           <div className="mt-3 rounded-md border border-pace-line bg-pace-panel/60 px-2.5 py-2 font-dm text-[11px] leading-snug text-pace-muted">
             <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-yellow">
               Keyboard
@@ -1091,7 +1176,23 @@ export default function Step4RouteEditor({
           </div>
 
           <div className="mt-5 flex flex-col gap-4 border-t border-pace-line pt-4 text-sm">
-            <div className="flex flex-col gap-3">
+            <button
+              type="button"
+              onClick={() => setMobileOptionsOpen((v) => !v)}
+              aria-expanded={mobileOptionsOpen}
+              className="flex items-center justify-between rounded-md border border-pace-line bg-pace-panel/60 px-3 py-2 font-bebas text-[11px] tracking-[0.14em] text-pace-ink transition hover:bg-pace-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow lg:hidden"
+            >
+              <span>View options · shape match</span>
+              <span
+                aria-hidden
+                className={`transition-transform ${mobileOptionsOpen ? "rotate-180" : ""}`}
+              >
+                ▾
+              </span>
+            </button>
+            <div
+              className={`flex flex-col gap-3 ${mobileOptionsOpen ? "" : "hidden"} lg:flex`}
+            >
               <div className="flex flex-wrap items-center gap-4">
                 {showArtControls ? (
                   <div className="flex items-center gap-3">
@@ -1191,17 +1292,37 @@ export default function Step4RouteEditor({
                 type="button"
                 onClick={undo}
                 disabled={!undoPast.length}
-                className="rounded-full bg-pace-panel px-2 py-1 font-semibold text-pace-ink ring-1 ring-pace-line hover:bg-pace-line/80 disabled:opacity-40"
+                aria-label={
+                  undoPast.length
+                    ? `Undo last edit (${undoPast.length} step${undoPast.length === 1 ? "" : "s"} available)`
+                    : "Undo — nothing to undo yet"
+                }
+                title={
+                  undoPast.length
+                    ? `Undo (${undoPast.length} step${undoPast.length === 1 ? "" : "s"})`
+                    : "Nothing to undo yet — edit a waypoint first"
+                }
+                className="min-h-[32px] rounded-full bg-pace-panel px-2 py-1 font-semibold text-pace-ink ring-1 ring-pace-line transition hover:bg-pace-line/80 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Undo
+                ↶ Undo
               </button>
               <button
                 type="button"
                 onClick={redo}
                 disabled={!redoFuture.length}
-                className="rounded-full bg-pace-panel px-2 py-1 font-semibold text-pace-ink ring-1 ring-pace-line hover:bg-pace-line/80 disabled:opacity-40"
+                aria-label={
+                  redoFuture.length
+                    ? `Redo last undone edit (${redoFuture.length} step${redoFuture.length === 1 ? "" : "s"} available)`
+                    : "Redo — nothing to redo"
+                }
+                title={
+                  redoFuture.length
+                    ? `Redo (${redoFuture.length} step${redoFuture.length === 1 ? "" : "s"})`
+                    : "Nothing to redo — undo something first"
+                }
+                className="min-h-[32px] rounded-full bg-pace-panel px-2 py-1 font-semibold text-pace-ink ring-1 ring-pace-line transition hover:bg-pace-line/80 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Redo
+                ↷ Redo
               </button>
               <button
                 type="button"
@@ -1315,6 +1436,7 @@ export default function Step4RouteEditor({
             originalArt={originalArt}
             showOriginalArt={showArtControls && showOriginalArt}
             legPolylines={legPolylines}
+            spurLegIndices={spurLegIndices}
             showWaypoints={showWaypointDots}
             waypoints={waypoints}
             selectedWaypointIndex={selectedWaypointIndex}

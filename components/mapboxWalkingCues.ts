@@ -87,6 +87,11 @@ function sumOptionalStepMeta(
 /**
  * Duplicate the first waypoint at the end when the polyline almost closes but
  * the last handle is not exactly on the start (typical for circle / loop routes).
+ *
+ * Previously dropped the append when `gap < 4 m`, which meant Mapbox Directions
+ * silently produced no closing-leg cue for tight loops and users saw turn-by-turn
+ * ending a block early. Now only skip when the duplicate is genuinely zero-length
+ * (< 0.5 m) — Mapbox tolerates the ~1 m round-trip.
  */
 export function closeWaypointsIfNearlyLoop(
   waypoints: [number, number][],
@@ -100,8 +105,8 @@ export function closeWaypointsIfNearlyLoop(
     [last[0], last[1]],
   );
   if (gap > thresholdM) return waypoints;
-  /** Already ends on the start — avoid a zero-length duplicate tail. */
-  if (gap < 4) return waypoints;
+  /** Already exactly on the start — avoid a zero-length duplicate tail. */
+  if (gap < 0.5) return waypoints;
   return [...waypoints, [first[0], first[1]] as [number, number]];
 }
 

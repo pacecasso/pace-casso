@@ -96,6 +96,9 @@ export type Step4LeafletMapProps = {
   originalArt: Waypoint[];
   showOriginalArt: boolean;
   legPolylines: Waypoint[][];
+  /** Indices of legs currently rendered as straight-line fallbacks. Drawn with
+   *  a dashed amber overlay so the user can see which segments aren't walkable. */
+  spurLegIndices?: number[];
   /** When false, markers are hidden so the user can preview the final route line only. */
   showWaypoints: boolean;
   waypoints: Waypoint[];
@@ -118,6 +121,7 @@ export default function Step4LeafletMap({
   originalArt,
   showOriginalArt,
   legPolylines,
+  spurLegIndices,
   showWaypoints,
   waypoints,
   selectedWaypointIndex,
@@ -237,6 +241,30 @@ export default function Step4LeafletMap({
           }}
         />
       )}
+      {/* Amber dashed overlay: each leg that fell back to a straight-line
+          spur (Mapbox failure). Users can spot the "teleport" at a glance
+          and tap Re-snap in the sidebar to retry. */}
+      {spurLegIndices && spurLegIndices.length > 0
+        ? spurLegIndices.map((legIndex) => {
+            const positions = legPolylines[legIndex];
+            if (!positions || positions.length < 2) return null;
+            return (
+              <Polyline
+                key={`spur-overlay-${legIndex}`}
+                positions={positions as LatLngExpression[]}
+                pathOptions={{
+                  color: "#f59e0b",
+                  weight: 6,
+                  opacity: 0.95,
+                  dashArray: "8,10",
+                  lineCap: "round",
+                  lineJoin: "round",
+                  interactive: false,
+                }}
+              />
+            );
+          })
+        : null}
       {/* Invisible wide hit targets only — avoids stacking semi-transparent red on the visible route */}
       <Pane name="step4RouteHitPane" style={{ zIndex: 450 }}>
         {legPolylines.map((positions, legIndex) =>
