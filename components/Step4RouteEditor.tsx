@@ -18,6 +18,13 @@ import {
   formatDuration,
   useRunnerProfile,
 } from "../lib/runnerProfile";
+import { routeQualityScore } from "../lib/routeQuality";
+import { connectorSegmentPairs } from "../lib/oneLinePathAnalysis";
+import { isClosedLoopCandidate } from "../lib/routeStartVariants";
+import {
+  reverseRouteDirection as reverseRouteDirectionData,
+  rotateClosedRouteStart,
+} from "../lib/routeDirection";
 import MapChunkFallback from "./MapChunkFallback";
 import MapStepSplitLayout from "./MapStepSplitLayout";
 import ShapeMatchMeter from "./ShapeMatchMeter";
@@ -95,6 +102,10 @@ async function mapboxWalkingPolylineWithRetry(
 
 /** Per-leg override: geometry plus whether it's a straight-line fallback. */
 type LegOverride = { coords: Waypoint[]; isSpur: boolean };
+type EditHistorySnapshot = {
+  waypoints: Waypoint[];
+  legOverrides: (LegOverride | null)[];
+};
 
 /**
  * Click-on-line threshold. If the user double-clicks (or drops a drag) within
@@ -178,6 +189,33 @@ function snapToStreetLine(line: [number, number][], raw: Waypoint): Waypoint {
   } catch {
     return raw;
   }
+}
+
+function cloneWaypoint(p: Waypoint): Waypoint {
+  return [p[0], p[1]];
+}
+
+function cloneLegOverride(ov: LegOverride | null): LegOverride | null {
+  return ov
+    ? {
+        coords: ov.coords.map(cloneWaypoint),
+        isSpur: ov.isSpur,
+      }
+    : null;
+}
+
+function cloneEditSnapshot(snapshot: EditHistorySnapshot): EditHistorySnapshot {
+  return {
+    waypoints: snapshot.waypoints.map(cloneWaypoint),
+    legOverrides: snapshot.legOverrides.map(cloneLegOverride),
+  };
+}
+
+function makeEditSnapshot(
+  waypoints: Waypoint[],
+  legOverrides: (LegOverride | null)[],
+): EditHistorySnapshot {
+  return cloneEditSnapshot({ waypoints, legOverrides });
 }
 
 /** Arc length along polyline to closest point to p (meters). */
@@ -558,10 +596,16 @@ function sampleWaypointsAlongPolyline(coords: Waypoint[], n: number): Waypoint[]
   return out;
 }
 
-function initialWaypoints(route: RouteLineString): Waypoint[] {
+function initialWaypoints(
+  route: RouteLineString,
+  routeSource: "image" | "freehand" = "freehand",
+): Waypoint[] {
   const coords = route.coordinates as Waypoint[];
   const block = route.blockWaypoints;
   if (block && block.length >= 2) {
+    if (route.preserveBlockWaypoints) {
+      return block.map(([a, b]) => [a, b] as Waypoint);
+    }
     const useBlock =
       coords.length < 2 || blockWaypointsSpanPolyline(coords, block);
     if (useBlock) {
@@ -584,9 +628,9 @@ function initialWaypoints(route: RouteLineString): Waypoint[] {
         const bends = simplifyPolylineToBendWaypoints(
           coords as [number, number][],
           {
-            minTurnDeg: 28,
-            maxStraightRunM: 50_000,
-            minCornerSeparationM: 20,
+            minTurnDeg: routeSource === "image" ? 22 : 28,
+            maxStraightRunM: routeSource === "image" ? 260 : 50_000,
+            minCornerSeparationM: routeSource === "image" ? 14 : 20,
           },
         );
         if (bends.length >= 2) {
@@ -611,7 +655,7 @@ export default function Step4RouteEditor({
   const showArtControls = routeSource === "image";
 
   const [waypoints, setWaypoints] = useState<Waypoint[]>(() =>
-    initialWaypoints(snappedRoute),
+    initialWaypoints(snappedRoute, routeSource),
   );
   /**
    * Default OFF even for image uploads. When it was on by default, users
@@ -640,8 +684,8 @@ export default function Step4RouteEditor({
    *  dominate the short sidebar. Always visible on desktop via `lg:block`. */
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
   const [runnerProfile] = useRunnerProfile();
-  const [undoPast, setUndoPast] = useState<Waypoint[][]>([]);
-  const [redoFuture, setRedoFuture] = useState<Waypoint[][]>([]);
+  const [undoPast, setUndoPast] = useState<EditHistorySnapshot[]>([]);
+  const [redoFuture, setRedoFuture] = useState<EditHistorySnapshot[]>([]);
   /**
    * One-shot toast the first time a user deletes a middle waypoint, so they
    * learn that the line is intentionally preserved (polyline-first edits).
@@ -668,6 +712,14 @@ export default function Step4RouteEditor({
   const originalArt = useMemo(
     () => (anchorLocation?.anchorLatLngs ?? []) as Waypoint[],
     [anchorLocation?.anchorLatLngs],
+  );
+  const originalArtConnectorSegments = useMemo(
+    () =>
+      connectorSegmentPairs(
+        originalArt,
+        anchorLocation?.connectorSegmentIndices ?? [],
+      ),
+    [originalArt, anchorLocation?.connectorSegmentIndices],
   );
 
   const routeInterpretationPct = useMemo(
@@ -798,6 +850,16 @@ export default function Step4RouteEditor({
     return out;
   }, [waypoints, legOverrides, sequentialStreetLegs]);
 
+  const activeRouteLine = useMemo(
+    () => mergeLegPolylinesWithWaypoints(legPolylines, waypoints),
+    [legPolylines, waypoints],
+  );
+
+  const routeCleanLineScore = useMemo(
+    () => routeQualityScore(activeRouteLine),
+    [activeRouteLine],
+  );
+
   /**
    * Traffic-light verdict for "is this route good enough to run?". Replaces
    * the raw interpretation-% meter as the primary signal Dan sees — the %
@@ -835,11 +897,19 @@ export default function Step4RouteEditor({
           "Only a few waypoints — fine if that's the shape, otherwise double-tap the map to drop more.",
       };
     }
+    if (routeCleanLineScore < 55) {
+      return {
+        tone: "check",
+        title: "Route doubles back",
+        detail:
+          "Some streets are retraced in reverse. That's okay if the design needs it; otherwise drag handles or re-run placement for a cleaner one-line route.",
+      };
+    }
     if (
       routeSource === "image" &&
       Number.isFinite(routeInterpretationPct) &&
       routeInterpretationPct > 0 &&
-      routeInterpretationPct < 35
+      routeInterpretationPct < 45
     ) {
       return {
         tone: "check",
@@ -856,14 +926,10 @@ export default function Step4RouteEditor({
   }, [
     waypoints.length,
     spurLegIndices,
+    routeCleanLineScore,
     routeInterpretationPct,
     routeSource,
   ]);
-
-  const activeRouteLine = useMemo(
-    () => mergeLegPolylinesWithWaypoints(legPolylines, waypoints),
-    [legPolylines, waypoints],
-  );
 
   const showFaintFullStreet =
     showFullSnapReference ||
@@ -880,7 +946,7 @@ export default function Step4RouteEditor({
 
   useEffect(() => {
     const sl = (snappedRoute.coordinates ?? []) as Waypoint[];
-    const raw = initialWaypoints(snappedRoute);
+    const raw = initialWaypoints(snappedRoute, routeSource);
     setWaypoints(
       sl.length >= 2 ? orderWaypointsAlongLine(sl, raw) : raw,
     );
@@ -890,11 +956,14 @@ export default function Step4RouteEditor({
     setSelectedWaypointIndex(null);
     setShiftSelectedIndices([]);
     setLegOverrides([]);
-  }, [snappedRoute]);
+  }, [snappedRoute, routeSource]);
 
   const commitWaypoints = useCallback(
     (next: Waypoint[], nextLegOverrides?: (LegOverride | null)[]) => {
-      setUndoPast((past) => [...past, waypointsRef.current]);
+      setUndoPast((past) => [
+        ...past,
+        makeEditSnapshot(waypointsRef.current, legOverridesRef.current),
+      ]);
       setRedoFuture([]);
       setWaypoints(next);
       const n = Math.max(0, next.length - 1);
@@ -913,10 +982,14 @@ export default function Step4RouteEditor({
     setUndoPast((past) => {
       if (!past.length) return past;
       const prev = past[past.length - 1];
-      setRedoFuture((f) => [waypointsRef.current, ...f]);
-      setWaypoints(prev);
+      setRedoFuture((f) => [
+        makeEditSnapshot(waypointsRef.current, legOverridesRef.current),
+        ...f,
+      ]);
+      const restored = cloneEditSnapshot(prev);
+      setWaypoints(restored.waypoints);
       setShiftSelectedIndices([]);
-      setLegOverrides([]);
+      setLegOverrides(restored.legOverrides);
       setSelectedWaypointIndex(null);
       return past.slice(0, -1);
     });
@@ -926,10 +999,14 @@ export default function Step4RouteEditor({
     setRedoFuture((future) => {
       if (!future.length) return future;
       const next = future[0];
-      setUndoPast((p) => [...p, waypointsRef.current]);
-      setWaypoints(next);
+      setUndoPast((p) => [
+        ...p,
+        makeEditSnapshot(waypointsRef.current, legOverridesRef.current),
+      ]);
+      const restored = cloneEditSnapshot(next);
+      setWaypoints(restored.waypoints);
       setShiftSelectedIndices([]);
-      setLegOverrides([]);
+      setLegOverrides(restored.legOverrides);
       setSelectedWaypointIndex(null);
       return future.slice(1);
     });
@@ -937,15 +1014,18 @@ export default function Step4RouteEditor({
 
   const restart = useCallback(() => {
     const sl = (initialRef.current.coordinates ?? []) as Waypoint[];
-    const raw = initialWaypoints(initialRef.current);
+    const raw = initialWaypoints(initialRef.current, routeSource);
     const next = sl.length >= 2 ? orderWaypointsAlongLine(sl, raw) : raw;
-    setUndoPast((p) => [...p, waypointsRef.current]);
+    setUndoPast((p) => [
+      ...p,
+      makeEditSnapshot(waypointsRef.current, legOverridesRef.current),
+    ]);
     setRedoFuture([]);
     setWaypoints(next);
     setSelectedWaypointIndex(null);
     setShiftSelectedIndices([]);
     setLegOverrides([]);
-  }, []);
+  }, [routeSource]);
 
   function adjustIndexAfterRemoval(
     idx: number | null,
@@ -1166,6 +1246,7 @@ export default function Step4RouteEditor({
     if (spurBusy) return;
     const wp = waypointsRef.current;
     if (wp.length < 2) return;
+    if (!isClosedLoopCandidate(wp)) return;
     if (shiftSelectedIndices.length > 1) return;
 
     const k =
@@ -1174,7 +1255,7 @@ export default function Step4RouteEditor({
         : selectedWaypointIndex;
     if (k === null || k < 1 || k >= wp.length) return;
 
-    const next = [...wp.slice(k), ...wp.slice(0, k)];
+    const next = rotateClosedRouteStart(wp, k);
     setSpurBusy(true);
     try {
       const nL = next.length - 1;
@@ -1200,6 +1281,19 @@ export default function Step4RouteEditor({
     selectedWaypointIndex,
     commitWaypoints,
   ]);
+
+  const reverseRouteDirection = useCallback(() => {
+    if (spurBusy) return;
+    const wp = waypointsRef.current;
+    if (wp.length < 2) return;
+    const reversed = reverseRouteDirectionData(wp, legOverridesRef.current);
+    commitWaypoints(
+      reversed.waypoints as Waypoint[],
+      reversed.legOverrides as (LegOverride | null)[],
+    );
+    setSelectedWaypointIndex(0);
+    setShiftSelectedIndices([0]);
+  }, [commitWaypoints, spurBusy]);
 
   const deleteSelectedWaypoints = useCallback(async () => {
     if (spurBusy) return;
@@ -1455,16 +1549,38 @@ export default function Step4RouteEditor({
       ? polylineLengthMeters(activeRouteLine)
       : polylineLengthMeters(waypoints);
   const distanceKm = distanceMeters / 1000;
+  const routeLooksClosed = isClosedLoopCandidate(waypoints);
 
   const makeStartCandidateIndex =
     shiftSelectedIndices.length === 1
       ? shiftSelectedIndices[0]
       : selectedWaypointIndex;
   const canMakeStartingPoint =
+    routeLooksClosed &&
     waypoints.length >= 2 &&
     shiftSelectedIndices.length <= 1 &&
     makeStartCandidateIndex !== null &&
     makeStartCandidateIndex > 0;
+  const canReverseRouteDirection =
+    !routeLooksClosed && waypoints.length >= 2 && !spurBusy;
+  const makeStartTitle = !routeLooksClosed
+    ? "Only closed loops can rotate the starting point. Use Reverse for open routes."
+    : shiftSelectedIndices.length > 1
+      ? "Select only one waypoint (Shift+click others off)"
+      : makeStartCandidateIndex === 0
+        ? "This point is already the start"
+        : "Rotate the route so the selected waypoint is first (same path, new beginning)";
+  const reverseRouteTitle = routeLooksClosed
+    ? "Closed loops use Set start to choose the beginning."
+    : "Reverse the open route direction without changing its shape.";
+  const canCompleteRoute =
+    waypoints.length >= 2 && spurLegIndices.length === 0 && !spurBusy;
+  const completeRouteTitle =
+    spurLegIndices.length > 0
+      ? "Re-snap the amber dashed segment before exporting."
+      : waypoints.length < 2
+        ? "Add at least two waypoints before finishing."
+        : "Finish this runnable route.";
 
   return (
     <MapStepSplitLayout
@@ -1696,10 +1812,10 @@ export default function Step4RouteEditor({
               {showArtControls ? (
                 <p className="font-dm text-[11px] leading-snug text-pace-muted">
                   The dashed <span className="text-emerald-600">green</span>{" "}
-                  overlay is the outline you traced in Step 1 — a reference for
-                  comparison, not part of the route. Bits that stick out from
-                  the red line are places streets can&apos;t follow your shape
-                  exactly; you can&apos;t edit those with waypoints. Toggle{" "}
+                  overlay is the outline you traced in Step 1;{" "}
+                  <span className="text-pace-yellow">yellow</span> pieces are
+                  connector strokes from the one-line drawing. This is a
+                  reference for comparison, not part of the route. Toggle{" "}
                   <strong className="text-pace-ink">Traced outline</strong> off
                   if it&apos;s distracting.
                 </p>
@@ -1716,6 +1832,11 @@ export default function Step4RouteEditor({
                 secondaryPercent={routeTightFitPct}
                 secondaryLabel="Tight fit"
                 secondaryTitle={tightMeterTitle}
+              />
+              <ShapeMatchMeter
+                label="Clean line"
+                percent={routeCleanLineScore}
+                title="Penalizes unnecessary retracing and tiny corrective jogs. Some out-and-back is okay when the design needs it."
               />
             </div>
 
@@ -1763,16 +1884,19 @@ export default function Step4RouteEditor({
                 type="button"
                 onClick={() => void makeSelectedWaypointStart()}
                 disabled={spurBusy || !canMakeStartingPoint}
-                title={
-                  shiftSelectedIndices.length > 1
-                    ? "Select only one waypoint (Shift+click others off)"
-                    : makeStartCandidateIndex === 0
-                      ? "This point is already the start"
-                      : "Rotate the route so the selected waypoint is first (same path, new beginning)"
-                }
+                title={makeStartTitle}
                 className="rounded-full bg-pace-panel px-2 py-1 font-semibold text-pace-ink ring-1 ring-pace-line hover:bg-pace-line/80 disabled:opacity-40"
               >
                 Set start
+              </button>
+              <button
+                type="button"
+                onClick={reverseRouteDirection}
+                disabled={!canReverseRouteDirection}
+                title={reverseRouteTitle}
+                className="rounded-full bg-pace-panel px-2 py-1 font-semibold text-pace-ink ring-1 ring-pace-line hover:bg-pace-line/80 disabled:opacity-40"
+              >
+                Reverse
               </button>
               <button
                 type="button"
@@ -1825,8 +1949,10 @@ export default function Step4RouteEditor({
           </button>
           <button
             type="button"
-            disabled={waypoints.length < 2}
-            onClick={() =>
+            disabled={!canCompleteRoute}
+            title={completeRouteTitle}
+            onClick={() => {
+              if (!canCompleteRoute) return;
               onComplete({
                 coordinates:
                   activeRouteLine.length >= 2
@@ -1834,11 +1960,12 @@ export default function Step4RouteEditor({
                     : (waypoints as [number, number][]),
                 distanceMeters,
                 blockWaypoints: waypoints as [number, number][],
-              })
-            }
+                preserveBlockWaypoints: true,
+              });
+            }}
             className="pace-toolbar-btn-primary flex-1 font-bebas tracking-[0.08em]"
           >
-            Looks good →
+            {spurLegIndices.length > 0 ? "Re-snap first" : "Looks good →"}
           </button>
         </div>
       }
@@ -1860,9 +1987,10 @@ export default function Step4RouteEditor({
                 </button>
               </div>
               <p className="mt-1 leading-snug pr-1">
-                Pick one dot, tap{" "}
-                <strong className="text-pace-ink">Set start</strong> to rotate
-                where the route begins (great for loops).{" "}
+                For loops, pick one dot and tap{" "}
+                <strong className="text-pace-ink">Set start</strong>. For open
+                routes, use <strong className="text-pace-ink">Reverse</strong>{" "}
+                to swap start and finish.{" "}
                 <strong className="text-pace-ink">Shift+click</strong> for
                 multi-select. <strong className="text-pace-ink">Delete</strong>{" "}
                 removes selected and rebuilds the path.
@@ -1878,6 +2006,7 @@ export default function Step4RouteEditor({
             showFaintFullStreet={showFaintFullStreet}
             activeRouteLine={activeRouteLine}
             originalArt={originalArt}
+            originalArtConnectorSegments={originalArtConnectorSegments}
             showOriginalArt={showArtControls && showOriginalArt}
             legPolylines={legPolylines}
             spurLegIndices={spurLegIndices}

@@ -7,6 +7,8 @@ import {
   type AnchorPathSource,
 } from "./simplifyAnchorPathForSnap";
 import { interpretationMatchPercent } from "./shapeMatchScore";
+import { routeQualityScore } from "./routeQuality";
+import { buildRouteStartVariants } from "./routeStartVariants";
 import type { RouteLineString } from "./routeTypes";
 
 export type { AnchorPathSource };
@@ -17,6 +19,8 @@ export type SnapWalkingRouteOptions = {
    * gets fewer legs; freehand stick letters stay unchanged when sparse.
    */
   anchorSource?: AnchorPathSource;
+  /** Try start/end variants; closed loops rotate starts, open paths can reverse direction. */
+  startVariantCount?: number;
 };
 
 type MapboxRouteSegment = {
@@ -618,6 +622,7 @@ async function stitchSegmentGeometries(
 async function snapOneContinuousPolyline(
   anchorLatLngs: [number, number][],
   anchorSource: AnchorPathSource | undefined,
+  preSimplifiedCoords?: [number, number][],
 ): Promise<{
   stitched: [number, number][];
   totalDist: number;
@@ -627,9 +632,11 @@ async function snapOneContinuousPolyline(
     throw new Error("Not enough points to snap to streets.");
   }
 
-  let coords = simplifyAnchorPathForSnap(anchorLatLngs, {
-    sourceKind: anchorSource ?? "default",
-  });
+  let coords =
+    preSimplifiedCoords ??
+    simplifyAnchorPathForSnap(anchorLatLngs, {
+      sourceKind: anchorSource ?? "default",
+    });
   if (coords.length < 2) coords = anchorLatLngs;
   const segments: MapboxRouteSegment[] = [];
   const routePayloads: MapboxDirectionsRoute[] = [];
@@ -851,11 +858,16 @@ const snapCache = new Map<string, Promise<RouteLineString>>();
 function snapCacheKey(
   coords: [number, number][],
   anchorSource: AnchorPathSource | undefined,
+  startVariantCount: number,
 ): string {
   const n = coords.length;
   const head = Math.min(24, n);
   const tail = Math.min(24, Math.max(0, n - 24));
-  const parts: number[] = [n, anchorSource === undefined ? 0 : anchorSource === "image" ? 1 : anchorSource === "freehand" ? 2 : 3];
+  const parts: number[] = [
+    n,
+    anchorSource === undefined ? 0 : anchorSource === "image" ? 1 : anchorSource === "freehand" ? 2 : 3,
+    startVariantCount,
+  ];
   for (let i = 0; i < head; i++) {
     parts.push(
       Math.round(coords[i][0] * 1e5),
@@ -872,6 +884,16 @@ function snapCacheKey(
   return parts.join(",");
 }
 
+function scoreSnappedVariant(
+  anchorLatLngs: [number, number][],
+  route: RouteLineString,
+): number {
+  const coords = route.coordinates ?? [];
+  const clean = routeQualityScore(coords);
+  const match = interpretationMatchPercent(anchorLatLngs, coords);
+  return match * 0.62 + clean * 0.38;
+}
+
 /**
  * Snap a polyline in lat/lng to walkable streets via Mapbox Directions (walking profile).
  * Identical coordinate sets share one in-flight request (bounded cache size).
@@ -884,7 +906,8 @@ export async function snapWalkingRoute(
     throw new Error("Not enough points to snap to streets.");
   }
 
-  const key = snapCacheKey(anchorLatLngs, options?.anchorSource);
+  const startVariantCount = Math.max(1, Math.min(4, options?.startVariantCount ?? 1));
+  const key = snapCacheKey(anchorLatLngs, options?.anchorSource, startVariantCount);
   const existing = snapCache.get(key);
   if (existing) return existing;
 
@@ -895,17 +918,42 @@ export async function snapWalkingRoute(
   }
 
   const promise = (async () => {
-    const one = await snapOneContinuousPolyline(
-      anchorLatLngs,
-      options?.anchorSource,
-    );
-    const packaged = finalizeBlockWaypoints(
-      one.stitched,
-      one.totalDist,
-      one.routePayloads,
-      anchorLatLngs,
-    );
-    return maybeRefineSnappedRouteWithMapMatching(anchorLatLngs, packaged);
+    const simplified = simplifyAnchorPathForSnap(anchorLatLngs, {
+      sourceKind: options?.anchorSource ?? "default",
+    });
+    const base = simplified.length >= 2 ? simplified : anchorLatLngs;
+    const variants = buildRouteStartVariants(base, startVariantCount);
+    let best:
+      | {
+          route: RouteLineString;
+          anchors: [number, number][];
+          score: number;
+        }
+      | null = null;
+
+    for (const variant of variants) {
+      const one = await snapOneContinuousPolyline(
+        variant,
+        options?.anchorSource,
+        variant,
+      );
+      const packaged = finalizeBlockWaypoints(
+        one.stitched,
+        one.totalDist,
+        one.routePayloads,
+        variant,
+      );
+      const score = scoreSnappedVariant(variant, packaged);
+      if (!best || score > best.score) {
+        best = { route: packaged, anchors: variant, score };
+      }
+    }
+
+    if (!best) {
+      throw new Error("No snapped segments were created.");
+    }
+
+    return maybeRefineSnappedRouteWithMapMatching(best.anchors, best.route);
   })();
 
   snapCache.set(key, promise);

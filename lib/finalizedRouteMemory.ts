@@ -24,15 +24,29 @@ function isFiniteNum(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
+function isValidCenter(v: unknown): v is [number, number] {
+  return (
+    Array.isArray(v) &&
+    v.length === 2 &&
+    isFiniteNum(v[0]) &&
+    v[0] >= -90 &&
+    v[0] <= 90 &&
+    isFiniteNum(v[1]) &&
+    v[1] >= -180 &&
+    v[1] <= 180
+  );
+}
+
 function isValidEntry(v: unknown): v is FinalizedRouteMemory {
   if (!v || typeof v !== "object") return false;
   const r = v as Partial<FinalizedRouteMemory>;
-  if (!Array.isArray(r.center) || r.center.length !== 2) return false;
-  if (!isFiniteNum(r.center[0]) || !isFiniteNum(r.center[1])) return false;
+  if (!isValidCenter(r.center)) return false;
   if (!isFiniteNum(r.rotationDeg)) return false;
-  if (!isFiniteNum(r.scale)) return false;
-  if (!isFiniteNum(r.distanceKm)) return false;
-  if (typeof r.savedAt !== "string") return false;
+  if (!isFiniteNum(r.scale) || r.scale <= 0) return false;
+  if (!isFiniteNum(r.distanceKm) || r.distanceKm <= 0) return false;
+  if (typeof r.savedAt !== "string" || !Number.isFinite(Date.parse(r.savedAt))) {
+    return false;
+  }
   return true;
 }
 
@@ -58,6 +72,7 @@ export function saveFinalizedRoute(
       ...entry,
       savedAt: new Date().toISOString(),
     };
+    if (!isValidEntry(next)) return;
     // Dedupe near-identical repeats (same center + scale within small tolerance)
     // so a user who clicks finalize multiple times doesn't fill memory with
     // the same placement.

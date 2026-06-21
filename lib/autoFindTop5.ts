@@ -13,11 +13,9 @@ import {
   type ContourPoint,
   type PlacementTransform,
 } from "./placementFromContour";
+import type { RouteLineString } from "./routeTypes";
 import { principalAxisAngleDeg } from "./autoFindPlacement";
-import {
-  simplifyAnchorPathForSnap,
-  type AnchorPathSource,
-} from "./simplifyAnchorPathForSnap";
+import type { AnchorPathSource } from "./simplifyAnchorPathForSnap";
 import { snapWalkingRoute } from "./snapWalkingRoute";
 import { buildCompositeGridDataUrl } from "./compositeRouteGrid";
 import { renderRouteToDataUrl } from "./renderRouteImage";
@@ -29,6 +27,13 @@ import {
   loadFinalizedRoutes,
   type FinalizedRouteMemory,
 } from "./finalizedRouteMemory";
+import { routeQualityScore } from "./routeQuality";
+import { interpretationMatchPercent } from "./shapeMatchScore";
+import { haversineMeters } from "./haversine";
+import { isValidLatLng } from "./mapboxCoordsValidate";
+import { heartConfidence } from "./artPathInterpretation";
+import { reviewStreetDesignSketch } from "./streetDesignSketch";
+import { cleanupRouteSpurs } from "./routeSpurCleanup";
 
 const MARGIN = 0.012;
 const MIN_PERIMETER_KM = 3;
@@ -39,7 +44,7 @@ const MIN_PERIMETER_KM = 3;
  * candidate *pool*, not the output quality bar.
  */
 const MAX_PERIMETER_KM = 35;
-const CANDIDATES_TO_SNAP = 20;
+const CANDIDATES_TO_SNAP = 36;
 const SNAP_BATCH_SIZE = 4;
 const SNAP_BATCH_GAP_MS = 100;
 
@@ -66,13 +71,23 @@ export type ShapeHint = {
 
 export type Top5Pick = {
   placement: PlacementTransform;
+  /** Anchor geometry used for this option. Usually derived from placement; city-first options may override it. */
+  anchorLatLngs?: [number, number][];
+  /** Short description of the route sketch used to generate this candidate. */
+  designIntent?: string;
   /** Snapped walking-route geometry (`[lat, lng]` pairs). */
   routeCoords: [number, number][];
+  /** Full snapped route from Mapbox, including editor block waypoints. */
+  snappedRoute: RouteLineString;
   /** Image URL for the preview tile. Usually a Mapbox Static Images URL showing
    *  the route on a real map backdrop; falls back to a pure-outline data-URL
    *  if the static map can't be built (missing token, etc.). */
   previewDataUrl: string;
   distanceKm: number;
+  /** 0-100, where higher means cleaner route geometry with less retracing or jitter. */
+  qualityScore: number;
+  /** 0-100, where higher means the snapped route still reads like the artwork. */
+  shapeMatchScore: number;
   /** One-line rationale from Claude. Absent on fallback. */
   reason?: string;
 };
@@ -266,6 +281,259 @@ function enumerateCandidates(
   return out;
 }
 
+function isHeartLikeContour(contour: ContourPoint[]): boolean {
+  return heartConfidence(contour) >= 0.6;
+}
+
+export function enumerateCityFirstHeartPlacements(
+  contour: ContourPoint[],
+  preset: CityPreset,
+  targetDistanceKm?: number,
+): PlacementTransform[] {
+  if (preset.id !== "manhattan" || !isHeartLikeContour(contour)) return [];
+
+  const gridRotations = [-29, 29, 0];
+  const scales =
+    targetDistanceKm != null && Number.isFinite(targetDistanceKm)
+      ? scalesFromTargetDistance(contour, preset, targetDistanceKm) ?? [1.2, 1.6, 2.1]
+      : [0.85, 1.15, 1.55, 2.05, 2.65, 3.35];
+
+  const centers: [number, number][] = [
+    // West Village / SoHo: tight grid, good for smaller iconic hearts.
+    [40.727, -74.000],
+    // Greenwich / East Village: diagonals and grid breaks can help the lobes.
+    [40.733, -73.988],
+    // Midtown: long avenues for confident sides, dense cross streets for lobes.
+    [40.754, -73.985],
+    // Central Park south / Upper West-East: strong long corridors and park edge.
+    [40.775, -73.971],
+    // Lower Manhattan: irregular streets can make a less literal but readable heart.
+    [40.711, -74.006],
+  ];
+
+  const out: PlacementTransform[] = [];
+  for (const center of centers) {
+    for (const scale of scales) {
+      for (const rotationDeg of gridRotations) {
+        out.push({ center, scale, rotationDeg });
+      }
+    }
+  }
+  return out;
+}
+
+function cityFocusCenters(preset: CityPreset): [number, number][] {
+  if (preset.id === "manhattan") {
+    return [
+      [40.711, -74.006],
+      [40.720, -73.999],
+      [40.728, -73.991],
+      [40.735, -73.992],
+      [40.742, -73.993],
+      [40.748, -73.986],
+      [40.754, -73.985],
+      [40.760, -73.980],
+      [40.768, -73.977],
+      [40.776, -73.972],
+      [40.792, -73.965],
+      [40.807, -73.958],
+    ];
+  }
+
+  const b = preset.searchBounds;
+  const latMid = (b.south + b.north) / 2;
+  const lngMid = (b.west + b.east) / 2;
+  const latQ = (b.north - b.south) * 0.24;
+  const lngQ = (b.east - b.west) * 0.24;
+  return [
+    preset.defaultCenter,
+    [latMid, lngMid],
+    [latMid - latQ, lngMid - lngQ],
+    [latMid - latQ, lngMid + lngQ],
+    [latMid + latQ, lngMid - lngQ],
+    [latMid + latQ, lngMid + lngQ],
+    [latMid, lngMid - lngQ],
+    [latMid, lngMid + lngQ],
+    [latMid - latQ, lngMid],
+    [latMid + latQ, lngMid],
+  ];
+}
+
+export function enumerateCityFocusPlacements(
+  contour: ContourPoint[],
+  preset: CityPreset,
+  hint: ShapeHint | null = null,
+  targetDistanceKm?: number,
+): PlacementTransform[] {
+  const scales =
+    (targetDistanceKm != null
+      ? scalesFromTargetDistance(contour, preset, targetDistanceKm)
+      : null) ?? scalesFromHint(hint);
+  const rotations = rotationsFromHint(contour, preset, hint);
+  const centers = cityFocusCenters(preset);
+  const b = preset.searchBounds;
+  const innerS = b.south + MARGIN;
+  const innerN = b.north - MARGIN;
+  const innerW = b.west + MARGIN;
+  const innerE = b.east - MARGIN;
+
+  const out: PlacementTransform[] = [];
+  for (const center of centers) {
+    if (
+      center[0] < innerS ||
+      center[0] > innerN ||
+      center[1] < innerW ||
+      center[1] > innerE
+    ) {
+      continue;
+    }
+    for (const scale of scales) {
+      for (const rotationDeg of rotations) {
+        out.push({ center, scale, rotationDeg });
+      }
+    }
+  }
+  return out;
+}
+
+function routeLengthKm(coords: [number, number][]): number {
+  let meters = 0;
+  for (let i = 1; i < coords.length; i++) {
+    meters += haversineMeters(coords[i - 1]!, coords[i]!);
+  }
+  return meters / 1000;
+}
+
+function placementFromAnchors(
+  anchors: [number, number][],
+  rotationDeg: number,
+  scale: number,
+): PlacementTransform {
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+  for (const [lat, lng] of anchors) {
+    minLat = Math.min(minLat, lat);
+    maxLat = Math.max(maxLat, lat);
+    minLng = Math.min(minLng, lng);
+    maxLng = Math.max(maxLng, lng);
+  }
+  return {
+    center: [(minLat + maxLat) / 2, (minLng + maxLng) / 2],
+    rotationDeg,
+    scale,
+  };
+}
+
+function heartAnchorsFromMeters({
+  center,
+  widthMeters,
+  heightMeters,
+  rotationDeg,
+}: {
+  center: [number, number];
+  widthMeters: number;
+  heightMeters: number;
+  rotationDeg: number;
+}): [number, number][] {
+  const shape: [number, number][] = [
+    [0, -0.52],
+    [-0.46, -0.16],
+    [-0.5, 0.1],
+    [-0.36, 0.36],
+    [-0.15, 0.42],
+    [0, 0.2],
+    [0.15, 0.42],
+    [0.36, 0.36],
+    [0.5, 0.1],
+    [0.46, -0.16],
+    [0, -0.52],
+  ];
+  const lat0 = center[0];
+  const metersPerLat = 111_320;
+  const metersPerLng = metersPerLat * Math.cos((lat0 * Math.PI) / 180);
+  const rad = (rotationDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+
+  return shape.map(([nx, ny]) => {
+    const x = nx * widthMeters;
+    const y = ny * heightMeters;
+    const rx = x * cos - y * sin;
+    const ry = x * sin + y * cos;
+    return [center[0] + ry / metersPerLat, center[1] + rx / metersPerLng];
+  });
+}
+
+function manhattanDesignedHeartCandidates(
+  contour: ContourPoint[],
+  preset: CityPreset,
+  targetDistanceKm?: number,
+): ValidCandidate[] {
+  if (preset.id !== "manhattan" || !isHeartLikeContour(contour)) return [];
+
+  const recipes: {
+    anchors: [number, number][];
+    rotationDeg: number;
+    scale: number;
+    kind?: "reference-heart" | "designed-heart";
+  }[] = [
+    {
+      anchors: heartAnchorsFromMeters({
+        center: [40.762, -73.976],
+        widthMeters: 2300,
+        heightMeters: 3300,
+        rotationDeg: 0,
+      }),
+      rotationDeg: 0,
+      scale: 1.65,
+    },
+    {
+      anchors: heartAnchorsFromMeters({
+        center: [40.741, -73.986],
+        widthMeters: 2900,
+        heightMeters: 4300,
+        rotationDeg: 10,
+      }),
+      rotationDeg: 29,
+      scale: 2.2,
+    },
+    {
+      anchors: heartAnchorsFromMeters({
+        center: [40.724, -73.994],
+        widthMeters: 2100,
+        heightMeters: 3100,
+        rotationDeg: 16,
+      }),
+      rotationDeg: 29,
+      scale: 1.55,
+    },
+  ];
+
+  return recipes
+    .map((recipe) => {
+      const km = routeLengthKm(recipe.anchors);
+      return {
+        placement: placementFromAnchors(
+          recipe.anchors,
+          recipe.rotationDeg,
+          recipe.scale,
+        ),
+        anchors: recipe.anchors,
+        km,
+        kind: recipe.kind ?? ("designed-heart" as const),
+      };
+    })
+    .filter((candidate) => {
+      if (targetDistanceKm == null || !Number.isFinite(targetDistanceKm)) return true;
+      return (
+        candidate.km >= targetDistanceKm * 0.55 &&
+        candidate.km <= targetDistanceKm * 1.7
+      );
+    });
+}
+
 /**
  * Refine mode: dense local sweep around a user-placed anchor. 5×5 center grid
  * spanning ~±2 km, scales ±30% of the user's scale, rotations ±20° of the
@@ -319,6 +587,14 @@ type ValidCandidate = {
   placement: PlacementTransform;
   anchors: [number, number][];
   km: number;
+  designIntent?: string;
+  kind?:
+    | "generic"
+    | "city-focus"
+    | "city-heart"
+    | "designed-heart"
+    | "reference-heart"
+    | "vision-design";
 };
 
 function sanityFilter(
@@ -350,6 +626,51 @@ function sanityFilter(
   return { placement, anchors: anchorLatLngs, km: approxDistanceKm };
 }
 
+function designDraftCandidates(
+  drafts: VisionDesignDraft[],
+  preset: CityPreset,
+  hint: ShapeHint | null,
+  targetDistanceKm?: number,
+): ValidCandidate[] {
+  const out: ValidCandidate[] = [];
+  for (const draft of drafts) {
+    const placements = [
+      ...enumerateCityFocusPlacements(
+        draft.points,
+        preset,
+        hint,
+        targetDistanceKm,
+      ),
+      ...enumerateCandidates(
+        draft.points,
+        preset,
+        hint,
+        undefined,
+        targetDistanceKm,
+      ),
+    ];
+    const validForDraft: ValidCandidate[] = [];
+    for (const p of placements) {
+      const v = sanityFilter(draft.points, preset, p);
+      if (v) {
+        validForDraft.push({
+          ...v,
+          designIntent: `${draft.label}: ${draft.description}`,
+          kind: "vision-design",
+        });
+      }
+    }
+    out.push(
+      ...diverseSubsample(
+        validForDraft,
+        Math.min(8, validForDraft.length),
+        preset,
+      ),
+    );
+  }
+  return out;
+}
+
 /**
  * Greedy farthest-point sampling across (lat, lng, scale, rotation) so the
  * candidates we spend Mapbox calls on are spatially and parametrically diverse.
@@ -361,6 +682,7 @@ function diverseSubsample(
   count: number,
   preset: CityPreset,
 ): ValidCandidate[] {
+  if (count <= 0) return [];
   if (valid.length <= count) return valid;
   const b = preset.searchBounds;
   const latRange = b.north - b.south || 1;
@@ -413,20 +735,53 @@ function distanceBetween(a: number[], b: number[]): number {
   return Math.sqrt(s);
 }
 
+function polylineLengthKm(coords: [number, number][]): number {
+  let meters = 0;
+  for (let i = 1; i < coords.length; i++) {
+    meters += haversineMeters(coords[i - 1]!, coords[i]!);
+  }
+  return meters / 1000;
+}
+
+export function snappedRouteDistanceKm(route: RouteLineString): number | null {
+  const coords = (route.coordinates ?? []).filter(
+    (p): p is [number, number] =>
+      Array.isArray(p) &&
+      typeof p[0] === "number" &&
+      typeof p[1] === "number" &&
+      isValidLatLng([p[0], p[1]]),
+  );
+  if (coords.length < 2) return null;
+  if (
+    typeof route.distanceMeters === "number" &&
+    Number.isFinite(route.distanceMeters) &&
+    route.distanceMeters > 0
+  ) {
+    return route.distanceMeters / 1000;
+  }
+  const measured = polylineLengthKm(coords);
+  return measured > 0 ? measured : null;
+}
+
 async function snapOne(
   anchors: [number, number][],
   anchorSource: AnchorPathSource | undefined,
-): Promise<{ coords: [number, number][]; snappedKm: number } | null> {
+): Promise<{
+  coords: [number, number][];
+  snappedKm: number;
+  route: RouteLineString;
+} | null> {
   try {
-    const simplified = simplifyAnchorPathForSnap(anchors, {
-      sourceKind: anchorSource ?? "default",
+    if (anchors.length < 2) return null;
+    const route = await snapWalkingRoute(anchors, {
+      anchorSource,
+      startVariantCount: 4,
     });
-    if (simplified.length < 2) return null;
-    const route = await snapWalkingRoute(simplified, { anchorSource });
     const coords = route.coordinates as [number, number][];
     if (coords.length < 2) return null;
-    const snappedKm = (route.distanceMeters ?? 0) / 1000;
-    return { coords, snappedKm };
+    const snappedKm = snappedRouteDistanceKm(route);
+    if (snappedKm == null) return null;
+    return { coords, snappedKm, route };
   } catch {
     return null;
   }
@@ -434,10 +789,112 @@ async function snapOne(
 
 type SnappedCandidate = {
   placement: PlacementTransform;
+  anchors: [number, number][];
+  designIntent?: string;
   coords: [number, number][];
+  route: RouteLineString;
   /** Snapped walking distance in km (what Mapbox returned). */
   km: number;
+  /** 0-100, penalizes unnecessary reverse retracing and fussy short jogs. */
+  qualityScore: number;
+  /** 0-100, rewards snapped geometry that still follows the intended artwork. */
+  shapeMatchScore: number;
 };
+
+export type AutoFindPickSelectionCandidate = {
+  placement: PlacementTransform;
+  qualityScore: number;
+  shapeMatchScore: number;
+};
+
+export function scoreAutoPlacementCandidate(
+  qualityScore: number,
+  shapeMatchScore: number,
+): number {
+  const clean = Math.max(0, Math.min(100, qualityScore));
+  const shape = Math.max(0, Math.min(100, shapeMatchScore));
+  return shape * 0.58 + clean * 0.42;
+}
+
+function centerDistanceMeters(
+  a: PlacementTransform["center"],
+  b: PlacementTransform["center"],
+): number {
+  const latMid = ((a[0] + b[0]) / 2) * (Math.PI / 180);
+  const metersPerLat = 111_320;
+  const metersPerLng = 111_320 * Math.cos(latMid);
+  return Math.hypot((a[0] - b[0]) * metersPerLat, (a[1] - b[1]) * metersPerLng);
+}
+
+function rotationDiffDeg(a: number, b: number): number {
+  let d = Math.abs(a - b) % 180;
+  if (d > 90) d = 180 - d;
+  return d;
+}
+
+function placementDiversityScore(
+  a: PlacementTransform,
+  b: PlacementTransform,
+): number {
+  const center = Math.min(1, centerDistanceMeters(a.center, b.center) / 1200);
+  const scale = Math.min(
+    1,
+    Math.abs(Math.log(Math.max(0.01, a.scale) / Math.max(0.01, b.scale))) /
+      0.35,
+  );
+  const rotation = Math.min(1, rotationDiffDeg(a.rotationDeg, b.rotationDeg) / 35);
+  return center * 0.62 + scale * 0.23 + rotation * 0.15;
+}
+
+export function selectDiverseAutoFindPickIndices(
+  candidates: AutoFindPickSelectionCandidate[],
+  topK: number,
+  preferredOrder?: number[],
+): number[] {
+  const limit = Math.max(0, Math.floor(topK));
+  if (limit === 0 || candidates.length === 0) return [];
+
+  const preferredRank = new Map<number, number>();
+  for (const i of preferredOrder ?? []) {
+    if (!Number.isInteger(i) || i < 0 || i >= candidates.length) continue;
+    if (!preferredRank.has(i)) preferredRank.set(i, preferredRank.size);
+  }
+  const visionBonusMax = preferredRank.size > 0 ? 8 : 0;
+  const ordered = candidates
+    .map((c, i) => {
+      const score = scoreAutoPlacementCandidate(c.qualityScore, c.shapeMatchScore);
+      const rank = preferredRank.get(i);
+      const visionBonus =
+        rank == null
+          ? 0
+          : visionBonusMax *
+            (1 - rank / Math.max(1, preferredRank.size));
+      return { i, score: score + visionBonus };
+    })
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.i);
+
+  const picked: number[] = [];
+  const tooSimilar = (idx: number) =>
+    picked.some(
+      (p) =>
+        placementDiversityScore(
+          candidates[idx]!.placement,
+          candidates[p]!.placement,
+        ) < 0.35,
+    );
+
+  for (const i of ordered) {
+    if (picked.length >= limit) break;
+    if (picked.length === 0 || !tooSimilar(i)) picked.push(i);
+  }
+  for (const i of ordered) {
+    if (picked.length >= limit) break;
+    if (!picked.includes(i)) picked.push(i);
+  }
+
+  return picked;
+}
 
 /** Does the snapped route stray outside the city preset's search bounds?
  *  Anchors are pre-checked to be in-bounds, but Mapbox can detour far outside
@@ -483,10 +940,21 @@ async function parallelSnap(
           return null;
         }
 
+        const cleaned = cleanupRouteSpurs(r.route).route;
+        const cleanedCoords = cleaned.coordinates;
+        const cleanedKm = (cleaned.distanceMeters ?? r.snappedKm * 1000) / 1000;
         return {
           placement: c.placement,
-          coords: r.coords,
-          km: r.snappedKm,
+          anchors: c.anchors,
+          designIntent: c.designIntent,
+          coords: cleanedCoords,
+          route: cleaned,
+          km: cleanedKm,
+          qualityScore: routeQualityScore(cleanedCoords),
+          shapeMatchScore: interpretationMatchPercent(
+            c.anchors,
+            cleanedCoords,
+          ),
         } as SnappedCandidate;
       }),
     );
@@ -500,6 +968,11 @@ async function parallelSnap(
       `[autoFindTop5] dropped ${rejectedByRatio} snap-destroyed + ${rejectedByBounds} bounds-escaping candidates`,
     );
   }
+  out.sort(
+    (a, b) =>
+      scoreAutoPlacementCandidate(b.qualityScore, b.shapeMatchScore) -
+      scoreAutoPlacementCandidate(a.qualityScore, a.shapeMatchScore),
+  );
   return out;
 }
 
@@ -515,6 +988,107 @@ function parseImageBase64(imageBase64: string): ParsedImage {
     }
   }
   return { data: imageBase64, mediaType: "image/png" };
+}
+
+export type VisionDesignDraft = {
+  label: string;
+  description: string;
+  points: ContourPoint[];
+  designScore: number;
+};
+
+function validDesignPoint(v: unknown): ContourPoint | null {
+  if (!v || typeof v !== "object") return null;
+  const r = v as Record<string, unknown>;
+  if (
+    typeof r.x !== "number" ||
+    typeof r.y !== "number" ||
+    !Number.isFinite(r.x) ||
+    !Number.isFinite(r.y)
+  ) {
+    return null;
+  }
+  return {
+    x: Math.max(0, Math.min(1, r.x)),
+    y: Math.max(0, Math.min(1, r.y)),
+  };
+}
+
+export function cleanVisionDesignDrafts(raw: unknown): VisionDesignDraft[] {
+  if (!raw || typeof raw !== "object") return [];
+  const rec = raw as Record<string, unknown>;
+  const rawDrafts = Array.isArray(rec.drafts) ? rec.drafts : [rec];
+  const out: VisionDesignDraft[] = [];
+  for (const item of rawDrafts) {
+    if (!item || typeof item !== "object") continue;
+    const draft = item as Record<string, unknown>;
+    const points = Array.isArray(draft.points)
+      ? draft.points
+          .map(validDesignPoint)
+          .filter((p): p is ContourPoint => p != null)
+      : [];
+    if (points.length < 2) continue;
+    const review = reviewStreetDesignSketch(points);
+    if (!review.pass) {
+      console.log(
+        "[autoFindTop5] dropped weak design draft",
+        typeof draft.label === "string" ? draft.label : `AI draft ${out.length + 1}`,
+        review,
+      );
+      continue;
+    }
+    out.push({
+      label:
+        typeof draft.label === "string" && draft.label.trim()
+          ? draft.label.trim().slice(0, 40)
+          : `AI draft ${out.length + 1}`,
+      description:
+        typeof draft.description === "string" && draft.description.trim()
+          ? draft.description.trim().slice(0, 180)
+          : "Street-native GPS-art sketch.",
+      points,
+      designScore: review.score,
+    });
+    if (out.length >= 8) break;
+  }
+  return out.sort((a, b) => b.designScore - a.designScore);
+}
+
+async function getVisionDesignDrafts(
+  originalData: string,
+  originalMediaType: string,
+  cityLabel: string,
+): Promise<VisionDesignDraft[]> {
+  console.log("[autoFindTop5] requesting map-first design drafts...");
+  try {
+    const res = await fetch("/api/vision-design", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        imageBase64: originalData,
+        mediaType: originalMediaType,
+        cityLabel,
+        draftCount: 8,
+      }),
+    });
+    if (!res.ok) {
+      console.warn(
+        "[autoFindTop5] vision-design http",
+        res.status,
+        await res.text().catch(() => ""),
+      );
+      return [];
+    }
+    const drafts = cleanVisionDesignDrafts(await res.json());
+    console.log(
+      `[autoFindTop5] vision-design returned ${drafts.length} draft(s):`,
+      drafts.map((d) => `${d.label} (${d.designScore})`),
+    );
+    return drafts;
+  } catch (err) {
+    console.warn("[autoFindTop5] vision-design fetch failed:", err);
+    return [];
+  }
 }
 
 async function getVisionHint(
@@ -572,6 +1146,7 @@ async function visionRank(
   topK: number,
   userHistory: FinalizedRouteMemory[],
   cityLabel: string,
+  candidateNotes: string[],
 ): Promise<{ id: number; reason: string }[] | null> {
   console.log(
     `[autoFindTop5] calling vision-rank with count=${count}, topK=${topK}, gridB64=${gridRawBase64.length}ch, origB64=${originalData.length}ch, historyEntries=${userHistory.length}, city=${cityLabel}`,
@@ -587,6 +1162,7 @@ async function visionRank(
         count,
         topK,
         cityLabel,
+        candidateNotes,
         userHistory: userHistory.map((h) => ({
           center: h.center,
           rotationDeg: h.rotationDeg,
@@ -634,16 +1210,21 @@ function makePicks(
 ): Top5Pick[] {
   const indices =
     order != null
-      ? order.filter((i) => i >= 0 && i < snapped.length).slice(0, topK)
-      : snapped.slice(0, topK).map((_, i) => i);
+      ? selectDiverseAutoFindPickIndices(snapped, topK, order)
+      : selectDiverseAutoFindPickIndices(snapped, topK);
   const out: Top5Pick[] = [];
   for (const i of indices) {
     const s = snapped[i]!;
     out.push({
       placement: s.placement,
+      anchorLatLngs: s.anchors,
+      designIntent: s.designIntent,
       routeCoords: s.coords,
+      snappedRoute: s.route,
       previewDataUrl: pickPreviewUrl(s.coords),
       distanceKm: s.km,
+      qualityScore: s.qualityScore,
+      shapeMatchScore: s.shapeMatchScore,
       reason: reasons?.get(i),
     });
   }
@@ -672,7 +1253,37 @@ export async function autoFindTop5(
       preset.label,
     );
   }
+  const visionDesignDrafts =
+    parsedOrig && !options.anchorAround
+      ? await getVisionDesignDrafts(
+          parsedOrig.data,
+          parsedOrig.mediaType,
+          preset.label,
+        )
+      : [];
 
+  const designedCityRoutes = !options.anchorAround
+    ? manhattanDesignedHeartCandidates(
+        contour,
+        preset,
+        options.targetDistanceKm,
+      )
+    : [];
+  const cityFirstRaw = !options.anchorAround
+    ? enumerateCityFirstHeartPlacements(
+        contour,
+        preset,
+        options.targetDistanceKm,
+      )
+    : [];
+  const cityFocusRaw = !options.anchorAround
+    ? enumerateCityFocusPlacements(
+        contour,
+        preset,
+        hint,
+        options.targetDistanceKm,
+      )
+    : [];
   const raw = enumerateCandidates(
     contour,
     preset,
@@ -681,16 +1292,120 @@ export async function autoFindTop5(
     options.targetDistanceKm,
   );
 
-  const valid: ValidCandidate[] = [];
+  const validCityFirst: ValidCandidate[] = [];
+  for (const p of cityFirstRaw) {
+    const v = sanityFilter(contour, preset, p);
+    if (v) validCityFirst.push(v);
+  }
+
+  const validCityFocus: ValidCandidate[] = [];
+  for (const p of cityFocusRaw) {
+    const v = sanityFilter(contour, preset, p);
+    if (v) validCityFocus.push({ ...v, kind: "city-focus" });
+  }
+
+  const validGeneric: ValidCandidate[] = [];
   for (const p of raw) {
     const v = sanityFilter(contour, preset, p);
-    if (v) valid.push(v);
+    if (v) validGeneric.push(v);
   }
+  const validVisionDesign = !options.anchorAround
+    ? designDraftCandidates(
+        visionDesignDrafts,
+        preset,
+        hint,
+        options.targetDistanceKm,
+      )
+    : [];
+  const valid = [
+    ...validVisionDesign,
+    ...designedCityRoutes,
+    ...validCityFirst,
+    ...validCityFocus,
+    ...validGeneric,
+  ];
   if (valid.length === 0) {
     return { picks: [], visionUsed: false, hint: hint ?? undefined };
   }
 
-  const subset = diverseSubsample(valid, snapCount, preset);
+  const visionDesignBudget =
+    validVisionDesign.length > 0
+      ? Math.min(18, Math.ceil(snapCount * 0.5))
+      : 0;
+  const visionDesignSubset =
+    visionDesignBudget > 0
+      ? diverseSubsample(validVisionDesign, visionDesignBudget, preset)
+      : [];
+  const designedBudget =
+    designedCityRoutes.length > 0
+      ? Math.min(
+          4,
+          Math.max(
+            0,
+            Math.ceil((snapCount - visionDesignSubset.length) * 0.25),
+          ),
+        )
+      : 0;
+  const designedSubset =
+    designedBudget > 0
+      ? diverseSubsample(designedCityRoutes, designedBudget, preset)
+      : [];
+  const cityFirstBudget =
+    validCityFirst.length > 0
+      ? Math.min(
+          12,
+          Math.max(
+            0,
+            Math.ceil(
+              (snapCount - visionDesignSubset.length - designedSubset.length) *
+                0.6,
+            ),
+          ),
+        )
+      : 0;
+  const cityFirstSubset =
+    cityFirstBudget > 0
+      ? diverseSubsample(validCityFirst, cityFirstBudget, preset)
+      : [];
+  const cityFocusBudget =
+    validCityFocus.length > 0
+      ? Math.min(
+          12,
+          Math.max(
+            0,
+            Math.ceil(
+              (snapCount -
+                visionDesignSubset.length -
+                designedSubset.length -
+                cityFirstSubset.length) *
+                0.5,
+            ),
+          ),
+        )
+      : 0;
+  const cityFocusSubset =
+    cityFocusBudget > 0
+      ? diverseSubsample(validCityFocus, cityFocusBudget, preset)
+      : [];
+  const genericSubset = diverseSubsample(
+    validGeneric,
+    Math.max(
+      0,
+      snapCount -
+        visionDesignSubset.length -
+        designedSubset.length -
+        cityFirstSubset.length -
+        cityFocusSubset.length,
+    ),
+    preset,
+  );
+  const subset = [
+    ...visionDesignSubset,
+    ...designedSubset,
+    ...cityFirstSubset,
+    ...cityFocusSubset,
+    ...genericSubset,
+  ];
   const snapped = await parallelSnap(subset, options.anchorSource, preset);
   if (snapped.length === 0) {
     return { picks: [], visionUsed: false, hint: hint ?? undefined };
@@ -736,6 +1451,7 @@ export async function autoFindTop5(
     topK,
     userHistory,
     preset.label,
+    snapped.map((s) => s.designIntent ?? ""),
   );
 
   if (!ranked || ranked.length === 0) {

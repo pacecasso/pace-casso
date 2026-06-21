@@ -38,12 +38,14 @@ function FitCombinedBounds({
 export type Step5PreviewMapProps = {
   routeLine: LatLng[];
   originalArt: LatLng[];
+  originalArtConnectorSegments?: [LatLng, LatLng][];
   showOriginalArt: boolean;
 };
 
 export default function Step5PreviewMap({
   routeLine,
   originalArt,
+  originalArtConnectorSegments = [],
   showOriginalArt,
 }: Step5PreviewMapProps) {
   const center: LatLng =
@@ -69,17 +71,33 @@ export default function Step5PreviewMap({
       />
       <TileLayer attribution={OSM_TILE_ATTRIBUTION} url={OSM_TILE_URL} />
       {showOriginalArt && originalArt.length > 1 && (
-        <Polyline
-          positions={originalArt as LatLngExpression[]}
-          pathOptions={{
-            color: "#059669",
-            weight: 4,
-            opacity: 0.88,
-            dashArray: "10 6",
-            lineCap: "round",
-            lineJoin: "round",
-          }}
-        />
+        <>
+          <Polyline
+            positions={originalArt as LatLngExpression[]}
+            pathOptions={{
+              color: "#059669",
+              weight: 4,
+              opacity: 0.88,
+              dashArray: "10 6",
+              lineCap: "round",
+              lineJoin: "round",
+            }}
+          />
+          {originalArtConnectorSegments.map((segment, idx) => (
+            <Polyline
+              key={`art-connector-${idx}`}
+              positions={segment as LatLngExpression[]}
+              pathOptions={{
+                color: "#ffb800",
+                weight: 7,
+                opacity: 0.96,
+                dashArray: "10 8",
+                lineCap: "round",
+                lineJoin: "round",
+              }}
+            />
+          ))}
+        </>
       )}
       {routeLine.length > 1 && (
         <Polyline

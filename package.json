@@ -10,8 +10,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test:unit": "npx --yes tsx lib/outAndBackSpurHints.test.ts && npx --yes tsx lib/inkMaskUnionEnclosed.test.ts && npx --yes tsx lib/contourRingStitch.test.ts && npx --yes tsx lib/mooreBoundaryFromMask.test.ts && npx --yes tsx lib/centerlineFromMask.test.ts && npx --yes tsx lib/simplifyPolylineToBendWaypoints.test.ts && npx --yes tsx lib/simplifyAnchorPathForSnap.test.ts && npx --yes tsx lib/shapeMatchScore.test.ts && npx --yes tsx lib/autoFindPlacement.test.ts && npx --yes tsx lib/lineMaskHealth.test.ts && npx --yes tsx lib/filledSilhouetteToLineArtMask.test.ts",
-    "test:e2e": "playwright test"
+    "test:unit": "jiti lib/outAndBackSpurHints.test.ts && jiti lib/inkMaskUnionEnclosed.test.ts && jiti lib/contourRingStitch.test.ts && jiti lib/mooreBoundaryFromMask.test.ts && jiti lib/centerlineFromMask.test.ts && jiti lib/oneLineArtPath.test.ts && jiti lib/oneLinePathAnalysis.test.ts && jiti lib/artPathMask.test.ts && jiti lib/artPathInterpretation.test.ts && jiti lib/extractNormalizedContourFromLineMask.test.ts && jiti lib/placementFromContour.test.ts && jiti lib/createDraftStorage.test.ts && jiti lib/finalizedRouteMemory.test.ts && jiti lib/routeDirection.test.ts && jiti lib/simplifyPolylineToBendWaypoints.test.ts && jiti lib/simplifyAnchorPathForSnap.test.ts && jiti lib/shapeMatchScore.test.ts && jiti lib/routeQuality.test.ts && jiti lib/routeSpurCleanup.test.ts && jiti lib/routeStartVariants.test.ts && jiti lib/preferredSnappedRoute.test.ts && jiti lib/routeExport.test.ts && jiti lib/otsuThreshold.test.ts && jiti lib/streetDesignSketch.test.ts && jiti lib/autoFindPlacement.test.ts && jiti lib/autoFindTop5.test.ts && jiti lib/snapReadiness.test.ts && jiti lib/lineMaskHealth.test.ts && jiti lib/filledSilhouetteToLineArtMask.test.ts",
+    "test:e2e": "node scripts/run-e2e.cjs"
   },
   "keywords": [],
   "author": "",
@@ -40,6 +40,7 @@
     "autoprefixer": "^10.4.27",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.2",
+    "jiti": "^2.6.1",
     "postcss": "^8.5.8",
     "tailwindcss": "^4.2.2",
     "typescript": "^6.0.2"

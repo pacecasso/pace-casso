@@ -565,7 +565,10 @@ export async function snapMatchPercentForPlacement(
       sourceKind: anchorSource ?? "default",
     });
     if (anchors.length < 2) return null;
-    const route = await snapWalkingRoute(anchors, { anchorSource });
+    const route = await snapWalkingRoute(anchors, {
+      anchorSource,
+      startVariantCount: 2,
+    });
     const coords = route.coordinates as [number, number][];
     if (coords.length < 2) return null;
     return interpretationMatchPercent(anchors, coords);

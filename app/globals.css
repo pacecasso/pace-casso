@@ -46,7 +46,11 @@
   --pace-orange: var(--yellow);
   --pace-red: #dc2626;
 
-  /* Font stacks (Anton / Bebas / Marker from next/font on <html>; body = DM Sans) */
+  /* Local-safe font tokens. These can be swapped for vendored font files later. */
+  --font-anton: Impact;
+  --font-bebas: "Arial Narrow";
+  --font-marker: "Segoe Print";
+  --font-dm-sans: system-ui;
   --font-display: var(--font-anton), "Anton", Impact, sans-serif;
   --font-label: var(--font-bebas), "Bebas Neue", sans-serif;
   --font-accent: var(--font-marker), "Permanent Marker", cursive;
@@ -72,6 +76,7 @@ body {
 body {
   background-color: var(--bg-warm);
   color: var(--ink);
+  font-family: var(--font-body);
   font-size: 16px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -202,8 +207,8 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  height: calc(100dvh - var(--pace-create-chrome-height));
-  max-height: calc(100dvh - var(--pace-create-chrome-height));
+  height: 100%;
+  max-height: 100%;
 }
 
 @media (min-width: 1024px) {

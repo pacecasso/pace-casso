@@ -2,11 +2,31 @@ import * as turf from "@turf/turf";
 
 type Waypoint = [number, number];
 
+function isValidWaypoint(v: unknown): v is Waypoint {
+  return (
+    Array.isArray(v) &&
+    typeof v[0] === "number" &&
+    Number.isFinite(v[0]) &&
+    v[0] >= -90 &&
+    v[0] <= 90 &&
+    typeof v[1] === "number" &&
+    Number.isFinite(v[1]) &&
+    v[1] >= -180 &&
+    v[1] <= 180
+  );
+}
+
+function validWaypoints(pts: Waypoint[]): Waypoint[] {
+  return pts.filter(isValidWaypoint);
+}
+
 /** Bilateral mean distance (meters) between two polylines (anchor↔route). */
 export function meanBidirectionalErrorMeters(
   anchor: Waypoint[],
   route: Waypoint[],
 ): number | null {
+  anchor = validWaypoints(anchor);
+  route = validWaypoints(route);
   if (anchor.length < 2 || route.length < 2) return null;
   try {
     const ls = turf.lineString(
@@ -117,6 +137,8 @@ export function interpretationMatchPercent(
   anchor: Waypoint[],
   route: Waypoint[],
 ): number {
+  anchor = validWaypoints(anchor);
+  route = validWaypoints(route);
   const m0 = meanBidirectionalErrorMeters(anchor, route);
   if (m0 == null) return 0;
 

@@ -13,6 +13,8 @@
  * long enough to sample the geometry, then remove the host.
  */
 
+import { joinPolylinesAsOneLine, type XY } from "./oneLineArtPath";
+
 export type SvgContourPoint = { x: number; y: number };
 
 export type SvgExtractionResult = {
@@ -179,35 +181,40 @@ function sampleAllGeometry(svg: SVGSVGElement): SampledRing[] {
 }
 
 /**
- * Compute a single normalized contour. Strategy: pick the longest ring as
- * the primary silhouette. Logos usually have one dominant path + some
- * ornamentation (registered marks, inner details); running the dominant path
- * produces a cleaner street-grid read than an all-paths union.
- *
- * Coordinates normalize into [0, 1]² using the bounding box of the PRIMARY
- * ring, so the contour fills the available space when placed.
+ * Compute one normalized route path from meaningful SVG geometry. Tiny marks
+ * are skipped, but separate letters and logo parts stay in the drawing via
+ * short connector strokes.
  */
 function normalizeAndPickPrimary(rings: SampledRing[]): SvgContourPoint[] {
   const sorted = [...rings].sort((a, b) => b.length - a.length);
-  const primary = sorted[0].pts;
+  const primaryLength = sorted[0]?.length ?? 0;
+  const included = sorted
+    .filter((r) => r.length >= Math.max(2, primaryLength * 0.08))
+    .slice(0, 12);
+  const source = included.length ? included : sorted.slice(0, 1);
 
   let minX = Infinity;
   let maxX = -Infinity;
   let minY = Infinity;
   let maxY = -Infinity;
-  for (const p of primary) {
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.y > maxY) maxY = p.y;
+  for (const ring of source) {
+    for (const p of ring.pts) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
   }
   const w = Math.max(1e-6, maxX - minX);
   const h = Math.max(1e-6, maxY - minY);
 
-  let contour: SvgContourPoint[] = primary.map((p) => ({
-    x: (p.x - minX) / w,
-    y: (p.y - minY) / h,
-  }));
+  const normalizedPaths: XY[][] = source.map((ring) =>
+    ring.pts.map((p) => [(p.x - minX) / w, (p.y - minY) / h]),
+  );
+  let contour = joinPolylinesAsOneLine(normalizedPaths, {
+    closedLoopThreshold: 0.01,
+    duplicateThreshold: 1e-5,
+  }).map(([x, y]) => ({ x, y }));
 
   if (contour.length > TARGET_POINTS) {
     contour = downsampleContour(contour, TARGET_POINTS);

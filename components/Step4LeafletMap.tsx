@@ -94,6 +94,7 @@ export type Step4LeafletMapProps = {
   /** Merged path through current waypoints — bold “active” route. */
   activeRouteLine: Waypoint[];
   originalArt: Waypoint[];
+  originalArtConnectorSegments?: [Waypoint, Waypoint][];
   showOriginalArt: boolean;
   legPolylines: Waypoint[][];
   /** Indices of legs currently rendered as straight-line fallbacks. Drawn with
@@ -119,6 +120,7 @@ export default function Step4LeafletMap({
   showFaintFullStreet,
   activeRouteLine,
   originalArt,
+  originalArtConnectorSegments = [],
   showOriginalArt,
   legPolylines,
   spurLegIndices,
@@ -202,18 +204,35 @@ export default function Step4LeafletMap({
       />
       <TileLayer attribution={OSM_TILE_ATTRIBUTION} url={OSM_TILE_URL} />
       {showOriginalArt && originalArt.length > 1 && (
-        <Polyline
-          positions={originalArt as LatLngExpression[]}
-          pathOptions={{
-            color: "#059669",
-            weight: 5,
-            opacity: 0.92,
-            dashArray: "10 6",
-            lineCap: "round",
-            lineJoin: "round",
-            interactive: false,
-          }}
-        />
+        <>
+          <Polyline
+            positions={originalArt as LatLngExpression[]}
+            pathOptions={{
+              color: "#059669",
+              weight: 5,
+              opacity: 0.92,
+              dashArray: "10 6",
+              lineCap: "round",
+              lineJoin: "round",
+              interactive: false,
+            }}
+          />
+          {originalArtConnectorSegments.map((segment, idx) => (
+            <Polyline
+              key={`art-connector-${idx}`}
+              positions={segment as LatLngExpression[]}
+              pathOptions={{
+                color: "#ffb800",
+                weight: 7,
+                opacity: 0.96,
+                dashArray: "10 8",
+                lineCap: "round",
+                lineJoin: "round",
+                interactive: false,
+              }}
+            />
+          ))}
+        </>
       )}
       {showFaintFullStreet && streetLine.length > 1 && (
         <Polyline

@@ -7,6 +7,9 @@
 const INK = 200;
 /** 8-neighborhood closing iterations: bridges white gaps of a few pixels. */
 const GAP_CLOSE_ITERS = 3;
+const DEFAULT_MAX_COMPONENTS = 8;
+const DEFAULT_MIN_COMPONENT_PIXELS = 12;
+const DEFAULT_MIN_COMPONENT_RATIO = 0.035;
 
 function isInk(v: number): boolean {
   return v > INK;
@@ -64,6 +67,55 @@ function largestComponentOfBinary(
     if (labels[i] === bestLabel) out[i] = 1;
   }
   return out;
+}
+
+function sortedComponentsOfBinary(
+  bin: Uint8Array,
+  w: number,
+  h: number,
+): { mask: Uint8Array; count: number }[] {
+  const labels = new Int32Array(w * h);
+  let next = 0;
+  const counts: number[] = [0];
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (bin[i] === 0 || labels[i] !== 0) continue;
+      next++;
+      let cnt = 0;
+      const stack: number[] = [i];
+      while (stack.length) {
+        const j = stack.pop()!;
+        if (labels[j] !== 0) continue;
+        if (bin[j] === 0) continue;
+        labels[j] = next;
+        cnt++;
+        const jx = j % w;
+        const jy = (j / w) | 0;
+        if (jx > 0) stack.push(j - 1);
+        if (jx < w - 1) stack.push(j + 1);
+        if (jy > 0) stack.push(j - w);
+        if (jy < h - 1) stack.push(j + w);
+      }
+      counts[next] = cnt;
+    }
+  }
+
+  const entries: { label: number; count: number }[] = [];
+  for (let label = 1; label < counts.length; label++) {
+    const count = counts[label] ?? 0;
+    if (count > 0) entries.push({ label, count });
+  }
+  entries.sort((a, b) => b.count - a.count);
+
+  return entries.map(({ label, count }) => {
+    const mask = new Uint8Array(w * h);
+    for (let i = 0; i < labels.length; i++) {
+      if (labels[i] === label) mask[i] = 1;
+    }
+    return { mask, count };
+  });
 }
 
 const DX8 = [0, 1, 1, 1, 0, -1, -1, -1];
@@ -150,6 +202,32 @@ export function prepareTracedBinaryMask(
   }
   const closed = morphClose8(raw, w, h, gapCloseIterations);
   return largestComponentOfBinary(closed, w, h);
+}
+
+export function prepareTracedBinaryComponents(
+  lineMask: Uint8Array,
+  w: number,
+  h: number,
+  gapCloseIterations = GAP_CLOSE_ITERS,
+  maxComponents = DEFAULT_MAX_COMPONENTS,
+): Uint8Array[] {
+  const raw = new Uint8Array(w * h);
+  for (let i = 0; i < lineMask.length; i++) {
+    raw[i] = isInk(lineMask[i]) ? 1 : 0;
+  }
+  const closed = morphClose8(raw, w, h, gapCloseIterations);
+  const components = sortedComponentsOfBinary(closed, w, h);
+  const largest = components[0]?.count ?? 0;
+  if (largest <= 0) return [];
+
+  return components
+    .filter(
+      (c) =>
+        c.count >= DEFAULT_MIN_COMPONENT_PIXELS &&
+        c.count / largest >= DEFAULT_MIN_COMPONENT_RATIO,
+    )
+    .slice(0, maxComponents)
+    .map((c) => c.mask);
 }
 
 function zhangSuenNeighbors(
@@ -594,4 +672,14 @@ export function centerlinePolylineFromLineMask(
   const comp = prepareTracedBinaryMask(lineMask, w, h);
   if (!comp) return null;
   return centerlinePolylineFromPreparedBinary(comp, w, h);
+}
+
+export function centerlinePolylinesFromLineMask(
+  lineMask: Uint8Array,
+  w: number,
+  h: number,
+): [number, number][][] {
+  return prepareTracedBinaryComponents(lineMask, w, h)
+    .map((comp) => centerlinePolylineFromPreparedBinary(comp, w, h))
+    .filter((path): path is [number, number][] => !!path && path.length >= 2);
 }

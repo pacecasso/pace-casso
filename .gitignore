@@ -21,3 +21,6 @@ playwright/.cache
 /*.jfif
 /*.webp
 /*.gif
+
+# Local GPS-art proof experiments / generated route previews
+/tmp-heart-qa/

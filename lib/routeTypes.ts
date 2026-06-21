@@ -3,4 +3,6 @@ export type RouteLineString = {
   coordinates: [number, number][];
   distanceMeters?: number;
   blockWaypoints?: [number, number][];
+  /** Preserve explicit blockWaypoints when reopening in the route editor. */
+  preserveBlockWaypoints?: boolean;
 };

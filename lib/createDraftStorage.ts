@@ -9,6 +9,8 @@ export type AnchorLocationDraft = {
   center: [number, number];
   rotationDeg: number;
   scale: number;
+  connectorSegmentIndices?: number[];
+  preferredSnappedRoute?: RouteLineString;
 };
 
 export type CreateDraftV1 = {
@@ -53,6 +55,37 @@ function isValidRouteCoords(coords: unknown): coords is [number, number][] {
   return Array.isArray(coords) && coords.length >= 2 && coords.every(isValidLatLng);
 }
 
+function sanitizeDistanceMeters(value: unknown): number | undefined {
+  return isFiniteNum(value) && value >= 0 ? value : undefined;
+}
+
+function sanitizeRoute(value: unknown): RouteLineString | null {
+  if (!value || typeof value !== "object") return null;
+  const route = value as Partial<RouteLineString>;
+  if (!isValidRouteCoords(route.coordinates)) return null;
+  return {
+    coordinates: route.coordinates,
+    distanceMeters: sanitizeDistanceMeters(route.distanceMeters),
+    blockWaypoints: isValidRouteCoords(route.blockWaypoints)
+      ? route.blockWaypoints
+      : undefined,
+    preserveBlockWaypoints:
+      route.preserveBlockWaypoints === true ? true : undefined,
+  };
+}
+
+function validConnectorSegmentIndices(
+  value: unknown,
+  anchorCount: number,
+): number[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const max = Math.max(0, anchorCount - 2);
+  const out = value
+    .filter((v): v is number => Number.isInteger(v) && v >= 0 && v <= max)
+    .slice(0, 64);
+  return out.length ? [...new Set(out)].sort((a, b) => a - b) : undefined;
+}
+
 export function loadCreateDraft(): CreateDraftV1 | null {
   if (typeof window === "undefined") return null;
   try {
@@ -94,26 +127,19 @@ export function loadCreateDraft(): CreateDraftV1 | null {
         if (!isValidRouteCoords(al.anchorLatLngs)) return null;
         if (!isValidLatLng(al.center)) return null;
         if (!isFiniteNum(al.rotationDeg) || !isFiniteNum(al.scale)) return null;
-        return al;
+        return {
+          ...al,
+          connectorSegmentIndices: validConnectorSegmentIndices(
+            al.connectorSegmentIndices,
+            al.anchorLatLngs.length,
+          ),
+          preferredSnappedRoute:
+            sanitizeRoute(al.preferredSnappedRoute) ?? undefined,
+        };
       })(),
-      snappedRoute:
-        d.snappedRoute &&
-        typeof d.snappedRoute === "object" &&
-        isValidRouteCoords(d.snappedRoute.coordinates)
-          ? d.snappedRoute
-          : null,
-      editedRoute:
-        d.editedRoute &&
-        typeof d.editedRoute === "object" &&
-        isValidRouteCoords(d.editedRoute.coordinates)
-          ? d.editedRoute
-          : null,
-      finalRoute:
-        d.finalRoute &&
-        typeof d.finalRoute === "object" &&
-        isValidRouteCoords(d.finalRoute.coordinates)
-          ? d.finalRoute
-          : null,
+      snappedRoute: sanitizeRoute(d.snappedRoute),
+      editedRoute: sanitizeRoute(d.editedRoute),
+      finalRoute: sanitizeRoute(d.finalRoute),
       uploadedImageBase64:
         typeof d.uploadedImageBase64 === "string" &&
         d.uploadedImageBase64.startsWith("data:image/") &&
@@ -127,27 +153,58 @@ export function loadCreateDraft(): CreateDraftV1 | null {
 }
 
 export function reconcileDraft(d: CreateDraftV1): CreateDraftV1 {
-  let { currentStep, sourceKind, contourCoordinates, anchorLocation, snappedRoute } =
-    { ...d };
+  let {
+    currentStep,
+    sourceKind,
+    contourCoordinates,
+    anchorLocation,
+    snappedRoute,
+    editedRoute,
+    finalRoute,
+    uploadedImageBase64,
+  } = { ...d };
+
+  if (sourceKind == null) {
+    if (currentStep >= 2) currentStep = 1;
+    contourCoordinates = null;
+    anchorLocation = null;
+    snappedRoute = null;
+    editedRoute = null;
+    finalRoute = null;
+    uploadedImageBase64 = null;
+  }
 
   if (sourceKind === "image") {
     if (currentStep >= 3 && (!contourCoordinates || contourCoordinates.length < 2)) {
       currentStep = Math.min(currentStep, 2);
+      anchorLocation = null;
+      snappedRoute = null;
+      editedRoute = null;
+      finalRoute = null;
     }
     if (currentStep >= 4 && !anchorLocation) {
       currentStep = 3;
+      snappedRoute = null;
+      editedRoute = null;
+      finalRoute = null;
     }
   }
   if (sourceKind === "freehand") {
     if (currentStep >= 4 && !anchorLocation) {
       currentStep = 2;
+      snappedRoute = null;
+      editedRoute = null;
+      finalRoute = null;
     }
   }
   if (currentStep >= 5 && !snappedRoute) {
     currentStep = 4;
+    editedRoute = null;
+    finalRoute = null;
   }
   if (currentStep >= 6 && !d.finalRoute && !d.editedRoute) {
     currentStep = 5;
+    finalRoute = null;
   }
 
   return {
@@ -156,6 +213,9 @@ export function reconcileDraft(d: CreateDraftV1): CreateDraftV1 {
     contourCoordinates,
     anchorLocation,
     snappedRoute,
+    editedRoute,
+    finalRoute,
+    uploadedImageBase64,
   };
 }
 

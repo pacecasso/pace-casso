@@ -41,6 +41,7 @@ function buildPrompt(
   topK: number,
   userHistory: UserHistoryEntry[],
   cityLabel: string,
+  candidateNotes: string[],
 ): string {
   const historyBlock =
     userHistory.length > 0
@@ -56,6 +57,12 @@ ${userHistory
       : "";
 
   const city = cityLabel || "the selected city";
+  const notesBlock =
+    candidateNotes.length > 0
+      ? `\n\nSome candidates were generated from AI route-design sketches before being placed on streets. These notes describe the intended simplification for each numbered tile. Use them only as context; do not reward a candidate if the visible route does not actually read that way:\n${candidateNotes
+          .map((note, i) => `${i + 1}. ${note || "no design note"}`)
+          .join("\n")}`
+      : "";
 
   return `You are seeing two images:
 1. A grid of ${count} candidate GPS walking routes, numbered 1–${count} in the top-left of each tile. Each tile shows the route drawn in red on a real map of **${city}** — you can see streets (light gray), water (pale blue), and parks (pale green) underneath.
@@ -67,7 +74,7 @@ Rank by TWO things, in this priority order:
 
 A) **Geographic plausibility in ${city}** — the route must sit on walkable streets **in ${city}**. IMMEDIATELY disqualify any candidate whose red line crosses water, sits mostly in a park or cemetery, hugs a shoreline in a way that doesn't match the subject, cuts across non-walkable infrastructure (rail yards, freeways, bridges-as-shortcuts), or has long straight segments jumping across non-street areas. A route that fails here should not appear in your top ${topK}, no matter how good the shape is.
 
-B) **Shape recognizability** — among the geographically valid candidates, pick the ones where a person would most likely recognize the reference subject. Focus on gestalt: silhouette, proportions, distinctive features, correct orientation (not upside-down or mirrored in a way that breaks the subject). A shape that reads clearly against ${city}'s particular grid character is worth more than one that is geometrically closer to the reference but fights the street layout.${historyBlock}
+B) **Shape recognizability** — among the geographically valid candidates, pick the ones where a person would most likely recognize the reference subject. Focus on gestalt: silhouette, proportions, distinctive features, correct orientation (not upside-down or mirrored in a way that breaks the subject). A route may be a symbolic simplification of the image, not a literal trace. A shape that reads clearly against ${city}'s particular grid character is worth more than one that is geometrically closer to the reference but fights the street layout.${notesBlock}${historyBlock}
 
 Return ONLY a JSON array of exactly ${topK} objects ordered best-first:
 [{"id": N, "reason": "short phrase"}]
@@ -95,6 +102,7 @@ export async function POST(req: Request) {
     topK?: unknown;
     userHistory?: unknown;
     cityLabel?: unknown;
+    candidateNotes?: unknown;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -125,6 +133,11 @@ export async function POST(req: Request) {
     typeof body.cityLabel === "string" && body.cityLabel.trim().length > 0
       ? body.cityLabel.trim().slice(0, 80)
       : "";
+  const candidateNotes = Array.isArray(body.candidateNotes)
+    ? body.candidateNotes
+        .map((v) => (typeof v === "string" ? v.trim().slice(0, 160) : ""))
+        .slice(0, count)
+    : [];
 
   // User's previously-finalized placements, if any. Validated loosely —
   // anything malformed is just dropped and the prompt proceeds without history.
@@ -198,7 +211,13 @@ export async function POST(req: Request) {
             },
             {
               type: "text",
-              text: buildPrompt(count, topK, userHistory, cityLabel),
+              text: buildPrompt(
+                count,
+                topK,
+                userHistory,
+                cityLabel,
+                candidateNotes,
+              ),
             },
           ],
         },
@@ -290,3 +309,5 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: msg }, { status: 502 });
   }
 }
+
+

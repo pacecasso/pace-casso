@@ -8,7 +8,13 @@ import {
   interpretationMatchPercent,
   shapeAccuracyPercent,
 } from "../lib/shapeMatchScore";
+import { routeQualityScore } from "../lib/routeQuality";
+import { classifySnapReadiness } from "../lib/snapReadiness";
 import { snapWalkingRoute } from "../lib/snapWalkingRoute";
+import { preferredSnappedRouteFitsAnchor } from "../lib/preferredSnappedRoute";
+import { safeRouteDistanceMeters } from "../lib/routeExport";
+import { connectorSegmentPairs } from "../lib/oneLinePathAnalysis";
+import { cleanupRouteSpurs } from "../lib/routeSpurCleanup";
 import { useLeafletContainerId } from "../lib/useLeafletContainerId";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
 import MapChunkFallback from "./MapChunkFallback";
@@ -68,10 +74,19 @@ export default function Step3StreetSnap({
   const leafletId = useLeafletContainerId();
 
   const center = anchorLocation?.center ?? [40.7831, -73.9712];
+  const preferredSnappedRoute = anchorLocation?.preferredSnappedRoute;
 
   const originalPolyline: LatLngExpression[] =
     anchorLocation?.anchorLatLngs || [];
   const snappedPolyline: LatLngExpression[] = route?.coordinates || [];
+  const originalConnectorSegments = useMemo(
+    () =>
+      connectorSegmentPairs(
+        anchorLocation?.anchorLatLngs ?? [],
+        anchorLocation?.connectorSegmentIndices ?? [],
+      ),
+    [anchorLocation?.anchorLatLngs, anchorLocation?.connectorSegmentIndices],
+  );
 
   useEffect(() => {
     if (!anchorLocation?.anchorLatLngs?.length) return;
@@ -92,6 +107,18 @@ export default function Step3StreetSnap({
 
       try {
         if (!anchorLocation) throw new Error("Missing anchor.");
+        if (
+          retryToken === 0 &&
+          preferredSnappedRoute &&
+          preferredSnappedRouteFitsAnchor(
+            anchorLocation.anchorLatLngs,
+            preferredSnappedRoute,
+          )
+        ) {
+          setRoute(cleanupRouteSpurs(preferredSnappedRoute).route);
+          return;
+        }
+        setRoute(null);
         const coords = anchorLocation.anchorLatLngs;
         if (coords.length < 2) {
           throw new Error("Not enough points to snap to streets.");
@@ -99,9 +126,10 @@ export default function Step3StreetSnap({
 
         const snappedRoute = await snapWalkingRoute(coords, {
           anchorSource: routeSource,
+          startVariantCount: 4,
         });
         if (cancelled || ac.signal.aborted) return;
-        setRoute(snappedRoute);
+        setRoute(cleanupRouteSpurs(snappedRoute).route);
       } catch (err: unknown) {
         if (cancelled || ac.signal.aborted) return;
         console.error(err);
@@ -110,17 +138,12 @@ export default function Step3StreetSnap({
         if (!cancelled && !ac.signal.aborted) setSnapping(false);
       }
     }
-  }, [anchorLocation, retryToken, routeSource]);
+  }, [anchorLocation, preferredSnappedRoute, retryToken, routeSource]);
 
-  const distanceKm = route?.distanceMeters
-    ? route.distanceMeters / 1000
-    : undefined;
-  const walkMinutes = route?.distanceMeters
-    ? (route.distanceMeters / 1000 / 5) * 60
-    : undefined;
-  const runMinutes = route?.distanceMeters
-    ? (route.distanceMeters / 1000 / 10) * 60
-    : undefined;
+  const safeDistance = route ? safeRouteDistanceMeters(route) : null;
+  const distanceKm = safeDistance != null ? safeDistance / 1000 : undefined;
+  const walkMinutes = distanceKm != null ? (distanceKm / 5) * 60 : undefined;
+  const runMinutes = distanceKm != null ? (distanceKm / 10) * 60 : undefined;
 
   const outlineForMatch = useMemo((): [number, number][] => {
     const pts = anchorLocation?.anchorLatLngs;
@@ -143,6 +166,21 @@ export default function Step3StreetSnap({
     if (outlineForMatch.length < 2 || streetForMatch.length < 2) return null;
     return shapeAccuracyPercent(outlineForMatch, streetForMatch);
   }, [outlineForMatch, streetForMatch]);
+  const cleanLineScore = useMemo(() => {
+    if (streetForMatch.length < 2) return null;
+    return routeQualityScore(streetForMatch);
+  }, [streetForMatch]);
+
+  const snapVerdict = useMemo(
+    () =>
+      classifySnapReadiness({
+        hasRoute: !!route && streetForMatch.length >= 2,
+        cleanLineScore,
+        interpretationScore: interpretationPct,
+        routeSource,
+      }),
+    [cleanLineScore, interpretationPct, route, routeSource, streetForMatch.length],
+  );
 
   const matchMeterLabel =
     routeSource === "freehand"
@@ -171,6 +209,55 @@ export default function Step3StreetSnap({
           </div>
 
           <div className="mt-4 border-t border-pace-line pt-4">
+            <div
+              className={`mb-3 flex items-start gap-2 rounded-md border-2 px-3 py-2 text-[11px] leading-snug ${
+                snapVerdict.tone === "ready"
+                  ? "border-emerald-500/70 bg-emerald-50 text-emerald-900"
+                  : snapVerdict.tone === "check"
+                    ? "border-amber-400 bg-amber-50 text-amber-900"
+                    : "border-red-400 bg-red-50 text-red-900"
+              }`}
+              role="status"
+              aria-live="polite"
+            >
+              <span
+                aria-hidden
+                className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white ${
+                  snapVerdict.tone === "ready"
+                    ? "bg-emerald-500"
+                    : snapVerdict.tone === "check"
+                      ? "bg-amber-500"
+                      : "bg-red-500"
+                }`}
+              >
+                {snapVerdict.tone === "ready"
+                  ? "OK"
+                  : snapVerdict.tone === "check"
+                    ? "!"
+                    : "X"}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span
+                  className={`block font-bebas tracking-[0.12em] ${
+                    snapVerdict.tone === "ready"
+                      ? "text-emerald-800"
+                      : snapVerdict.tone === "check"
+                        ? "text-amber-800"
+                        : "text-red-800"
+                  }`}
+                >
+                  {snapVerdict.tone === "ready"
+                    ? "READY TO TUNE"
+                    : snapVerdict.tone === "check"
+                      ? "CHECK THIS"
+                      : "NOT YET"}
+                  <span className="ml-2 font-dm text-[11px] font-normal normal-case tracking-normal opacity-80">
+                    {snapVerdict.title}
+                  </span>
+                </span>
+                <span className="mt-0.5 block font-dm">{snapVerdict.detail}</span>
+              </span>
+            </div>
             <ShapeMatchMeter
               label={matchMeterLabel}
               percent={interpretationPct}
@@ -180,9 +267,24 @@ export default function Step3StreetSnap({
               secondaryLabel="Tight fit"
               secondaryTitle={tightTitle}
             />
+            <div className="mt-3">
+              <ShapeMatchMeter
+                label="Clean line"
+                percent={cleanLineScore}
+                pendingText={snapping ? "..." : "-"}
+                title="Penalizes unnecessary retracing and tiny corrective jogs."
+              />
+            </div>
           </div>
 
           <div className="mt-4 space-y-3 border-t border-pace-line pt-4 font-dm text-xs text-pace-ink">
+            {routeSource === "image" && originalConnectorSegments.length > 0 ? (
+              <p className="rounded-md border border-pace-yellow bg-pace-yellow/10 px-2.5 py-2 text-[11px] leading-snug text-pace-ink">
+                Yellow dashed segments are connector strokes from the one-line
+                artwork. They are part of the intended drawing, not a snapping
+                error.
+              </p>
+            ) : null}
             {snapping ? (
               <p className="text-[11px] font-medium text-pace-blue">
                 Snapping your route to walkable streets—usually a few seconds.
@@ -282,14 +384,28 @@ export default function Step3StreetSnap({
             <TileLayer attribution={OSM_TILE_ATTRIBUTION} url={OSM_TILE_URL} />
 
             {routeSource === "image" && originalPolyline.length > 0 && (
-              <Polyline
-                positions={originalPolyline}
-                pathOptions={{
-                  color: "#065f46",
-                  weight: 4,
-                  opacity: 0.9,
-                }}
-              />
+              <>
+                <Polyline
+                  positions={originalPolyline}
+                  pathOptions={{
+                    color: "#065f46",
+                    weight: 4,
+                    opacity: 0.9,
+                  }}
+                />
+                {originalConnectorSegments.map((segment, idx) => (
+                  <Polyline
+                    key={`art-connector-${idx}`}
+                    positions={segment}
+                    pathOptions={{
+                      color: "#ffb800",
+                      weight: 7,
+                      opacity: 0.96,
+                      dashArray: "10 8",
+                    }}
+                  />
+                ))}
+              </>
             )}
             {snappedPolyline.length > 0 && (
               <Polyline

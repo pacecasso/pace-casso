@@ -22,6 +22,25 @@ const same = a.map(([la, ln]) => [la, ln] as [number, number]);
 }
 
 /** Slightly jittered route along same corridor — interpretation should not collapse vs tight fit */
+{
+  const impossible: [number, number][] = [
+    [120, -73.99],
+    [121, -73.98],
+  ];
+  assert.strictEqual(meanBidirectionalErrorMeters(impossible, same), null);
+  assert.strictEqual(shapeAccuracyPercent(impossible, same), 0);
+  assert.strictEqual(interpretationMatchPercent(impossible, same), 0);
+}
+
+{
+  const sparseAfterSanitize: [number, number][] = [
+    [40.75, -73.99],
+    [Number.NaN, -73.98],
+  ];
+  assert.strictEqual(meanBidirectionalErrorMeters(sparseAfterSanitize, same), null);
+  assert.strictEqual(interpretationMatchPercent(sparseAfterSanitize, same), 0);
+}
+
 const b: [number, number][] = [
   [40.7501, -73.9902],
   [40.759, -73.9895],

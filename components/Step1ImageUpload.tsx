@@ -11,12 +11,20 @@ import {
 import { filledSilhouetteToLineArtMask } from "../lib/filledSilhouetteToLineArtMask";
 import { fillLineMaskPrimaryPlusEnclosedHoles } from "../lib/inkMaskUnionEnclosed";
 import { extractNormalizedContourFromLineMask } from "../lib/extractNormalizedContourFromLineMask";
+import { rasterizeNormalizedPathToLineMask } from "../lib/artPathMask";
 import { describeLineMaskHealth } from "../lib/lineMaskHealth";
+import { analyzeOneLinePath } from "../lib/oneLinePathAnalysis";
+import {
+  buildArtPathInterpretations,
+  type ArtPathInterpretation,
+} from "../lib/artPathInterpretation";
+import { otsuInkThreshold } from "../lib/otsuThreshold";
 import type { PhotoContourWorkerResponse } from "../lib/photoContourWorkerMessages";
 import {
   looksLikeSvgFile,
   svgFileToContourAndPreview,
 } from "../lib/svgToContour";
+import { reviewStreetDesignSketch } from "../lib/streetDesignSketch";
 
 export type NormalizedPoint = { x: number; y: number };
 
@@ -35,6 +43,7 @@ const PHOTO_BLUR_SIGMA = 1.0;
 type UploadedImage = {
   url: string;
   file: File;
+  seq: number;
 };
 
 type Step1ImageUploadProps = {
@@ -43,6 +52,8 @@ type Step1ImageUploadProps = {
     normalizedContour: NormalizedPoint[],
     imageBase64: string | null,
   ) => void;
+  /** Selected city name, used by the AI designer sketch prompt. */
+  cityLabel?: string;
   /** Back to source picker (image vs freehand). */
   onBack?: () => void;
 };
@@ -95,9 +106,11 @@ async function imageFileToSizedDataUrl(
 }
 
 type Tool = "draw" | "erase";
+type FastTraceMode = "svg" | "alpha" | null;
 
 /** Same hex as contour stroke; line-art raster uses these RGB values (no drift). */
 const CONTOUR_STROKE = "#404040";
+const CONNECTOR_STROKE = "#ffb800";
 const OUTLINE_RGB = (() => {
   const h = CONTOUR_STROKE.slice(1);
   return {
@@ -336,6 +349,7 @@ function buildPhotoComponents(
 
 export default function Step1ImageUpload({
   onComplete,
+  cityLabel,
   onBack,
 }: Step1ImageUploadProps) {
   const traceFileInputId = useId();
@@ -351,6 +365,12 @@ export default function Step1ImageUpload({
   const [normalizedContour, setNormalizedContour] = useState<
     NormalizedPoint[] | null
   >(null);
+  const [selectedInterpretationId, setSelectedInterpretationId] =
+    useState<ArtPathInterpretation["id"]>("trace");
+  const [designerSketch, setDesignerSketch] =
+    useState<ArtPathInterpretation | null>(null);
+  const [designerBusy, setDesignerBusy] = useState(false);
+  const [designerError, setDesignerError] = useState<string | null>(null);
   const [undoCount, setUndoCount] = useState(0);
   /** Bumps when line mask bytes change so contour preview can refresh. */
   const [lineMaskVersion, setLineMaskVersion] = useState(0);
@@ -366,6 +386,7 @@ export default function Step1ImageUpload({
    */
   const [alphaBusy, setAlphaBusy] = useState(false);
   const [alphaError, setAlphaError] = useState<string | null>(null);
+  const [fastTraceMode, setFastTraceMode] = useState<FastTraceMode>(null);
   const [contourComputing, setContourComputing] = useState(false);
   const imageCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lineArtCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -382,7 +403,13 @@ export default function Step1ImageUpload({
   const workerRef = useRef<Worker | null>(null);
   const contourReqIdRef = useRef(0);
   const workerInFlightRef = useRef(0);
+  const uploadSeqRef = useRef(0);
   const applyContourRef = useRef<(pts: NormalizedPoint[] | null) => void>(() => {});
+  const pendingFastTraceRef = useRef<{
+    file: File;
+    mode: Exclude<FastTraceMode, null>;
+    points: NormalizedPoint[];
+  } | null>(null);
 
   const bumpLineMaskVersion = useCallback(() => {
     setLineMaskVersion((v) => v + 1);
@@ -459,6 +486,25 @@ export default function Step1ImageUpload({
       Math.hypot((a.x - b.x) * BOX_SIZE, (a.y - b.y) * BOX_SIZE) < 3.5;
     if (close) ctx.closePath();
     ctx.stroke();
+
+    const analysis = analyzeOneLinePath(points);
+    if (analysis.connectorSegmentIndices.length) {
+      ctx.save();
+      ctx.strokeStyle = CONNECTOR_STROKE;
+      ctx.lineWidth = 4;
+      ctx.lineCap = "round";
+      ctx.setLineDash([8, 5]);
+      for (const idx of analysis.connectorSegmentIndices) {
+        const a = points[idx];
+        const b = points[idx + 1];
+        if (!a || !b) continue;
+        ctx.beginPath();
+        ctx.moveTo(a.x * BOX_SIZE, a.y * BOX_SIZE);
+        ctx.lineTo(b.x * BOX_SIZE, b.y * BOX_SIZE);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }, []);
 
   const drawContourPlaceholder = useCallback(() => {
@@ -484,6 +530,110 @@ export default function Step1ImageUpload({
     applyContourRef.current = applyContourToCanvas;
   }, [applyContourToCanvas]);
 
+  const interpretations = useMemo(
+    () => {
+      const base = buildArtPathInterpretations(normalizedContour);
+      return designerSketch ? [...base, designerSketch] : base;
+    },
+    [designerSketch, normalizedContour],
+  );
+  const selectedInterpretation = useMemo(() => {
+    if (!interpretations.length) return null;
+    return (
+      interpretations.find((v) => v.id === selectedInterpretationId) ??
+      interpretations.find((v) => v.id === "iconic-heart") ??
+      interpretations.find((v) => v.id === "trace") ??
+      interpretations.find((v) => v.id === "bold") ??
+      interpretations.find((v) => v.id === "grid") ??
+      interpretations[0]!
+    );
+  }, [interpretations, selectedInterpretationId]);
+  const selectedContour = selectedInterpretation?.points ?? normalizedContour;
+
+  const generateDesignerSketch = useCallback(async () => {
+    if (!uploadedImage || designerBusy) return;
+    setDesignerBusy(true);
+    setDesignerError(null);
+    try {
+      const imageBase64 = await imageFileToSizedDataUrl(uploadedImage.file);
+      const res = await fetch("/api/vision-design", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageBase64,
+          cityLabel,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Designer sketch failed (${res.status})`);
+      }
+      const json = (await res.json()) as {
+        label?: unknown;
+        description?: unknown;
+        points?: unknown;
+      };
+      const points = Array.isArray(json.points)
+        ? json.points
+            .filter(
+              (p): p is NormalizedPoint =>
+                !!p &&
+                typeof p === "object" &&
+                typeof (p as NormalizedPoint).x === "number" &&
+                typeof (p as NormalizedPoint).y === "number" &&
+                Number.isFinite((p as NormalizedPoint).x) &&
+                Number.isFinite((p as NormalizedPoint).y),
+            )
+            .map((p) => ({
+              x: Math.max(0, Math.min(1, p.x)),
+              y: Math.max(0, Math.min(1, p.y)),
+            }))
+        : [];
+      if (points.length < 2) {
+        throw new Error("Designer sketch did not return enough points.");
+      }
+      const review = reviewStreetDesignSketch(points);
+      if (!review.pass) {
+        throw new Error(
+          "Designer sketch was too detailed for city streets. Try the normal trace or generate again.",
+        );
+      }
+      const next: ArtPathInterpretation = {
+        id: "ai-sketch",
+        label:
+          typeof json.label === "string" && json.label.trim()
+            ? json.label.trim().slice(0, 28)
+            : "AI sketch",
+        description:
+          typeof json.description === "string" && json.description.trim()
+            ? json.description.trim()
+            : "Simplified one-line GPS-art sketch.",
+        points,
+      };
+      setDesignerSketch(next);
+      setSelectedInterpretationId("ai-sketch");
+      requestAnimationFrame(() => applyContourToCanvas(next.points));
+    } catch (err) {
+      console.warn("[Step1] designer sketch failed:", err);
+      setDesignerError(
+        err instanceof Error
+          ? err.message
+          : "Couldn\u2019t create designer sketch.",
+      );
+    } finally {
+      setDesignerBusy(false);
+    }
+  }, [applyContourToCanvas, cityLabel, designerBusy, uploadedImage]);
+
+  useEffect(() => {
+    if (!selectedInterpretation && normalizedContour) {
+      applyContourToCanvas(normalizedContour);
+      return;
+    }
+    if (!selectedInterpretation) return;
+    requestAnimationFrame(() => applyContourToCanvas(selectedInterpretation.points));
+  }, [applyContourToCanvas, normalizedContour, selectedInterpretation]);
+
   const refreshContourFromMask = useCallback(
     (level: number) => {
       void lineMaskVersion;
@@ -494,6 +644,8 @@ export default function Step1ImageUpload({
       setContourHint(health.hint);
 
       const id = ++contourReqIdRef.current;
+      setNormalizedContour(null);
+      requestAnimationFrame(() => applyContourToCanvas(null));
       const copy = new Uint8Array(mask);
       const buf = copy.buffer.slice(
         copy.byteOffset,
@@ -527,6 +679,45 @@ export default function Step1ImageUpload({
       }
     },
     [lineMaskVersion, applyContourToCanvas],
+  );
+
+  const showFastTraceForReview = useCallback(
+    (
+      points: NormalizedPoint[],
+      mode: Exclude<FastTraceMode, null>,
+      file?: File,
+    ) => {
+      if (file) {
+        pendingFastTraceRef.current = { file, mode, points };
+      }
+      contourReqIdRef.current++;
+      workerInFlightRef.current = 0;
+      setContourComputing(false);
+
+      const mask = rasterizeNormalizedPathToLineMask(points, BOX_SIZE, 2);
+      lineMaskRef.current = mask;
+      lineArtDirtyRef.current = true;
+      setFastTraceMode(mode);
+      setImageReady(true);
+      setContourBuilt(true);
+      setContourLevel(DEFAULT_CONTOUR_LEVEL);
+      setNormalizedContour(points);
+      setContourHint(
+        mode === "svg"
+          ? "SVG trace ready. Edit the line art if any bridge or detail feels wrong."
+          : "Transparent PNG trace ready. Edit the line art if any bridge or detail feels wrong.",
+      );
+      replaceLineUndoWithCurrent();
+      requestAnimationFrame(() => {
+        drawLineMaskToCanvas();
+        applyContourToCanvas(points);
+      });
+    },
+    [
+      applyContourToCanvas,
+      drawLineMaskToCanvas,
+      replaceLineUndoWithCurrent,
+    ],
   );
 
   useEffect(() => {
@@ -586,11 +777,39 @@ export default function Step1ImageUpload({
     drawContourPlaceholder();
   }, [drawContourPlaceholder]);
 
+  const invalidateCurrentTrace = useCallback(() => {
+    pendingFastTraceRef.current = null;
+    contourReqIdRef.current++;
+    workerInFlightRef.current = 0;
+    lineArtDirtyRef.current = false;
+    paintingRef.current = false;
+    strokeDirtyRef.current = false;
+    lineUndoStackRef.current = [];
+    lineUndoIndexRef.current = -1;
+    setUndoCount(0);
+    setFastTraceMode(null);
+    setSvgError(null);
+    setAlphaError(null);
+    setDesignerSketch(null);
+    setDesignerError(null);
+    setDesignerBusy(false);
+    setSvgBusy(false);
+    setAlphaBusy(false);
+    setSelectedInterpretationId("trace");
+    setNormalizedContour(null);
+    setContourHint(null);
+    setContourBuilt(false);
+    setContourComputing(false);
+    setImageReady(false);
+    requestAnimationFrame(() => drawContourPlaceholder());
+  }, [drawContourPlaceholder]);
+
   useEffect(() => {
     if (!uploadedImage) return;
 
     const img = new Image();
     img.onload = () => {
+      if (uploadSeqRef.current !== uploadedImage.seq) return;
       const imageCanvas = imageCanvasRef.current;
       if (!imageCanvas) return;
       const imageCtx = imageCanvas.getContext("2d");
@@ -619,10 +838,10 @@ export default function Step1ImageUpload({
       /**
        * Alpha-channel fast-path. For transparent-background PNGs (typical
        * corporate logo), the alpha channel already IS the foreground mask —
-       * no color, no threshold, no user fiddling. If we can extract a clean
-       * contour from alpha, short-circuit to Step 2 the same way the SVG
-       * path does. Fallback is the usual luminance pipeline, so opaque
-       * uploads and JPEGs are unaffected.
+       * no color and no threshold fiddling. If we can extract a clean
+       * contour from alpha, show it as editable line art so the user can
+       * approve bridges/detail before placement. Fallback is the usual
+       * luminance pipeline, so opaque uploads and JPEGs are unaffected.
        */
       const alphaFrac = transparentPixelFraction(hiData.data);
       if (alphaFrac > 0.1) {
@@ -655,15 +874,15 @@ export default function Step1ImageUpload({
               BOX_SIZE,
             );
             if (!contour || contour.length < 4) throw new Error("contour too short");
-            let b64: string | null = null;
-            try {
-              b64 = await imageFileToSizedDataUrl(uploadedImage.file);
-            } catch {
-              b64 = null;
-            }
-            onComplete(contour as NormalizedPoint[], b64);
+            if (uploadSeqRef.current !== uploadedImage.seq) return;
+            showFastTraceForReview(
+              contour as NormalizedPoint[],
+              "alpha",
+              uploadedImage.file,
+            );
             return;
           } catch (err) {
+            if (uploadSeqRef.current !== uploadedImage.seq) return;
             console.warn(
               "[Step1] alpha fast-path failed; falling back to threshold",
               err,
@@ -672,7 +891,9 @@ export default function Step1ImageUpload({
               "Couldn't extract from alpha channel. Use the threshold slider + brush to refine.",
             );
           } finally {
-            setAlphaBusy(false);
+            if (uploadSeqRef.current === uploadedImage.seq) {
+              setAlphaBusy(false);
+            }
           }
         })();
         // The async branch either short-circuits (onComplete) or falls
@@ -682,8 +903,14 @@ export default function Step1ImageUpload({
       }
 
       const lum = buildLuminanceMinPool2x2(hiData, LUM_SAMPLE_PX);
-      luminanceRef.current = gaussianBlurFloat32(lum, BOX_SIZE, BOX_SIZE, PHOTO_BLUR_SIGMA);
-      setThreshold(0.5);
+      const blurredLum = gaussianBlurFloat32(
+        lum,
+        BOX_SIZE,
+        BOX_SIZE,
+        PHOTO_BLUR_SIGMA,
+      );
+      luminanceRef.current = blurredLum;
+      setThreshold(otsuInkThreshold(blurredLum));
 
       imageCtx.imageSmoothingEnabled = false;
       const scale = Math.min(BOX_SIZE / iw, BOX_SIZE / ih);
@@ -700,10 +927,16 @@ export default function Step1ImageUpload({
       setContourHint(null);
       setContourBuilt(false);
       setContourLevel(DEFAULT_CONTOUR_LEVEL);
+      setFastTraceMode(null);
       setImageReady(true);
 
       requestAnimationFrame(() => {
+        if (uploadSeqRef.current !== uploadedImage.seq) return;
         drawContourPlaceholder();
+        const pending = pendingFastTraceRef.current;
+        if (pending?.file === uploadedImage.file) {
+          showFastTraceForReview(pending.points, pending.mode, pending.file);
+        }
       });
     };
     img.src = uploadedImage.url;
@@ -766,6 +999,8 @@ export default function Step1ImageUpload({
   }
 
   function handleStartOver() {
+    pendingFastTraceRef.current = null;
+    setFastTraceMode(null);
     setNormalizedContour(null);
     setContourHint(null);
     setContourBuilt(false);
@@ -866,6 +1101,9 @@ export default function Step1ImageUpload({
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    const uploadSeq = uploadSeqRef.current + 1;
+    uploadSeqRef.current = uploadSeq;
+    invalidateCurrentTrace();
 
     /**
      * Fast path for SVG uploads — corporate logos are typically available as
@@ -874,13 +1112,16 @@ export default function Step1ImageUpload({
      * Falls back to the raster pipeline if parsing / sampling fails.
      */
     if (looksLikeSvgFile(file)) {
+      const url = URL.createObjectURL(file);
+      setUploadedImage({ url, file, seq: uploadSeq });
       setSvgBusy(true);
       setSvgError(null);
       void (async () => {
         try {
           const result = await svgFileToContourAndPreview(file);
+          if (uploadSeqRef.current !== uploadSeq) return;
           if (result && result.contour.length >= 4) {
-            onComplete(result.contour, result.imageBase64);
+            showFastTraceForReview(result.contour, "svg", file);
             return;
           }
           console.warn(
@@ -890,24 +1131,22 @@ export default function Step1ImageUpload({
             "Couldn't read that SVG cleanly. Falling back to the trace tool.",
           );
         } catch (err) {
+          if (uploadSeqRef.current !== uploadSeq) return;
           console.warn("[Step1] SVG extraction failed:", err);
           setSvgError(
             "Couldn't read that SVG. Falling back to the trace tool.",
           );
         } finally {
-          setSvgBusy(false);
+          if (uploadSeqRef.current === uploadSeq) {
+            setSvgBusy(false);
+          }
         }
-        // Fallback: treat as raster (browser renders SVG to the canvas fine)
-        const url = URL.createObjectURL(file);
-        setImageReady(false);
-        setUploadedImage({ url, file });
       })();
       return;
     }
 
     const url = URL.createObjectURL(file);
-    setImageReady(false);
-    setUploadedImage({ url, file });
+    setUploadedImage({ url, file, seq: uploadSeq });
   };
 
   const canUndoLine = undoCount > 0;
@@ -918,6 +1157,11 @@ export default function Step1ImageUpload({
     () => lineArtCursorCss(tool, brushRadius),
     [tool, brushRadius],
   );
+  const oneLineAnalysis = useMemo(
+    () => analyzeOneLinePath(selectedContour),
+    [selectedContour],
+  );
+  const canContinue = imageReady && !!selectedContour && !contourComputing;
 
   const columnTitleClass =
     "mb-0.5 flex w-full flex-col items-center justify-center text-center";
@@ -936,7 +1180,7 @@ export default function Step1ImageUpload({
         Your photo is traced in the browser—we don’t upload the image to our
         servers.{" "}
         <strong className="text-pace-ink">Got an SVG or a transparent PNG?</strong>{" "}
-        Upload it and we&apos;ll skip the threshold + brush entirely.{" "}
+        Upload it and we&apos;ll build the trace first so you can review it.{" "}
         <span className="whitespace-nowrap">Photo threshold</span>{" "}
         rebuilds a <strong className="text-pace-ink">stroke outline</strong>{" "}
         (not a solid fill) when you have not drawn yet; use{" "}
@@ -971,6 +1215,17 @@ export default function Step1ImageUpload({
           role="status"
         >
           {svgError || alphaError}
+        </div>
+      ) : null}
+
+      {fastTraceMode && imageReady && contourBuilt ? (
+        <div
+          className="mb-2 rounded-md border border-pace-yellow/60 bg-pace-yellow/10 px-3 py-2 text-[11px] leading-snug text-pace-ink"
+          role="status"
+        >
+          {fastTraceMode === "svg"
+            ? "SVG trace is ready to review. Use draw or erase if a bridge or detail needs cleanup, then continue."
+            : "Transparent PNG trace is ready to review. Use draw or erase if a bridge or detail needs cleanup, then continue."}
         </div>
       ) : null}
 
@@ -1136,11 +1391,77 @@ export default function Step1ImageUpload({
               ) : null}
               {imageReady && contourBuilt ? (
                 <p className="mt-2 max-w-[min(100vw-1rem,280px)] rounded border-l-2 border-pace-blue bg-pace-blue/5 px-2 py-1.5 text-center font-dm text-[11px] leading-snug text-pace-ink sm:text-[11px]">
-                  <strong>Tip:</strong> a route is one continuous line. Inner
-                  holes (like the eye of an R) are auto-bridged. If your image
-                  has two separate pieces, use the <strong>Draw</strong> tool
-                  to sketch a thin connector between them.
+                  {oneLineAnalysis.connectorCount > 0 ? (
+                    <>
+                      <strong>Yellow</strong> marks{" "}
+                      {oneLineAnalysis.connectorCount} connector{" "}
+                      {oneLineAnalysis.connectorCount === 1 ? "stroke" : "strokes"}.
+                      Keep them if the route still reads, or edit the line art
+                      and tap <strong>Done</strong> again.
+                    </>
+                  ) : (
+                    <>
+                      This reads as one clean{" "}
+                      {oneLineAnalysis.isClosed ? "closed" : "open"} line.
+                    </>
+                  )}
                 </p>
+              ) : null}
+              {interpretations.length > 1 ? (
+                <div className="mt-2 flex w-full max-w-[min(100vw-1rem,280px)] flex-col gap-1.5 rounded border border-pace-line bg-pace-white px-2 py-2 text-left">
+                  <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
+                    Interpretation
+                  </span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {interpretations.map((variant) => {
+                      const selected = selectedInterpretation?.id === variant.id;
+                      return (
+                        <button
+                          key={variant.id}
+                          type="button"
+                          onClick={() => setSelectedInterpretationId(variant.id)}
+                          className={`rounded border px-2 py-1.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow ${
+                            selected
+                              ? "border-pace-yellow bg-pace-yellow/15 text-pace-ink"
+                              : "border-pace-line bg-pace-panel text-pace-muted hover:border-pace-yellow/60 hover:text-pace-ink"
+                          }`}
+                          title={variant.description}
+                        >
+                          <span className="block font-bebas text-[11px] tracking-[0.08em]">
+                            {variant.label}
+                          </span>
+                          <span className="block truncate font-dm text-[10px] leading-tight">
+                            {variant.points.length} pts
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {uploadedImage ? (
+                    <button
+                      type="button"
+                      onClick={generateDesignerSketch}
+                      disabled={designerBusy}
+                      className="rounded border border-pace-blue/40 bg-pace-blue/5 px-2 py-1.5 text-left font-dm text-[10px] leading-tight text-pace-ink transition hover:border-pace-blue disabled:opacity-50"
+                    >
+                      {designerBusy
+                        ? "Designing GPS-art sketch..."
+                        : designerSketch
+                          ? "Regenerate AI sketch"
+                          : "Create AI sketch"}
+                    </button>
+                  ) : null}
+                  {designerError ? (
+                    <span className="font-dm text-[10px] leading-snug text-red-600">
+                      {designerError}
+                    </span>
+                  ) : null}
+                  {selectedInterpretation ? (
+                    <span className="font-dm text-[10px] leading-snug text-pace-muted">
+                      {selectedInterpretation.description}
+                    </span>
+                  ) : null}
+                </div>
               ) : null}
             </div>
           </div>
@@ -1189,9 +1510,9 @@ export default function Step1ImageUpload({
                 </button>
                 <button
                   type="button"
-                  disabled={!normalizedContour}
+                  disabled={!canContinue}
                   onClick={async () => {
-                    if (!normalizedContour) return;
+                    if (!canContinue || !selectedContour) return;
                     let b64: string | null = null;
                     if (uploadedImage) {
                       try {
@@ -1201,7 +1522,7 @@ export default function Step1ImageUpload({
                         b64 = null;
                       }
                     }
-                    onComplete(normalizedContour, b64);
+                    onComplete(selectedContour, b64);
                   }}
                   className="pace-toolbar-btn-primary px-4 py-2"
                 >

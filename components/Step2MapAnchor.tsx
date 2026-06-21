@@ -12,6 +12,10 @@ import {
 import { MANHATTAN_PRESET, type CityPreset } from "../lib/cityPresets";
 import { buildAnchorLatLngsFromContour } from "../lib/placementFromContour";
 import {
+  analyzeOneLinePath,
+  connectorSegmentPairs,
+} from "../lib/oneLinePathAnalysis";
+import {
   estimateSeconds,
   formatDistance,
   formatDuration,
@@ -19,6 +23,7 @@ import {
 } from "../lib/runnerProfile";
 import { OSM_TILE_ATTRIBUTION, OSM_TILE_URL } from "../lib/mapAttribution";
 import { useLeafletContainerId } from "../lib/useLeafletContainerId";
+import type { RouteLineString } from "../lib/routeTypes";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
 import MapChunkFallback from "./MapChunkFallback";
 import MapStepSplitLayout from "./MapStepSplitLayout";
@@ -57,6 +62,8 @@ type Step2MapAnchorProps = {
     center: [number, number];
     rotationDeg: number;
     scale: number;
+    connectorSegmentIndices?: number[];
+    preferredSnappedRoute?: RouteLineString;
   }) => void;
 };
 
@@ -80,13 +87,32 @@ export default function Step2MapAnchor({
   const [picksVisionUsed, setPicksVisionUsed] = useState(false);
   const [picksHint, setPicksHint] = useState<ShapeHint | null>(null);
   const [selectedPickIdx, setSelectedPickIdx] = useState<number | null>(null);
+  const [preferredSnappedRoute, setPreferredSnappedRoute] =
+    useState<RouteLineString | null>(null);
+  const [selectedAnchorLatLngs, setSelectedAnchorLatLngs] = useState<
+    [number, number][] | null
+  >(null);
   const [runnerProfile] = useRunnerProfile();
+
+  const clearSelectedCandidateRoute = useCallback(() => {
+    setSelectedPickIdx(null);
+    setPreferredSnappedRoute(null);
+    setSelectedAnchorLatLngs(null);
+  }, []);
+
+  const routeFromPick = useCallback((pick: Top5Pick) => {
+    return pick.snappedRoute;
+  }, []);
 
   const runAutoFind = useCallback(
     async (mode: "full" | "refine") => {
       setAutoBusy(true);
       const modeLabel =
-        mode === "refine" ? "Refining around your placement" : "Searching placements";
+        mode === "refine"
+          ? "Refining around your placement"
+          : imageBase64
+            ? "Designing map-first drafts, then searching placements"
+            : "Searching placements";
       setAutoHint(
         imageBase64
           ? `${modeLabel} — PaceCasso AI will rank the top 5…`
@@ -94,6 +120,8 @@ export default function Step2MapAnchor({
       );
       setPicks([]);
       setSelectedPickIdx(null);
+      setPreferredSnappedRoute(null);
+      setSelectedAnchorLatLngs(null);
       try {
         const r = await autoFindTop5(contour, cityPreset, {
           anchorSource: "image",
@@ -118,9 +146,11 @@ export default function Step2MapAnchor({
         // Auto-apply the #1 pick so the map updates immediately; user can tap others.
         const first = r.picks[0]!;
         setCenter([...first.placement.center] as [number, number]);
-        setRotationDeg(Math.round(first.placement.rotationDeg));
-        setScale(Math.round(first.placement.scale * 10) / 10);
+        setRotationDeg(first.placement.rotationDeg);
+        setScale(first.placement.scale);
         setSelectedPickIdx(0);
+        setPreferredSnappedRoute(routeFromPick(first));
+        setSelectedAnchorLatLngs(first.anchorLatLngs ?? null);
         const modeNoun = mode === "refine" ? "refinements" : "options";
         setAutoHint(
           r.visionUsed
@@ -135,19 +165,32 @@ export default function Step2MapAnchor({
         setAutoBusy(false);
       }
     },
-    [contour, cityPreset, imageBase64, center, rotationDeg, scale, targetDistanceKm],
+    [
+      contour,
+      cityPreset,
+      imageBase64,
+      center,
+      rotationDeg,
+      scale,
+      targetDistanceKm,
+      routeFromPick,
+    ],
   );
 
   const applyPick = useCallback((pick: Top5Pick, idx: number) => {
     setCenter([...pick.placement.center] as [number, number]);
-    setRotationDeg(Math.round(pick.placement.rotationDeg));
-    setScale(Math.round(pick.placement.scale * 10) / 10);
+    setRotationDeg(pick.placement.rotationDeg);
+    setScale(pick.placement.scale);
     setSelectedPickIdx(idx);
-  }, []);
+    setPreferredSnappedRoute(routeFromPick(pick));
+    setSelectedAnchorLatLngs(pick.anchorLatLngs ?? null);
+  }, [routeFromPick]);
 
   const clearPicks = useCallback(() => {
     setPicks([]);
     setSelectedPickIdx(null);
+    setPreferredSnappedRoute(null);
+    setSelectedAnchorLatLngs(null);
     setPicksHint(null);
     setAutoHint(null);
   }, []);
@@ -164,15 +207,45 @@ export default function Step2MapAnchor({
     });
   }, []);
 
-  const { anchorLatLngs, approxDistanceKm } = useMemo(() => {
+  const placedContour = useMemo(() => {
     return buildAnchorLatLngsFromContour(contour, {
       center,
       rotationDeg,
       scale,
     });
   }, [contour, center, rotationDeg, scale]);
+  const anchorLatLngs = selectedAnchorLatLngs ?? placedContour.anchorLatLngs;
+  const approxDistanceKm = selectedAnchorLatLngs
+    ? selectedAnchorLatLngs.reduce((sum, p, idx) => {
+        const prev = selectedAnchorLatLngs[idx - 1];
+        if (!prev) return sum;
+        const latMid = ((prev[0] + p[0]) / 2) * (Math.PI / 180);
+        const metersPerLat = 111_320;
+        const metersPerLng = 111_320 * Math.cos(latMid);
+        return (
+          sum +
+          Math.hypot(
+            (p[0] - prev[0]) * metersPerLat,
+            (p[1] - prev[1]) * metersPerLng,
+          ) /
+            1000
+        );
+      }, 0)
+    : placedContour.approxDistanceKm;
 
   const leafletPolyline: LatLngExpression[] = anchorLatLngs;
+  const oneLineAnalysis = useMemo(() => analyzeOneLinePath(contour), [contour]);
+  const connectorLatLngSegments = useMemo(
+    () =>
+      selectedAnchorLatLngs
+        ? []
+        :
+      connectorSegmentPairs(
+        anchorLatLngs,
+        oneLineAnalysis.connectorSegmentIndices,
+      ),
+    [anchorLatLngs, oneLineAnalysis.connectorSegmentIndices, selectedAnchorLatLngs],
+  );
 
   return (
     <MapStepSplitLayout
@@ -200,11 +273,14 @@ export default function Step2MapAnchor({
                 max={180}
                 step={1}
                 value={rotationDeg}
-                onChange={(e) => setRotationDeg(parseInt(e.target.value, 10))}
+                onChange={(e) => {
+                  setRotationDeg(parseInt(e.target.value, 10));
+                  clearSelectedCandidateRoute();
+                }}
                 className="h-1 w-full accent-pace-yellow"
               />
               <span className="text-right tabular-nums text-pace-muted">
-                {rotationDeg}°
+                {Math.round(rotationDeg)}°
               </span>
             </label>
             <label className="flex flex-col gap-1.5">
@@ -217,7 +293,10 @@ export default function Step2MapAnchor({
                 max={3}
                 step={0.1}
                 value={scale}
-                onChange={(e) => setScale(parseFloat(e.target.value))}
+                onChange={(e) => {
+                  setScale(parseFloat(e.target.value));
+                  clearSelectedCandidateRoute();
+                }}
                 className="h-1 w-full accent-pace-yellow"
               />
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -231,6 +310,32 @@ export default function Step2MapAnchor({
                 )}
               </div>
             </label>
+          </div>
+
+          <div
+            className={`mt-4 rounded-md border px-2.5 py-2 text-[11px] leading-snug ${
+              oneLineAnalysis.connectorCount > 0
+                ? "border-pace-yellow bg-pace-yellow/10 text-pace-ink"
+                : "border-emerald-200 bg-emerald-50 text-emerald-900"
+            }`}
+            role="status"
+          >
+            {oneLineAnalysis.connectorCount > 0 ? (
+              <>
+                <span className="font-semibold">
+                  {oneLineAnalysis.connectorCount} connector{" "}
+                  {oneLineAnalysis.connectorCount === 1 ? "stroke" : "strokes"}
+                </span>{" "}
+                in this one-line drawing. Yellow map segments show where the
+                route travels between separated art pieces.
+              </>
+            ) : (
+              <>
+                This reads as one clean{" "}
+                {oneLineAnalysis.isClosed ? "closed" : "open"} line before
+                street snapping.
+              </>
+            )}
           </div>
 
           <div className="mt-4 flex flex-col gap-2">
@@ -355,12 +460,18 @@ export default function Step2MapAnchor({
                         role="tooltip"
                         className="absolute left-0 top-7 z-10 w-[260px] rounded-md border border-pace-line bg-white p-2.5 text-[11px] leading-snug text-pace-ink shadow-md"
                       >
-                        PaceCasso ranks placements by two things, in order:
+                        PaceCasso ranks placements by walkability,
+                        clean-line quality, and shape match:
                         <ol className="mt-1.5 space-y-1 pl-4 [list-style-type:decimal]">
                           <li>
                             <span className="font-semibold">Walkability</span> —
                             the route stays on real streets, no water or park
                             detours.
+                          </li>
+                          <li>
+                            <span className="font-semibold">Clean line</span> -
+                            avoids unnecessary retracing and tiny jogs when the
+                            shape still reads without them.
                           </li>
                           <li>
                             <span className="font-semibold">Shape match</span> —
@@ -454,6 +565,30 @@ export default function Step2MapAnchor({
                             )}
                           </span>
                         </span>
+                        <span
+                          className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
+                            p.shapeMatchScore >= 78
+                              ? "bg-sky-50 text-sky-700"
+                              : p.shapeMatchScore >= 55
+                                ? "bg-amber-50 text-amber-700"
+                                : "bg-red-50 text-red-700"
+                          }`}
+                          title="Shape match score: estimates how closely the snapped streets still follow the artwork."
+                        >
+                          Shape match {p.shapeMatchScore}%
+                        </span>
+                        <span
+                          className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
+                            p.qualityScore >= 78
+                              ? "bg-emerald-50 text-emerald-700"
+                              : p.qualityScore >= 55
+                                ? "bg-amber-50 text-amber-700"
+                                : "bg-red-50 text-red-700"
+                          }`}
+                          title="Clean line score: penalizes unnecessary retracing and tiny corrective jogs."
+                        >
+                          Clean line {p.qualityScore}%
+                        </span>
                         {p.reason && (
                           <span className="text-[11px] leading-snug text-pace-ink/75">
                             {p.reason}
@@ -487,6 +622,16 @@ export default function Step2MapAnchor({
                 center,
                 rotationDeg,
                 scale,
+                connectorSegmentIndices:
+                  !selectedAnchorLatLngs &&
+                  oneLineAnalysis.connectorSegmentIndices.length > 0
+                    ? oneLineAnalysis.connectorSegmentIndices
+                    : undefined,
+                preferredSnappedRoute:
+                  preferredSnappedRoute &&
+                  preferredSnappedRoute.coordinates.length >= 2
+                    ? preferredSnappedRoute
+                    : undefined,
               })
             }
             className="pace-toolbar-btn-primary flex-1 font-bebas tracking-[0.08em]"
@@ -517,6 +662,18 @@ export default function Step2MapAnchor({
                     opacity: 0.92,
                   }}
                 />
+                {connectorLatLngSegments.map((segment, idx) => (
+                  <Polyline
+                    key={`connector-${idx}`}
+                    positions={segment}
+                    pathOptions={{
+                      color: "#ffb800",
+                      weight: 7,
+                      opacity: 0.96,
+                      dashArray: "10 8",
+                    }}
+                  />
+                ))}
                 {centerHandleIcon && (
                   <Marker
                     position={center}
@@ -526,6 +683,7 @@ export default function Step2MapAnchor({
                       drag: (e) => {
                         const latlng = (e.target as { getLatLng: () => { lat: number; lng: number } }).getLatLng();
                         setCenter([latlng.lat, latlng.lng]);
+                        clearSelectedCandidateRoute();
                       },
                     }}
                   />

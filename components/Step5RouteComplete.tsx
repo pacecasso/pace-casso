@@ -19,11 +19,24 @@ import {
   formatDuration,
   useRunnerProfile,
 } from "../lib/runnerProfile";
+import {
+  cuesToPlainText as exportCuesToPlainText,
+  routeToGeoJSONFeature as exportRouteToGeoJSONFeature,
+  routeToGeoJSONFeatureCollection as exportRouteToGeoJSONFeatureCollection,
+  routeToGpx as exportRouteToGpx,
+  safeExportWalkingCues,
+  safeRouteBlockWaypoints,
+  safeRouteCoords,
+  safeRouteDistanceMeters,
+} from "../lib/routeExport";
 import RunnerProfileEditor from "./RunnerProfileEditor";
 import {
   isRouteAnimationSupported,
   recordRouteAnimation,
 } from "../lib/recordRouteAnimation";
+import { routeQualityScore } from "../lib/routeQuality";
+import { connectorSegmentPairs } from "../lib/oneLinePathAnalysis";
+import { interpretationMatchPercent } from "../lib/shapeMatchScore";
 
 const Step5PreviewMap = dynamic(() => import("./Step5PreviewMap"), {
   ssr: false,
@@ -39,116 +52,6 @@ type Props = {
   onBackToFineTune: () => void;
   onStartOver: () => void;
 };
-
-function safeCoords(route: RouteLineString): [number, number][] {
-  return (route.coordinates ?? []).filter(
-    (c): c is [number, number] =>
-      Array.isArray(c) &&
-      typeof c[0] === "number" &&
-      Number.isFinite(c[0]) &&
-      typeof c[1] === "number" &&
-      Number.isFinite(c[1]),
-  );
-}
-
-function routeToGeoJSONFeature(route: RouteLineString) {
-  const coords = safeCoords(route);
-  return {
-    type: "Feature" as const,
-    properties: {
-      name: "PaceCasso walking route",
-      distanceMeters: route.distanceMeters ?? null,
-      waypointCount: route.blockWaypoints?.length ?? null,
-      pathVertexCount: coords.length,
-    },
-    geometry: {
-      type: "LineString" as const,
-      coordinates: coords.map(([lat, lng]) => [lng, lat] as [number, number]),
-    },
-  };
-}
-
-function routeToGeoJSONFeatureCollection(
-  route: RouteLineString,
-  cues: WalkingCue[],
-) {
-  const features: Record<string, unknown>[] = [routeToGeoJSONFeature(route)];
-  cues.forEach((c, i) => {
-    features.push({
-      type: "Feature",
-      properties: {
-        name: `Cue ${i + 1}`,
-        instruction: c.instruction,
-        street: c.street,
-      },
-      geometry: {
-        type: "Point",
-        coordinates: [c.lng, c.lat] as [number, number],
-      },
-    });
-  });
-  return { type: "FeatureCollection" as const, features };
-}
-
-function routeToGpx(route: RouteLineString, cues: WalkingCue[]): string {
-  const coords = safeCoords(route);
-  const pts = coords
-    .map(
-      ([lat, lng]) =>
-        `    <trkpt lat="${lat.toFixed(7)}" lon="${lng.toFixed(7)}"></trkpt>`,
-    )
-    .join("\n");
-  const name = "PaceCasso route";
-  // Guard cue coords too — a non-finite lat/lng would emit <wpt lat="NaN">
-  // which breaks every GPX parser.
-  const safeCues = cues.filter(
-    (c) => Number.isFinite(c.lat) && Number.isFinite(c.lng),
-  );
-  const wptBlock =
-    safeCues.length > 0
-      ? `${safeCues
-          .map((c) => {
-            const desc =
-              c.street && shouldAppendStreetLabel(c.instruction, c.street)
-                ? `\n    <desc>${escapeXml(c.street)}</desc>`
-                : "";
-            return `  <wpt lat="${c.lat.toFixed(7)}" lon="${c.lng.toFixed(7)}">
-    <name>${escapeXml(c.instruction)}</name>${desc}
-  </wpt>`;
-          })
-          .join("\n")}\n`
-      : "";
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="PaceCasso" xmlns="http://www.topografix.com/GPX/1/1">
-${wptBlock}  <trk>
-    <name>${escapeXml(name)}</name>
-    <trkseg>
-${pts}
-    </trkseg>
-  </trk>
-</gpx>
-`;
-}
-
-function cuesToPlainText(cues: WalkingCue[]): string {
-  return cues
-    .map((c, i) => {
-      const extra =
-        c.street && shouldAppendStreetLabel(c.instruction, c.street)
-          ? ` (${c.street})`
-          : "";
-      return `${i + 1}. ${c.instruction}${extra}`;
-    })
-    .join("\n");
-}
-
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 function triggerDownload(filename: string, mime: string, body: string) {
   const blob = new Blob([body], { type: mime });
@@ -188,7 +91,8 @@ export default function Step5RouteComplete({
   // toward similar layouts. Stored per-browser in localStorage only.
   useEffect(() => {
     if (!anchorLocation) return;
-    const distanceKm = (route.distanceMeters ?? 0) / 1000;
+    const safeDistance = safeRouteDistanceMeters(route);
+    const distanceKm = (safeDistance ?? 0) / 1000;
     if (!Number.isFinite(distanceKm) || distanceKm <= 0) return;
     saveFinalizedRoute({
       center: anchorLocation.center,
@@ -196,24 +100,53 @@ export default function Step5RouteComplete({
       scale: anchorLocation.scale,
       distanceKm,
     });
-  }, [anchorLocation, route.distanceMeters]);
+  }, [anchorLocation, route]);
 
   const routeLine = useMemo(
-    () => (route.coordinates ?? []) as [number, number][],
-    [route.coordinates],
+    () => safeRouteCoords(route),
+    [route],
+  );
+  const routeBlockWaypoints = useMemo(
+    () => safeRouteBlockWaypoints(route),
+    [route],
+  );
+  const safeTurnCues = useMemo(
+    () => safeExportWalkingCues(turnCues),
+    [turnCues],
   );
 
   const originalArt = useMemo(
     () => (anchorLocation?.anchorLatLngs ?? []) as [number, number][],
     [anchorLocation?.anchorLatLngs],
   );
+  const originalArtConnectorSegments = useMemo(
+    () =>
+      connectorSegmentPairs(
+        originalArt,
+        anchorLocation?.connectorSegmentIndices ?? [],
+      ),
+    [originalArt, anchorLocation?.connectorSegmentIndices],
+  );
+  const artworkConnectorCount = originalArtConnectorSegments.length;
+  const artworkMatchScore = useMemo(() => {
+    if (routeSource !== "image" || originalArt.length < 2 || routeLine.length < 2) {
+      return null;
+    }
+    return interpretationMatchPercent(originalArt, routeLine);
+  }, [originalArt, routeLine, routeSource]);
+  const exportMetadata = useMemo(
+    () => ({
+      artworkConnectorCount,
+      artworkMatchScore: artworkMatchScore ?? undefined,
+    }),
+    [artworkConnectorCount, artworkMatchScore],
+  );
 
   const hasArt = originalArt.length >= 2;
 
   useEffect(() => {
-    const coords = (route.coordinates ?? []) as [number, number][];
-    const block = route.blockWaypoints as [number, number][] | undefined;
-    const queryWps = waypointsForDirectionsQuery(block, coords);
+    const coords = routeLine;
+    const queryWps = waypointsForDirectionsQuery(routeBlockWaypoints, coords);
     if (queryWps.length < 2) {
       setTurnCues([]);
       setCuesError(null);
@@ -244,38 +177,41 @@ export default function Step5RouteComplete({
     return () => {
       cancelled = true;
     };
-  }, [route.blockWaypoints, route.coordinates, cuesRetryNonce]);
+  }, [routeBlockWaypoints, routeLine, cuesRetryNonce]);
 
   const retryCues = useCallback(() => setCuesRetryNonce((n) => n + 1), []);
 
   const downloadGeoJSON = useCallback(() => {
     const fc =
-      turnCues.length > 0
-        ? routeToGeoJSONFeatureCollection(route, turnCues)
-        : { type: "FeatureCollection" as const, features: [routeToGeoJSONFeature(route)] };
+      safeTurnCues.length > 0
+        ? exportRouteToGeoJSONFeatureCollection(route, safeTurnCues, exportMetadata)
+        : {
+            type: "FeatureCollection" as const,
+            features: [exportRouteToGeoJSONFeature(route, exportMetadata)],
+          };
     triggerDownload(
       "pacecasso-route.geojson",
       "application/geo+json",
       JSON.stringify(fc, null, 2),
     );
-  }, [route, turnCues]);
+  }, [route, safeTurnCues, exportMetadata]);
 
   const downloadGpx = useCallback(() => {
     triggerDownload(
       "pacecasso-route.gpx",
       "application/gpx+xml",
-      routeToGpx(route, turnCues),
+      exportRouteToGpx(route, safeTurnCues, shouldAppendStreetLabel, exportMetadata),
     );
-  }, [route, turnCues]);
+  }, [route, safeTurnCues, exportMetadata]);
 
   const downloadCueSheet = useCallback(() => {
-    if (!turnCues.length) return;
+    if (!safeTurnCues.length) return;
     triggerDownload(
       "pacecasso-turn-cues.txt",
       "text/plain;charset=utf-8",
-      cuesToPlainText(turnCues),
+      exportCuesToPlainText(safeTurnCues, shouldAppendStreetLabel),
     );
-  }, [turnCues]);
+  }, [safeTurnCues]);
 
   const [animBusy, setAnimBusy] = useState(false);
   const [animError, setAnimError] = useState<string | null>(null);
@@ -293,9 +229,10 @@ export default function Step5RouteComplete({
         setAnimError("Route too short to animate.");
         return;
       }
+      const safeDistance = safeRouteDistanceMeters(route);
       const distanceLabel =
-        route.distanceMeters != null
-          ? `${(route.distanceMeters / 1000).toFixed(1)} km`
+        safeDistance != null
+          ? `${(safeDistance / 1000).toFixed(1)} km`
           : "";
       const blob = await recordRouteAnimation(coords, {
         distanceLabel,
@@ -319,11 +256,12 @@ export default function Step5RouteComplete({
     } finally {
       setAnimBusy(false);
     }
-  }, [routeLine, route.distanceMeters]);
+  }, [routeLine, route]);
 
+  const safeDistance = safeRouteDistanceMeters(route);
   const distanceKmNumeric =
-    route.distanceMeters != null && Number.isFinite(route.distanceMeters)
-      ? route.distanceMeters / 1000
+    safeDistance != null
+      ? safeDistance / 1000
       : null;
   const distanceDisplay =
     distanceKmNumeric != null
@@ -334,8 +272,47 @@ export default function Step5RouteComplete({
       ? estimateSeconds(distanceKmNumeric, runnerProfile.paceSecPerKm)
       : 0;
   const etaDisplay = etaSeconds > 0 ? formatDuration(etaSeconds) : "—";
-  const waypointCount = route.blockWaypoints?.length ?? 0;
+  const waypointCount = routeBlockWaypoints.length;
   const pathVertices = routeLine.length;
+  const cleanLineScore = useMemo(() => routeQualityScore(routeLine), [routeLine]);
+  const cleanLineTone =
+    cleanLineScore >= 78 ? "ready" : cleanLineScore >= 55 ? "check" : "warn";
+  const cleanLineTitle =
+    cleanLineTone === "ready"
+      ? "Clean route line"
+      : cleanLineTone === "check"
+        ? "Some route clutter"
+        : "Heavy route clutter";
+  const cleanLineDetail =
+    cleanLineTone === "ready"
+      ? "Little obvious retracing or fussy stair-stepping. This is a strong watch-export candidate."
+      : cleanLineTone === "check"
+        ? "A few streets retrace or use small corrective jogs. Keep it if the artwork needs it, or fine-tune for a cleaner run."
+        : "The route has noticeable retracing or stair-stepping. Fine-tune before running unless that geometry is part of the design.";
+  const artworkMatchTone =
+    artworkMatchScore == null
+      ? null
+      : artworkMatchScore >= 70
+        ? "ready"
+        : artworkMatchScore >= 45
+          ? "check"
+          : "warn";
+  const artworkMatchTitle =
+    artworkMatchTone === "ready"
+      ? "Artwork reads well"
+      : artworkMatchTone === "check"
+        ? "Artwork is approximate"
+        : artworkMatchTone === "warn"
+          ? "Artwork may not read"
+          : "";
+  const artworkMatchDetail =
+    artworkMatchTone === "ready"
+      ? "The final street route still follows the uploaded art closely enough for GPS-art use."
+      : artworkMatchTone === "check"
+        ? "The final route keeps the general idea, but street constraints changed the drawing."
+        : artworkMatchTone === "warn"
+          ? "The final route has drifted far from the uploaded art. Fine-tune or try another placement before sharing."
+          : "";
 
   const shareBlurb = useMemo(() => {
     const base = getSiteUrl();
@@ -443,6 +420,89 @@ export default function Step5RouteComplete({
               </p>
             </div>
 
+            <div
+              className={`mt-4 rounded-md border px-3 py-2.5 text-[11px] leading-snug ${
+                cleanLineTone === "ready"
+                  ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+                  : cleanLineTone === "check"
+                    ? "border-amber-300 bg-amber-50 text-amber-900"
+                    : "border-red-300 bg-red-50 text-red-900"
+              }`}
+              role="status"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-bebas text-[11px] tracking-[0.12em]">
+                    {cleanLineTitle}
+                  </p>
+                  <p className="mt-0.5 font-dm">{cleanLineDetail}</p>
+                </div>
+                <span className="shrink-0 font-bebas text-sm tabular-nums">
+                  {cleanLineScore}%
+                </span>
+              </div>
+              {cleanLineTone !== "ready" ? (
+                <button
+                  type="button"
+                  onClick={onBackToFineTune}
+                  className="mt-2 rounded border border-current bg-white/70 px-2.5 py-1 font-bebas text-[11px] tracking-[0.12em] transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current"
+                >
+                  Fine-tune route
+                </button>
+              ) : null}
+            </div>
+
+            {artworkMatchScore != null && artworkMatchTone ? (
+              <div
+                className={`mt-3 rounded-md border px-3 py-2.5 text-[11px] leading-snug ${
+                  artworkMatchTone === "ready"
+                    ? "border-sky-300 bg-sky-50 text-sky-900"
+                    : artworkMatchTone === "check"
+                      ? "border-amber-300 bg-amber-50 text-amber-900"
+                      : "border-red-300 bg-red-50 text-red-900"
+                }`}
+                role="status"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-bebas text-[11px] tracking-[0.12em]">
+                      {artworkMatchTitle}
+                    </p>
+                    <p className="mt-0.5 font-dm">{artworkMatchDetail}</p>
+                  </div>
+                  <span className="shrink-0 font-bebas text-sm tabular-nums">
+                    {artworkMatchScore}%
+                  </span>
+                </div>
+                {artworkMatchTone !== "ready" ? (
+                  <button
+                    type="button"
+                    onClick={onBackToFineTune}
+                    className="mt-2 rounded border border-current bg-white/70 px-2.5 py-1 font-bebas text-[11px] tracking-[0.12em] transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current"
+                  >
+                    Fine-tune route
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+
+            {showArtControls && artworkConnectorCount > 0 ? (
+              <div
+                className="mt-3 rounded-md border border-pace-yellow bg-pace-yellow/10 px-3 py-2.5 text-[11px] leading-snug text-pace-ink"
+                role="status"
+              >
+                <p className="font-bebas text-[11px] tracking-[0.12em]">
+                  Artwork connector strokes
+                </p>
+                <p className="mt-0.5 font-dm">
+                  This design used {artworkConnectorCount} connector{" "}
+                  {artworkConnectorCount === 1 ? "stroke" : "strokes"} to make
+                  separate art pieces into one continuous route. GPX and
+                  GeoJSON include this note.
+                </p>
+              </div>
+            ) : null}
+
             <div className="mt-5 flex flex-col gap-2 border-t border-pace-line pt-5">
               <div className="flex items-center justify-between gap-2">
                 <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
@@ -456,9 +516,9 @@ export default function Step5RouteComplete({
                   >
                     Building turn-by-turn cues…
                   </span>
-                ) : turnCues.length > 0 ? (
+                ) : safeTurnCues.length > 0 ? (
                   <span className="text-[11px] font-medium tabular-nums text-pace-muted">
-                    {turnCues.length} steps
+                    {safeTurnCues.length} steps
                   </span>
                 ) : cuesError ? (
                   <button
@@ -483,9 +543,9 @@ export default function Step5RouteComplete({
                   <strong>↻ Retry cues</strong>.
                 </p>
               ) : null}
-              {turnCues.length > 0 ? (
+              {safeTurnCues.length > 0 ? (
                 <ol className="max-h-40 list-decimal space-y-1.5 overflow-y-auto pl-4 text-[11px] text-pace-muted">
-                  {turnCues.map((c, i) => (
+                  {safeTurnCues.map((c, i) => (
                     <li key={`${c.lat.toFixed(5)}-${c.lng.toFixed(5)}-${i}`}>
                       <span className="font-medium text-pace-ink">
                         {c.instruction}
@@ -547,7 +607,7 @@ export default function Step5RouteComplete({
                   <button
                     type="button"
                     onClick={downloadCueSheet}
-                    disabled={turnCues.length === 0}
+                    disabled={safeTurnCues.length === 0}
                     className="pace-toolbar-btn flex flex-1 flex-col items-start gap-0.5 px-3 py-2 text-left disabled:opacity-40"
                     aria-label="Download turn-by-turn cue sheet as plain text"
                   >
@@ -698,6 +758,7 @@ export default function Step5RouteComplete({
             <Step5PreviewMap
               routeLine={routeLine}
               originalArt={originalArt}
+              originalArtConnectorSegments={originalArtConnectorSegments}
               showOriginalArt={showArtControls && showArtOnMap && hasArt}
             />
           ) : (

@@ -14,6 +14,7 @@ import { emojiToContour } from "../lib/emojiToContour";
 
 const CREATE_INTRO_STORAGE_KEY = "pacecasso-create-intro-dismissed-v1";
 import type { RouteLineString } from "../lib/routeTypes";
+import { safeRouteDistanceMeters } from "../lib/routeExport";
 import {
   clearCreateDraft,
   cityPresetFromDraftId,
@@ -45,6 +46,8 @@ export type AnchorLocation = {
   center: [number, number];
   rotationDeg: number;
   scale: number;
+  connectorSegmentIndices?: number[];
+  preferredSnappedRoute?: RouteLineString;
 } | null;
 
 export type { RouteLineString };
@@ -117,6 +120,10 @@ export default function WorkflowController() {
               center: d.anchorLocation.center,
               rotationDeg: d.anchorLocation.rotationDeg,
               scale: d.anchorLocation.scale,
+              connectorSegmentIndices:
+                d.anchorLocation.connectorSegmentIndices ?? undefined,
+              preferredSnappedRoute:
+                d.anchorLocation.preferredSnappedRoute ?? undefined,
             }
           : null,
       );
@@ -195,6 +202,10 @@ export default function WorkflowController() {
               center: anchorLocation.center,
               rotationDeg: anchorLocation.rotationDeg,
               scale: anchorLocation.scale,
+              connectorSegmentIndices:
+                anchorLocation.connectorSegmentIndices ?? undefined,
+              preferredSnappedRoute:
+                anchorLocation.preferredSnappedRoute ?? undefined,
             }
           : null,
         snappedRoute,
@@ -227,6 +238,13 @@ export default function WorkflowController() {
     setSourceKind(null);
   }, []);
 
+  const clearPlacedRouteData = useCallback(() => {
+    setAnchorLocation(null);
+    setSnappedRoute(null);
+    setEditedRoute(null);
+    setFinalRoute(null);
+  }, []);
+
   const handleStartOver = useCallback(() => {
     clearCreateDraft();
     resetWorkflowData();
@@ -242,9 +260,10 @@ export default function WorkflowController() {
   const goBackToSourcePicker = useCallback(() => {
     setContourCoordinates(null);
     setUploadedImageBase64(null);
+    clearPlacedRouteData();
     setSourceKind(null);
     setCurrentStep(1);
-  }, []);
+  }, [clearPlacedRouteData]);
 
   const { stepNum, total, label } = getStepDisplay(currentStep, sourceKind);
 
@@ -264,8 +283,8 @@ export default function WorkflowController() {
     if (sourceKind === "image") parts.push("Photo");
     else if (sourceKind === "freehand") parts.push("Freehand");
     const routeForDistance = finalRoute ?? editedRoute ?? snappedRoute;
-    const dm = routeForDistance?.distanceMeters;
-    if (dm != null && Number.isFinite(dm)) {
+    const dm = routeForDistance ? safeRouteDistanceMeters(routeForDistance) : null;
+    if (dm != null) {
       parts.push(`${(dm / 1000).toFixed(1)} km`);
     }
     return parts.join(" · ");
@@ -299,9 +318,19 @@ export default function WorkflowController() {
     return () => cancelAnimationFrame(id);
   }, [currentStep, sourceKind]);
 
+  const isMapWorkspaceStep =
+    (currentStep === 2 && sourceKind === "freehand") ||
+    currentStep === 3 ||
+    currentStep === 4 ||
+    currentStep === 5;
+
   return (
-    <main className="flex min-h-screen flex-col bg-pace-warm">
-      <header className="sticky top-0 z-40 bg-pace-white">
+    <main
+      className={`flex flex-col bg-pace-warm ${
+        isMapWorkspaceStep ? "h-dvh overflow-hidden" : "min-h-screen"
+      }`}
+    >
+      <header className="shrink-0 bg-pace-white">
         {/* Identical geometry + sizing to MarketingNav + landing.html so the
             header never changes between pages. Right-slot is Start Over here
             (instead of Start Creating, since we're already mid-create). */}
@@ -414,7 +443,7 @@ export default function WorkflowController() {
         </div>
       </header>
 
-      <section className="pace-create-surface flex flex-1 flex-col">
+      <section className="pace-create-surface flex min-h-0 flex-1 flex-col">
         {draftHydrated &&
         currentStep === 0 &&
         showCreateIntro ? (
@@ -480,16 +509,24 @@ export default function WorkflowController() {
             onBack={() => setCurrentStep(0)}
             onChooseImage={() => {
               setSourceKind("image");
+              setContourCoordinates(null);
+              setUploadedImageBase64(null);
+              clearPlacedRouteData();
               setCurrentStep(2);
             }}
             onChooseFreehand={() => {
               setSourceKind("freehand");
+              setContourCoordinates(null);
+              setUploadedImageBase64(null);
+              clearPlacedRouteData();
               setCurrentStep(2);
             }}
             cityPreset={cityPreset}
             onPickAreaTemplate={(contour) => {
               setSourceKind("image");
               setContourCoordinates(contour as NormalizedPoint[]);
+              setUploadedImageBase64(null);
+              clearPlacedRouteData();
               setCurrentStep(3);
             }}
           />
@@ -497,10 +534,12 @@ export default function WorkflowController() {
 
         {currentStep === 2 && sourceKind === "image" && (
           <Step1ImageUpload
+            cityLabel={cityPreset.label}
             onBack={goBackToSourcePicker}
             onComplete={(normalizedContour, imageBase64) => {
               setContourCoordinates(normalizedContour);
               setUploadedImageBase64(imageBase64);
+              clearPlacedRouteData();
               setCurrentStep(3);
             }}
           />
@@ -512,6 +551,10 @@ export default function WorkflowController() {
             onBack={goBackToSourcePicker}
             onComplete={({ anchorLatLngs, contour, center }) => {
               setContourCoordinates(contour);
+              setUploadedImageBase64(null);
+              setSnappedRoute(null);
+              setEditedRoute(null);
+              setFinalRoute(null);
               setAnchorLocation({
                 anchorLatLngs,
                 center,
@@ -530,12 +573,24 @@ export default function WorkflowController() {
             defaultCenter={cityPreset.defaultCenter}
             imageBase64={uploadedImageBase64}
             onBack={() => setCurrentStep(2)}
-            onComplete={({ anchorLatLngs, center, rotationDeg, scale }) => {
+            onComplete={({
+              anchorLatLngs,
+              center,
+              rotationDeg,
+              scale,
+              connectorSegmentIndices,
+              preferredSnappedRoute,
+            }) => {
+              setSnappedRoute(null);
+              setEditedRoute(null);
+              setFinalRoute(null);
               setAnchorLocation({
                 anchorLatLngs,
                 center,
                 rotationDeg,
                 scale,
+                connectorSegmentIndices,
+                preferredSnappedRoute,
               });
               setCurrentStep(4);
             }}
@@ -558,6 +613,8 @@ export default function WorkflowController() {
             }}
             onComplete={(snapped) => {
               setSnappedRoute(snapped);
+              setEditedRoute(null);
+              setFinalRoute(null);
               setCurrentStep(5);
             }}
           />
@@ -570,6 +627,8 @@ export default function WorkflowController() {
             routeSource={sourceKind === "freehand" ? "freehand" : "image"}
             onBack={() => {
               setSnappedRoute(null);
+              setEditedRoute(null);
+              setFinalRoute(null);
               setCurrentStep(4);
             }}
             onComplete={(route) => {
@@ -586,7 +645,15 @@ export default function WorkflowController() {
               route={finalRoute ?? editedRoute!}
               anchorLocation={anchorLocation}
               routeSource={sourceKind === "freehand" ? "freehand" : "image"}
-              onBackToFineTune={() => setCurrentStep(5)}
+              onBackToFineTune={() => {
+                const routeToTune = finalRoute ?? editedRoute ?? snappedRoute;
+                if (routeToTune) {
+                  setSnappedRoute(routeToTune);
+                  setEditedRoute(routeToTune);
+                }
+                setFinalRoute(null);
+                setCurrentStep(5);
+              }}
               onStartOver={handleStartOver}
             />
           ) : (
@@ -605,7 +672,8 @@ export default function WorkflowController() {
           ))}
       </section>
 
-      <footer className="mt-auto border-t border-pace-line bg-pace-warm px-[clamp(1.25rem,4vw,2.5rem)] py-8 pb-[max(2rem,env(safe-area-inset-bottom))] text-center text-xs text-pace-muted font-dm">
+      {!isMapWorkspaceStep ? (
+        <footer className="mt-auto border-t border-pace-line bg-pace-warm px-[clamp(1.25rem,4vw,2.5rem)] py-8 pb-[max(2rem,env(safe-area-inset-bottom))] text-center text-xs text-pace-muted font-dm">
         <Link
           href="/landing.html"
           className="font-bebas tracking-[0.18em] text-pace-yellow transition hover:text-pace-ink"
@@ -636,7 +704,8 @@ export default function WorkflowController() {
         <SocialLinks />
         <span aria-hidden> · </span>
         Design. Run. Repeat.
-      </footer>
+        </footer>
+      ) : null}
     </main>
   );
 }

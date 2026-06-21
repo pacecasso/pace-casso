@@ -1,11 +1,5 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import {
-  Anton,
-  Bebas_Neue,
-  DM_Sans,
-  Permanent_Marker,
-} from "next/font/google";
 import PlausibleAnalytics from "../components/PlausibleAnalytics";
 import { getSiteUrl } from "../lib/siteUrl";
 import "./globals.css";
@@ -39,42 +33,10 @@ export const metadata: Metadata = {
   },
 };
 
-const anton = Anton({
-  weight: "400",
-  subsets: ["latin"],
-  variable: "--font-anton",
-  display: "swap",
-});
-
-const bebasNeue = Bebas_Neue({
-  weight: "400",
-  subsets: ["latin"],
-  variable: "--font-bebas",
-  display: "swap",
-});
-
-const dmSans = DM_Sans({
-  subsets: ["latin"],
-  variable: "--font-dm-sans",
-  display: "swap",
-});
-
-const permanentMarker = Permanent_Marker({
-  weight: "400",
-  subsets: ["latin"],
-  variable: "--font-marker",
-  display: "swap",
-});
-
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html
-      lang="en"
-      className={`${anton.variable} ${bebasNeue.variable} ${dmSans.variable} ${permanentMarker.variable}`}
-    >
-      <body
-        className={`${dmSans.className} min-h-screen bg-pace-warm text-pace-ink antialiased`}
-      >
+    <html lang="en">
+      <body className="min-h-screen bg-pace-warm text-pace-ink antialiased">
         <PlausibleAnalytics />
         {children}
       </body>

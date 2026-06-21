@@ -12,12 +12,13 @@ import {
 } from "./contourRingStitch";
 import {
   centerlinePolylineFromPreparedBinary,
-  prepareTracedBinaryMask,
+  prepareTracedBinaryComponents,
 } from "./centerlineFromMask";
 import {
   mooreContourRingsFromLineMask,
   mooreSiblingOuterRings,
 } from "./mooreBoundaryFromMask";
+import { joinPolylinesAsOneLine } from "./oneLineArtPath";
 
 export type NormalizedContourPoint = { x: number; y: number };
 
@@ -28,6 +29,17 @@ function binaryPrepToLineMask(prep: Uint8Array, len: number): Uint8Array {
     if (prep[i]) m[i] = 255;
   }
   return m;
+}
+
+function unionBinaryComponents(components: Uint8Array[], len: number): Uint8Array {
+  const out = new Uint8Array(len);
+  for (const comp of components) {
+    const n = Math.min(len, comp.length);
+    for (let i = 0; i < n; i++) {
+      if (comp[i]) out[i] = 1;
+    }
+  }
+  return out;
 }
 
 function ringAreaAbs(ring: [number, number][]): number {
@@ -312,13 +324,20 @@ export function extractNormalizedContourFromLineMask(
   let usedMoore = false;
   let usedCenterline = false;
 
-  const prep = prepareTracedBinaryMask(mask, w, h);
-  const traceMask = prep ? binaryPrepToLineMask(prep, mask.length) : null;
+  const prepComponents = prepareTracedBinaryComponents(mask, w, h);
+  const traceMask = prepComponents.length
+    ? binaryPrepToLineMask(unionBinaryComponents(prepComponents, mask.length), mask.length)
+    : null;
 
-  if (prep) {
-    const center = centerlinePolylineFromPreparedBinary(prep, w, h);
-    if (center && center.length >= 4) {
-      ring = center;
+  if (prepComponents.length) {
+    const centerlines = prepComponents
+      .map((comp) => centerlinePolylineFromPreparedBinary(comp, w, h))
+      .filter((path): path is [number, number][] => !!path && path.length >= 4);
+    if (centerlines.length) {
+      ring = joinPolylinesAsOneLine(centerlines, {
+        closedLoopThreshold: 2.5,
+        duplicateThreshold: 0.01,
+      });
       usedCenterline = true;
     }
   }
