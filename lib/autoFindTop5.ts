@@ -45,9 +45,17 @@ const MIN_PERIMETER_KM = 3;
  * candidate *pool*, not the output quality bar.
  */
 const MAX_PERIMETER_KM = 35;
-const CANDIDATES_TO_SNAP = 48;
+/**
+ * Call budget: each snapped candidate costs roughly startVariantCount x
+ * chunk-count Mapbox Directions calls plus one map-matching pass. 48
+ * candidates x 4 variants blew straight past the 180/min API window and the
+ * resulting 429s silently dropped candidates. 28 x 3 with wider batch gaps
+ * fits the window; failures are now counted and surfaced to the user.
+ */
+const CANDIDATES_TO_SNAP = 28;
 const SNAP_BATCH_SIZE = 4;
-const SNAP_BATCH_GAP_MS = 100;
+const SNAP_BATCH_GAP_MS = 250;
+const SNAP_START_VARIANTS = 3;
 
 /**
  * Snap-quality filter: reject candidates whose snapped route length deviates
@@ -102,6 +110,9 @@ export type AutoFindTop5Result = {
   /** Shape classification from the pre-pass, if it ran. Absent when the hint
    *  call failed or was skipped (no image provided). */
   hint?: ShapeHint;
+  /** Candidates that could not be street-checked (rate limit / network).
+   *  When > 0 the results are partial and a retry may find better options. */
+  snapFailures?: number;
 };
 
 export type AutoFindTop5Options = {
@@ -1003,16 +1014,20 @@ function blendedCandidateShapeMatch({
 async function snapOne(
   anchors: [number, number][],
   anchorSource: AnchorPathSource | undefined,
-): Promise<{
-  coords: [number, number][];
-  snappedKm: number;
-  route: RouteLineString;
-} | null> {
+): Promise<
+  | {
+      coords: [number, number][];
+      snappedKm: number;
+      route: RouteLineString;
+    }
+  | "snap-error"
+  | null
+> {
   try {
     if (anchors.length < 2) return null;
     const route = await snapWalkingRoute(anchors, {
       anchorSource,
-      startVariantCount: 4,
+      startVariantCount: SNAP_START_VARIANTS,
     });
     const coords = route.coordinates as [number, number][];
     if (coords.length < 2) return null;
@@ -1020,7 +1035,10 @@ async function snapOne(
     if (snappedKm == null) return null;
     return { coords, snappedKm, route };
   } catch {
-    return null;
+    // Rate limit / network / API failure — the candidate was never actually
+    // evaluated. Counted separately so the UI can tell the user results are
+    // partial instead of silently degrading.
+    return "snap-error";
   }
 }
 
@@ -1903,15 +1921,20 @@ async function parallelSnap(
   anchorSource: AnchorPathSource | undefined,
   preset: CityPreset,
   sourceContour: ContourPoint[],
-): Promise<SnappedCandidate[]> {
+): Promise<{ snapped: SnappedCandidate[]; snapFailures: number }> {
   const out: SnappedCandidate[] = [];
   let rejectedByRatio = 0;
   let rejectedByBounds = 0;
+  let snapFailures = 0;
   for (let i = 0; i < candidates.length; i += SNAP_BATCH_SIZE) {
     const batch = candidates.slice(i, i + SNAP_BATCH_SIZE);
     const snapped = await Promise.all(
       batch.map(async (c) => {
         const r = await snapOne(c.anchors, anchorSource);
+        if (r === "snap-error") {
+          snapFailures++;
+          return null;
+        }
         if (!r) return null;
 
         // Filter 1: snap-destroyed shapes (massive perimeter change)
@@ -1989,7 +2012,7 @@ async function parallelSnap(
       scoreAutoPlacementCandidate(b.qualityScore, b.shapeMatchScore) -
       scoreAutoPlacementCandidate(a.qualityScore, a.shapeMatchScore),
   );
-  return out;
+  return { snapped: out, snapFailures };
 }
 
 type ParsedImage = { data: string; mediaType: string };
@@ -4420,14 +4443,14 @@ export async function autoFindTop5(
     ...cityFocusSubset,
     ...genericSubset,
   ];
-  const snapped = await parallelSnap(
+  const { snapped, snapFailures } = await parallelSnap(
     subset,
     options.anchorSource,
     preset,
     contour,
   );
   if (snapped.length === 0) {
-    return { picks: [], visionUsed: false, hint: hint ?? undefined };
+    return { picks: [], visionUsed: false, hint: hint ?? undefined, snapFailures };
   }
 
   if (!parsedOrig) {
@@ -4443,6 +4466,7 @@ export async function autoFindTop5(
         requiredVisualFeatures,
       ),
       visionUsed: false,
+      snapFailures,
       hint: hint ?? undefined,
     };
   }
@@ -4479,6 +4503,7 @@ export async function autoFindTop5(
         requiredVisualFeatures,
       ),
       visionUsed: false,
+      snapFailures,
       hint: hint ?? undefined,
     };
   }
@@ -4512,6 +4537,7 @@ export async function autoFindTop5(
         requiredVisualFeatures,
       ),
       visionUsed: false,
+      snapFailures,
       hint: hint ?? undefined,
     };
   }
@@ -4538,6 +4564,7 @@ export async function autoFindTop5(
       requiredVisualFeatures,
     ),
     visionUsed: true,
+    snapFailures,
     hint: hint ?? undefined,
   };
 }

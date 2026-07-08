@@ -166,8 +166,12 @@ export default function Step2MapAnchor({
               : undefined,
         });
         if (r.picks.length === 0) {
-          setAutoHint("No viable placements found — try adjusting manually.");
-          window.setTimeout(() => setAutoHint(null), 5000);
+          setAutoHint(
+            r.snapFailures && r.snapFailures > 0
+              ? `Couldn't street-check ${r.snapFailures} placements (busy routing service) — wait a minute and try again.`
+              : "No viable placements found — try adjusting manually.",
+          );
+          window.setTimeout(() => setAutoHint(null), 7000);
           return;
         }
         setPicks(r.picks);
@@ -182,10 +186,14 @@ export default function Step2MapAnchor({
         setPreferredSnappedRoute(routeFromPick(first));
         setSelectedAnchorLatLngs(first.anchorLatLngs ?? null);
         const modeNoun = mode === "refine" ? "refinements" : "options";
+        const partialNote =
+          r.snapFailures && r.snapFailures > 0
+            ? ` (${r.snapFailures} more couldn't be checked — retry in a minute for extra options)`
+            : "";
         setAutoHint(
           r.visionUsed
-            ? `PaceCasso ranked ${r.picks.length} ${modeNoun} — tap any to try it.`
-            : `Showing ${r.picks.length} ${modeNoun} — tap any to try it.`,
+            ? `PaceCasso ranked ${r.picks.length} ${modeNoun} — tap any to try it.${partialNote}`
+            : `Showing ${r.picks.length} ${modeNoun} — tap any to try it.${partialNote}`,
         );
       } catch (err) {
         console.warn("[Step2] autoFindTop5 failed:", err);
