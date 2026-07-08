@@ -7,60 +7,65 @@ import { CURATED_MANHATTAN_RUNS } from "../../lib/curatedManhattanRuns";
  * Each card shows an emoji icon matching the subject so the gallery reads at
  * a glance (same visual language as the starter shapes on source-choice).
  */
+/**
+ * Cities must match lib/cityPresets.ts, and every icon must trace to a
+ * single connected blob in emojiToContour (multi-part glyphs fragment —
+ * only the largest piece survives the trace).
+ */
 const CURATED_ROUTES = [
   {
-    title: "Harbor Star",
-    city: "San Francisco",
-    distanceKm: 18.4,
-    icon: "⭐",
+    title: "Lightning Bolt",
+    city: "Chicago",
+    distanceKm: 11.3,
+    icon: "⚡",
     accent: "#ffb800",
     blurb:
-      "High-contrast corners and long legs — ideal for testing how snapping hugs waterfront grids and steep blocks.",
+      "High-contrast corners and long diagonal legs — a natural fit for Chicago's dead-straight mile grid.",
   },
   {
-    title: "Dragon Loop",
-    city: "Seattle",
-    distanceKm: 22.1,
-    icon: "🐉",
-    accent: "#1d6fd8",
+    title: "Big Heart",
+    city: "Manhattan",
+    distanceKm: 12.5,
+    icon: "❤️",
+    accent: "#ef4444",
     blurb:
-      "One continuous curve with gentle bends; a great template for loops that need smooth direction changes.",
+      "The classic. Domed lobes and a pointed tip read from any altitude — Manhattan's dense grid keeps the curves smooth.",
   },
   {
     title: "Teardrop",
-    city: "Austin",
+    city: "Brooklyn",
     distanceKm: 9.2,
     icon: "💧",
-    accent: "#ef4444",
+    accent: "#1d6fd8",
     blurb:
-      "Compact out-and-back personality — fits smaller grids and shorter long-run days.",
+      "Compact out-and-back personality — fits Brooklyn's tighter blocks and shorter long-run days.",
   },
   {
-    title: "Double Wave",
-    city: "Miami",
-    distanceKm: 14.0,
-    icon: "🌊",
-    accent: "#22c55e",
-    blurb:
-      "Parallel rhythms read well from above; useful when you want symmetry without a perfect mirror.",
-  },
-  {
-    title: "Burst",
-    city: "Chicago",
-    distanceKm: 11.3,
-    icon: "✨",
+    title: "Crescent Moon",
+    city: "San Francisco",
+    distanceKm: 10.4,
+    icon: "🌙",
     accent: "#8b5cf6",
     blurb:
-      "A tighter starburst for dense street meshes — watch how snapping prioritises walkable corridors.",
+      "One continuous curve with a dramatic inner sweep; the hills add elevation drama to a simple silhouette.",
   },
   {
-    title: "Crown circuit",
-    city: "New York City",
-    distanceKm: 16.8,
-    icon: "👑",
+    title: "Capital Star",
+    city: "Washington DC",
+    distanceKm: 14.6,
+    icon: "⭐",
     accent: "#0d0d0d",
     blurb:
-      "Complex perimeter with many turns — stress-test the editor after snap, then tune waypoints by hand.",
+      "Five points, ten corners — DC's diagonal avenues were made for this. Stress-test the editor on the tips.",
+  },
+  {
+    title: "Fish Run",
+    city: "Manhattan",
+    distanceKm: 8.8,
+    icon: "🐟",
+    accent: "#22c55e",
+    blurb:
+      "Body plus tail fin in one line — a friendly first project that survives street snapping almost anywhere.",
   },
 ] as const;
 

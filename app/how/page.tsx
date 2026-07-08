@@ -33,7 +33,7 @@ export default function HowPage() {
             <StepCard
               num="01"
               title="Pick your city"
-              body="Choose where your route will live. The system uses the city's street grid layout to align letters and shapes cleanly. Manhattan is live today; more cities are coming."
+              body="Choose where your route will live. The system uses the city's street grid layout to align letters and shapes cleanly. Manhattan, Brooklyn, Chicago, San Francisco, and Washington DC are available — Manhattan's dense grid gives the strongest results today."
             />
             <StepCard
               num="02"
