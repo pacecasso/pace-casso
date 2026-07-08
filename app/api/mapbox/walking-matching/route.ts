@@ -3,6 +3,7 @@ import { LruJsonCache } from "../../../../lib/mapboxApiCache";
 import { parseLatLngArray } from "../../../../lib/mapboxCoordsValidate";
 import { getServerMapboxToken } from "../../../../lib/mapboxServerToken";
 import { rateLimitAllow } from "../../../../lib/mapboxRateLimit";
+import { trustedClientIp } from "../../../../lib/apiShield";
 
 export const runtime = "nodejs";
 
@@ -11,11 +12,6 @@ const cache = new LruJsonCache<unknown>(128);
 /** Mapbox Matching API max coordinates (walking profile). */
 const MAX_MATCH_COORDS = 100;
 
-function clientKey(req: Request): string {
-  const h = req.headers.get("x-forwarded-for");
-  if (h) return h.split(",")[0]?.trim() || "unknown";
-  return req.headers.get("x-real-ip")?.trim() || "unknown";
-}
 
 function cacheKey(coords: [number, number][], tidy: boolean, radiusM: number) {
   const parts: string[] = [
@@ -32,7 +28,7 @@ function cacheKey(coords: [number, number][], tidy: boolean, radiusM: number) {
 }
 
 export async function POST(req: Request) {
-  if (!rateLimitAllow(clientKey(req), 90)) {
+  if (!rateLimitAllow(trustedClientIp(req), 90)) {
     return NextResponse.json({ error: "Rate limit" }, { status: 429 });
   }
 

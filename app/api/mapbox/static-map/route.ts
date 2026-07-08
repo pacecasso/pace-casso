@@ -1,14 +1,10 @@
 import { NextResponse } from "next/server";
 import { getServerMapboxToken } from "../../../../lib/mapboxServerToken";
 import { rateLimitAllow } from "../../../../lib/mapboxRateLimit";
+import { trustedClientIp } from "../../../../lib/apiShield";
 
 export const runtime = "nodejs";
 
-function clientKey(req: Request): string {
-  const h = req.headers.get("x-forwarded-for");
-  if (h) return h.split(",")[0]?.trim() || "unknown";
-  return req.headers.get("x-real-ip")?.trim() || "unknown";
-}
 
 const ALLOWED_STYLES = new Set(["light-v11", "streets-v12", "outdoors-v12"]);
 const DEFAULT_STYLE = "light-v11";
@@ -21,7 +17,7 @@ const DEFAULT_STYLE = "light-v11";
  * it. Used by the top-5 preview tiles and the composite vision grid.
  */
 export async function GET(req: Request) {
-  if (!rateLimitAllow(`static:${clientKey(req)}`, 240)) {
+  if (!rateLimitAllow(`static:${trustedClientIp(req)}`, 240)) {
     return NextResponse.json({ error: "Rate limit" }, { status: 429 });
   }
   const token = getServerMapboxToken();

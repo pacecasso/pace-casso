@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { rateLimitAllow } from "../../../lib/mapboxRateLimit";
+import { shieldExpensiveRoute, trustedClientIp } from "../../../lib/apiShield";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -21,11 +22,6 @@ const ALLOWED_MEDIA = new Set([
 ]);
 const MAX_B64 = 4_000_000;
 
-function clientKey(req: Request): string {
-  const h = req.headers.get("x-forwarded-for");
-  if (h) return h.split(",")[0]?.trim() || "unknown";
-  return req.headers.get("x-real-ip")?.trim() || "unknown";
-}
 
 function buildPrompt(cityLabel: string | null): string {
   const cityLine = cityLabel
@@ -61,7 +57,11 @@ Definitions:
 Pick one value per field. Prefer "upright" for clear letters. Prefer "grid-aligned" for simple orthogonal shapes.`;
 
 export async function POST(req: Request) {
-  if (!rateLimitAllow(`vision-hint:${clientKey(req)}`, 40)) {
+  const shield = shieldExpensiveRoute(req, "vision-hint", 800);
+  if (!shield.ok) {
+    return NextResponse.json({ error: shield.message }, { status: shield.status });
+  }
+  if (!rateLimitAllow(`vision-hint:${trustedClientIp(req)}`, 40)) {
     return NextResponse.json({ error: "Rate limit" }, { status: 429 });
   }
   const client = getClient();

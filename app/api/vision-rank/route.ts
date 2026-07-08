@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { rateLimitAllow } from "../../../lib/mapboxRateLimit";
+import { shieldExpensiveRoute, trustedClientIp } from "../../../lib/apiShield";
 
 export const runtime = "nodejs";
 // Vision ranking calls can take 20-40s with adaptive thinking — bump the route timeout well past default.
@@ -23,11 +24,6 @@ const ALLOWED_MEDIA = new Set([
 /** ~4 MB base64 per image — 2 images per request. Current Anthropic per-image cap is ~5 MB. */
 const MAX_B64 = 4_000_000;
 
-function clientKey(req: Request): string {
-  const h = req.headers.get("x-forwarded-for");
-  if (h) return h.split(",")[0]?.trim() || "unknown";
-  return req.headers.get("x-real-ip")?.trim() || "unknown";
-}
 
 type UserHistoryEntry = {
   center: [number, number];
@@ -101,7 +97,11 @@ In "reason", lead with why the candidate is geographically sound in ${city} ("so
 }
 
 export async function POST(req: Request) {
-  if (!rateLimitAllow(`vision-rank:${clientKey(req)}`, 20)) {
+  const shield = shieldExpensiveRoute(req, "vision-rank", 400);
+  if (!shield.ok) {
+    return NextResponse.json({ error: shield.message }, { status: shield.status });
+  }
+  if (!rateLimitAllow(`vision-rank:${trustedClientIp(req)}`, 20)) {
     return NextResponse.json({ error: "Rate limit" }, { status: 429 });
   }
   const client = getClient();

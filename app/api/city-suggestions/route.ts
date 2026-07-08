@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { rateLimitAllow } from "../../../lib/mapboxRateLimit";
+import { shieldExpensiveRoute, trustedClientIp } from "../../../lib/apiShield";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -13,11 +14,6 @@ function getClient(): Anthropic | null {
   return _client;
 }
 
-function clientKey(req: Request): string {
-  const h = req.headers.get("x-forwarded-for");
-  if (h) return h.split(",")[0]?.trim() || "unknown";
-  return req.headers.get("x-real-ip")?.trim() || "unknown";
-}
 
 type CitySuggestion = {
   title: string;
@@ -63,7 +59,11 @@ Return ONLY a JSON array, no markdown fences, no other prose:
 const ALLOWED_DIFFICULTY = new Set(["simple", "medium", "elaborate"]);
 
 export async function POST(req: Request) {
-  if (!rateLimitAllow(`city-suggestions:${clientKey(req)}`, 30)) {
+  const shield = shieldExpensiveRoute(req, "city-suggestions", 400);
+  if (!shield.ok) {
+    return NextResponse.json({ error: shield.message }, { status: shield.status });
+  }
+  if (!rateLimitAllow(`city-suggestions:${trustedClientIp(req)}`, 30)) {
     return NextResponse.json({ error: "Rate limit" }, { status: 429 });
   }
   const client = getClient();

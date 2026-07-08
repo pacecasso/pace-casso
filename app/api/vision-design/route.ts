@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { rateLimitAllow } from "../../../lib/mapboxRateLimit";
+import { shieldExpensiveRoute, trustedClientIp } from "../../../lib/apiShield";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -31,11 +32,6 @@ type DesignDraft = {
   points: NormalizedPoint[];
 };
 
-function clientKey(req: Request): string {
-  const h = req.headers.get("x-forwarded-for");
-  if (h) return h.split(",")[0]?.trim() || "unknown";
-  return req.headers.get("x-real-ip")?.trim() || "unknown";
-}
 
 function buildPrompt(cityLabel: string | null, draftCount: number): string {
   const city = cityLabel || "a dense city";
@@ -181,7 +177,11 @@ function cleanDrafts(rec: Record<string, unknown>, fallback: DesignDraft): Desig
 }
 
 export async function POST(req: Request) {
-  if (!rateLimitAllow(`vision-design:${clientKey(req)}`, 20)) {
+  const shield = shieldExpensiveRoute(req, "vision-design", 400);
+  if (!shield.ok) {
+    return NextResponse.json({ error: shield.message }, { status: shield.status });
+  }
+  if (!rateLimitAllow(`vision-design:${trustedClientIp(req)}`, 20)) {
     return NextResponse.json({ error: "Rate limit" }, { status: 429 });
   }
   const client = getClient();
