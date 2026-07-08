@@ -37,6 +37,9 @@ const MAX_LINE_UNDO = 28;
 const DEFAULT_CONTOUR_LEVEL = 0.22;
 /** Photo trace → line mask: peel this many boundary layers so the canvas shows strokes, not a solid fill. */
 const PHOTO_LINE_ART_OUTLINE_LAYERS = 3;
+/** Reject files before decode — huge photos hang mobile tabs at canvas time. */
+const MAX_UPLOAD_MB = 20;
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 /** Gaussian sigma (in 300px canvas pixels) applied to luminance before thresholding to remove staircase jaggedness. */
 const PHOTO_BLUR_SIGMA = 1.0;
 
@@ -516,6 +519,7 @@ export default function Step1ImageUpload({
   const [svgBusy, setSvgBusy] = useState(false);
   /** Set if the SVG parser failed or returned a degenerate contour — we'll fall back to raster tracing. */
   const [svgError, setSvgError] = useState<string | null>(null);
+  const [decodeError, setDecodeError] = useState<string | null>(null);
   /**
    * Alpha-channel fast-path (transparent PNG logos). When the upload has
    * significant transparency, the alpha channel IS the foreground mask —
@@ -541,7 +545,6 @@ export default function Step1ImageUpload({
   const contourReqIdRef = useRef(0);
   const workerInFlightRef = useRef(0);
   const uploadSeqRef = useRef(0);
-  const autoDesignerSeqRef = useRef<number | null>(null);
   const applyContourRef = useRef<(pts: NormalizedPoint[] | null) => void>(() => {});
   const pendingFastTraceRef = useRef<{
     file: File;
@@ -759,26 +762,9 @@ export default function Step1ImageUpload({
     }
   }, [applyContourToCanvas, cityLabel, designerBusy, uploadedImage]);
 
-  useEffect(() => {
-    if (!uploadedImage || !imageReady) return;
-    if (svgBusy || alphaBusy || designerBusy) return;
-    if (fastTraceMode || contourBuilt || selectedContour || designerSketch) return;
-    if (pendingFastTraceRef.current?.file === uploadedImage.file) return;
-    if (autoDesignerSeqRef.current === uploadedImage.seq) return;
-    autoDesignerSeqRef.current = uploadedImage.seq;
-    void generateDesignerSketch();
-  }, [
-    alphaBusy,
-    contourBuilt,
-    designerBusy,
-    designerSketch,
-    fastTraceMode,
-    generateDesignerSketch,
-    imageReady,
-    selectedContour,
-    svgBusy,
-    uploadedImage,
-  ]);
+  // NOTE: the AI designer sketch is intentionally NOT auto-fired on upload.
+  // Each generation is a paid vision call; the user triggers it with the
+  // explicit "Create AI sketch" button below.
 
   useEffect(() => {
     if (!selectedInterpretation && normalizedContour) {
@@ -934,7 +920,6 @@ export default function Step1ImageUpload({
 
   const invalidateCurrentTrace = useCallback(() => {
     pendingFastTraceRef.current = null;
-    autoDesignerSeqRef.current = null;
     contourReqIdRef.current++;
     workerInFlightRef.current = 0;
     lineArtDirtyRef.current = false;
@@ -946,6 +931,7 @@ export default function Step1ImageUpload({
     setFastTraceMode(null);
     setSvgError(null);
     setAlphaError(null);
+    setDecodeError(null);
     setDesignerSketch(null);
     setDesignerError(null);
     setDesignerBusy(false);
@@ -1094,6 +1080,12 @@ export default function Step1ImageUpload({
           showFastTraceForReview(pending.points, pending.mode, pending.file);
         }
       });
+    };
+    img.onerror = () => {
+      if (uploadSeqRef.current !== uploadedImage.seq) return;
+      setDecodeError(
+        "Couldn't read that image. HEIC and some camera formats aren't supported in the browser — try a PNG, JPEG, or SVG export instead.",
+      );
     };
     img.src = uploadedImage.url;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1261,6 +1253,16 @@ export default function Step1ImageUpload({
     uploadSeqRef.current = uploadSeq;
     invalidateCurrentTrace();
 
+    // Guard before any decode/canvas work — a 60 MB phone photo can hang or
+    // crash a mobile tab long before the server's own 4 MB base64 cap.
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setDecodeError(
+        `That file is ${(file.size / (1024 * 1024)).toFixed(1)} MB — the limit is ${MAX_UPLOAD_MB} MB. Export a smaller PNG/JPEG (logos rarely need more than 1–2 MB).`,
+      );
+      event.target.value = "";
+      return;
+    }
+
     /**
      * Fast path for SVG uploads — corporate logos are typically available as
      * SVG and are already clean vector data. Sample the paths directly and
@@ -1367,12 +1369,12 @@ export default function Step1ImageUpload({
         </div>
       ) : null}
 
-      {svgError || alphaError ? (
+      {decodeError || svgError || alphaError ? (
         <div
           className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-900"
           role="status"
         >
-          {svgError || alphaError}
+          {decodeError || svgError || alphaError}
         </div>
       ) : null}
 
