@@ -35,10 +35,6 @@ import { heartConfidence } from "./artPathInterpretation";
 import { reviewStreetDesignSketch } from "./streetDesignSketch";
 import { cleanupRouteSpurs } from "./routeSpurCleanup";
 import { generateMapNativeCandidates } from "./mapNativeDesigner";
-import {
-  curatedGasLogoMapNativeCandidate,
-  curatedGasLogoRouteLine,
-} from "./curatedGasLogoManhattanRoute";
 
 const MARGIN = 0.012;
 const MIN_PERIMETER_KM = 3;
@@ -1915,33 +1911,6 @@ async function parallelSnap(
     const batch = candidates.slice(i, i + SNAP_BATCH_SIZE);
     const snapped = await Promise.all(
       batch.map(async (c) => {
-        if (
-          c.routeMode === "direct-grid" &&
-          c.designIntent?.includes("Curated GAS logo Manhattan v1")
-        ) {
-          const coords = c.anchors;
-          const route = curatedGasLogoRouteLine();
-          const shapeScores = blendedCandidateShapeMatch({
-            candidateAnchors: coords,
-            sourceAnchors: coords,
-            routeCoords: coords,
-            kind: c.kind,
-          });
-          return {
-            placement: c.placement,
-            anchors: coords,
-            designIntent: c.designIntent,
-            kind: c.kind,
-            routeMode: c.routeMode,
-            coords,
-            route,
-            km: c.km,
-            qualityScore: routeQualityScore(coords),
-            shapeMatchScore: shapeScores.shapeMatchScore,
-            sourceMatchScore: shapeScores.sourceMatchScore,
-          } as SnappedCandidate;
-        }
-
         const r = await snapOne(c.anchors, anchorSource);
         if (!r) return null;
 
@@ -4196,12 +4165,6 @@ export async function autoFindTop5(
   if (!options.anchorAround && contour.length >= 2) {
     visionDesignDrafts = mergeVisionDesignDrafts(contour, visionDesignDrafts);
   }
-  if (!options.anchorAround) {
-    visionDesignDrafts = injectGasRepresentativeDrafts(
-      visionDesignDrafts,
-      options.imageSourceName,
-    );
-  }
   const sketchLedSearch =
     !options.anchorAround && isSketchLedPlacementSearch(contour);
   const effectiveTargetDistanceKm = usableTargetDistanceKm(
@@ -4222,7 +4185,6 @@ export async function autoFindTop5(
       ? approvedSketchDraft.visualFeatures
       : deriveRequiredVisualFeatures(visionDesignDrafts);
   const structuralRequirement: StructuralRequirement | null =
-    inferGasLogoFromSourceName(options.imageSourceName) ||
     visionDesignDrafts.some(
       (draft) => draft.label === "Representative gas pump + person logo",
     )
@@ -4230,18 +4192,12 @@ export async function autoFindTop5(
       : null;
 
   const mapNativeRoutes = !options.anchorAround
-    ? (() => {
-        const routes = generateMapNativeCandidates({
-          drafts: visionDesignDrafts,
-          preset,
-          targetDistanceKm: effectiveTargetDistanceKm,
-          wordmarkText,
-        });
-        if (inferGasLogoFromSourceName(options.imageSourceName)) {
-          return [curatedGasLogoMapNativeCandidate(), ...routes];
-        }
-        return routes;
-      })()
+    ? generateMapNativeCandidates({
+        drafts: visionDesignDrafts,
+        preset,
+        targetDistanceKm: effectiveTargetDistanceKm,
+        wordmarkText,
+      })
     : [];
   const useWordmarkOnly =
     wordmarkText != null &&
