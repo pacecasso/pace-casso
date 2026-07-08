@@ -24,3 +24,4 @@ playwright/.cache
 
 # Local GPS-art proof experiments / generated route previews
 /tmp-heart-qa/
+/tmp-route-art-benchmark/

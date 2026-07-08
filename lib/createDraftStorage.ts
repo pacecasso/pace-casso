@@ -20,6 +20,7 @@ export type CreateDraftV1 = {
   selectedCityId: string;
   sourceKind: "image" | "freehand" | null;
   contourCoordinates: NormalizedPointDraft[] | null;
+  sketchApproved: boolean;
   anchorLocation: AnchorLocationDraft | null;
   snappedRoute: RouteLineString | null;
   editedRoute: RouteLineString | null;
@@ -121,6 +122,7 @@ export function loadCreateDraft(): CreateDraftV1 | null {
         d.contourCoordinates.every(isValidNormalizedPoint)
           ? (d.contourCoordinates as NormalizedPointDraft[])
           : null,
+      sketchApproved: d.sketchApproved === true,
       anchorLocation: (() => {
         const al = d.anchorLocation as AnchorLocationDraft | undefined;
         if (!al || typeof al !== "object") return null;
@@ -157,6 +159,7 @@ export function reconcileDraft(d: CreateDraftV1): CreateDraftV1 {
     currentStep,
     sourceKind,
     contourCoordinates,
+    sketchApproved,
     anchorLocation,
     snappedRoute,
     editedRoute,
@@ -164,9 +167,14 @@ export function reconcileDraft(d: CreateDraftV1): CreateDraftV1 {
     uploadedImageBase64,
   } = { ...d };
 
+  const hadMovedPastImageSketch =
+    d.sourceKind === "image" &&
+    (d.sketchApproved === true || d.currentStep >= 4 || d.anchorLocation != null);
+
   if (sourceKind == null) {
     if (currentStep >= 2) currentStep = 1;
     contourCoordinates = null;
+    sketchApproved = false;
     anchorLocation = null;
     snappedRoute = null;
     editedRoute = null;
@@ -177,10 +185,15 @@ export function reconcileDraft(d: CreateDraftV1): CreateDraftV1 {
   if (sourceKind === "image") {
     if (currentStep >= 3 && (!contourCoordinates || contourCoordinates.length < 2)) {
       currentStep = Math.min(currentStep, 2);
+      sketchApproved = false;
       anchorLocation = null;
       snappedRoute = null;
       editedRoute = null;
       finalRoute = null;
+    } else if (currentStep >= 3) {
+      sketchApproved = hadMovedPastImageSketch;
+    } else {
+      sketchApproved = false;
     }
     if (currentStep >= 4 && !anchorLocation) {
       currentStep = 3;
@@ -190,6 +203,7 @@ export function reconcileDraft(d: CreateDraftV1): CreateDraftV1 {
     }
   }
   if (sourceKind === "freehand") {
+    sketchApproved = true;
     if (currentStep >= 4 && !anchorLocation) {
       currentStep = 2;
       snappedRoute = null;
@@ -211,6 +225,7 @@ export function reconcileDraft(d: CreateDraftV1): CreateDraftV1 {
     ...d,
     currentStep,
     contourCoordinates,
+    sketchApproved,
     anchorLocation,
     snappedRoute,
     editedRoute,

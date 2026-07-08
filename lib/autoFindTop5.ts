@@ -34,6 +34,11 @@ import { isValidLatLng } from "./mapboxCoordsValidate";
 import { heartConfidence } from "./artPathInterpretation";
 import { reviewStreetDesignSketch } from "./streetDesignSketch";
 import { cleanupRouteSpurs } from "./routeSpurCleanup";
+import { generateMapNativeCandidates } from "./mapNativeDesigner";
+import {
+  curatedGasLogoMapNativeCandidate,
+  curatedGasLogoRouteLine,
+} from "./curatedGasLogoManhattanRoute";
 
 const MARGIN = 0.012;
 const MIN_PERIMETER_KM = 3;
@@ -44,7 +49,7 @@ const MIN_PERIMETER_KM = 3;
  * candidate *pool*, not the output quality bar.
  */
 const MAX_PERIMETER_KM = 35;
-const CANDIDATES_TO_SNAP = 36;
+const CANDIDATES_TO_SNAP = 48;
 const SNAP_BATCH_SIZE = 4;
 const SNAP_BATCH_GAP_MS = 100;
 
@@ -88,6 +93,8 @@ export type Top5Pick = {
   qualityScore: number;
   /** 0-100, where higher means the snapped route still reads like the artwork. */
   shapeMatchScore: number;
+  /** 0-100, where higher means the final snapped route resembles the source upload itself. */
+  sourceMatchScore: number;
   /** One-line rationale from Claude. Absent on fallback. */
   reason?: string;
 };
@@ -105,6 +112,8 @@ export type AutoFindTop5Options = {
   anchorSource?: AnchorPathSource;
   /** Reference image as a data-URL or raw base64. When absent, vision is skipped. */
   imageBase64?: string;
+  /** Original upload filename; used only as a weak hint for letter/wordmark uploads. */
+  imageSourceName?: string;
   topK?: number;
   candidatesToSnap?: number;
   /**
@@ -156,6 +165,28 @@ function scalesFromHint(hint: ShapeHint | null): number[] {
       // the full range and picks whatever actually reads best.
       return [0.6, 1.0, 1.6, 2.4, 3.4, 4.5, 5.5];
   }
+}
+
+export function usableTargetDistanceKm(
+  hint: ShapeHint | null | undefined,
+  explicitTargetDistanceKm?: number,
+): number | undefined {
+  if (
+    explicitTargetDistanceKm != null &&
+    Number.isFinite(explicitTargetDistanceKm) &&
+    explicitTargetDistanceKm > 0
+  ) {
+    return explicitTargetDistanceKm;
+  }
+  if (!hint) return undefined;
+  if (hint.shapeClass === "letter") return 9;
+  if (hint.shapeClass === "geometric") return 14;
+  if (hint.shapeClass === "creature") {
+    return hint.scaleHint === "sprawling" ? 18 : 14;
+  }
+  if (hint.scaleHint === "compact") return 12;
+  if (hint.scaleHint === "sprawling") return 18;
+  return 14;
 }
 
 /**
@@ -588,13 +619,16 @@ type ValidCandidate = {
   anchors: [number, number][];
   km: number;
   designIntent?: string;
+  routeMode?: "direct-grid";
   kind?:
     | "generic"
     | "city-focus"
     | "city-heart"
     | "designed-heart"
     | "reference-heart"
-    | "vision-design";
+    | "vision-design"
+    | "street-design"
+    | "street-wordmark";
 };
 
 function sanityFilter(
@@ -653,9 +687,12 @@ function designDraftCandidates(
     for (const p of placements) {
       const v = sanityFilter(draft.points, preset, p);
       if (v) {
+        const featuresText = draft.visualFeatures?.length
+          ? ` Features: ${draft.visualFeatures.join(", ")}.`
+          : "";
         validForDraft.push({
           ...v,
-          designIntent: `${draft.label}: ${draft.description}`,
+          designIntent: `${draft.label}: ${draft.description}${featuresText}`,
           kind: "vision-design",
         });
       }
@@ -763,6 +800,210 @@ export function snappedRouteDistanceKm(route: RouteLineString): number | null {
   return measured > 0 ? measured : null;
 }
 
+function localMetricPoints(coords: [number, number][]): ContourPoint[] {
+  const valid = coords.filter((p) => isValidLatLng(p));
+  if (valid.length < 2) return [];
+  const lat0 =
+    valid.reduce((sum, [lat]) => sum + lat, 0) / Math.max(1, valid.length);
+  const lng0 =
+    valid.reduce((sum, [, lng]) => sum + lng, 0) / Math.max(1, valid.length);
+  const metersPerLat = 111_320;
+  const metersPerLng = metersPerLat * Math.cos((lat0 * Math.PI) / 180);
+  return valid.map(([lat, lng]) => ({
+    x: (lng - lng0) * metersPerLng,
+    y: (lat - lat0) * metersPerLat,
+  }));
+}
+
+function localPathLength(points: ContourPoint[]): number {
+  let d = 0;
+  for (let i = 1; i < points.length; i++) {
+    d += Math.hypot(
+      points[i]!.x - points[i - 1]!.x,
+      points[i]!.y - points[i - 1]!.y,
+    );
+  }
+  return d;
+}
+
+function boundsForPoints(points: ContourPoint[]) {
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const height = Math.max(...ys) - Math.min(...ys);
+  return {
+    width,
+    height,
+    diagonal: Math.hypot(width, height) || 1,
+  };
+}
+
+function normalizedFeatureSimilarity(a: number, b: number): number {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+  const scale = Math.max(Math.abs(a), Math.abs(b), 1e-6);
+  return Math.max(0, 1 - Math.abs(a - b) / scale);
+}
+
+function directionHistogram(points: ContourPoint[], bins = 8): number[] {
+  const hist = Array.from({ length: bins }, () => 0);
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1]!;
+    const b = points[i]!;
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len <= 0) continue;
+    const angle = (Math.atan2(b.y - a.y, b.x - a.x) + Math.PI * 2) % Math.PI;
+    const idx = Math.min(bins - 1, Math.floor((angle / Math.PI) * bins));
+    hist[idx] += len;
+    total += len;
+  }
+  return total > 0 ? hist.map((v) => v / total) : hist;
+}
+
+function histogramSimilarity(a: number[], b: number[]): number {
+  const n = Math.min(a.length, b.length);
+  if (n === 0) return 0;
+  let diff = 0;
+  for (let i = 0; i < n; i++) diff += Math.abs(a[i]! - b[i]!);
+  return Math.max(0, 1 - diff / 2);
+}
+
+function significantTurnStats(points: ContourPoint[]): {
+  count: number;
+  strength: number;
+} {
+  if (points.length < 3) return { count: 0, strength: 0 };
+  const step = Math.max(1, Math.floor(points.length / 90));
+  const sampled = points.filter((_, i) => i % step === 0);
+  if (sampled[sampled.length - 1] !== points[points.length - 1]) {
+    sampled.push(points[points.length - 1]!);
+  }
+
+  let count = 0;
+  let strength = 0;
+  for (let i = 1; i < sampled.length - 1; i++) {
+    const p0 = sampled[i - 1]!;
+    const p1 = sampled[i]!;
+    const p2 = sampled[i + 1]!;
+    const ax = p1.x - p0.x;
+    const ay = p1.y - p0.y;
+    const bx = p2.x - p1.x;
+    const by = p2.y - p1.y;
+    const al = Math.hypot(ax, ay);
+    const bl = Math.hypot(bx, by);
+    if (al <= 0 || bl <= 0) continue;
+    const dot = (ax * bx + ay * by) / (al * bl);
+    const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
+    if (angle >= Math.PI / 7) {
+      count++;
+      strength += angle;
+    }
+  }
+  return { count, strength };
+}
+
+function visualSignature(points: ContourPoint[]) {
+  const bounds = boundsForPoints(points);
+  const pathLen = localPathLength(points);
+  const first = points[0]!;
+  const last = points[points.length - 1]!;
+  const chord = Math.hypot(last.x - first.x, last.y - first.y);
+  const aspect =
+    Math.max(bounds.width, bounds.height) / Math.max(1, Math.min(bounds.width, bounds.height));
+  const closedness = Math.max(0, 1 - chord / Math.max(1, bounds.diagonal * 0.35));
+  const pathChordRatio = pathLen / Math.max(1, chord || bounds.diagonal);
+  const turns = significantTurnStats(points);
+  return {
+    aspect,
+    closedness,
+    pathChordRatio,
+    turnCount: turns.count,
+    turnStrength: turns.strength,
+    directions: directionHistogram(points),
+  };
+}
+
+export function visualStructureMatchPercent(
+  intended: [number, number][],
+  actual: [number, number][],
+): number {
+  const aPts = localMetricPoints(intended);
+  const bPts = localMetricPoints(actual);
+  if (aPts.length < 2 || bPts.length < 2) return 0;
+  const a = visualSignature(aPts);
+  const b = visualSignature(bPts);
+
+  const aspect = normalizedFeatureSimilarity(Math.log(a.aspect), Math.log(b.aspect));
+  const closed = 1 - Math.min(1, Math.abs(a.closedness - b.closedness));
+  const pathRatio = normalizedFeatureSimilarity(
+    Math.log(a.pathChordRatio),
+    Math.log(b.pathChordRatio),
+  );
+  const turnCount = normalizedFeatureSimilarity(a.turnCount + 1, b.turnCount + 1);
+  const turnStrength = normalizedFeatureSimilarity(
+    a.turnStrength + 0.1,
+    b.turnStrength + 0.1,
+  );
+  const direction = histogramSimilarity(a.directions, b.directions);
+
+  const score =
+    aspect * 0.16 +
+    closed * 0.18 +
+    pathRatio * 0.18 +
+    turnCount * 0.17 +
+    turnStrength * 0.13 +
+    direction * 0.18;
+  return Math.round(Math.max(0, Math.min(100, score * 100)));
+}
+
+export function routeShapeMatchPercent(
+  intended: [number, number][],
+  actual: [number, number][],
+): number {
+  const proximity = interpretationMatchPercent(intended, actual);
+  const structure = visualStructureMatchPercent(intended, actual);
+  // Etch-a-sketch GPS art: gestalt and coarse silhouette beat pixel-tight fit.
+  const blended = proximity * 0.42 + structure * 0.58;
+  const cap = structure < 32 ? Math.min(blended, structure + 48) : blended;
+  return Math.round(Math.max(0, Math.min(100, cap)));
+}
+
+function isSourceDerivedCandidate(kind: ValidCandidate["kind"] | undefined): boolean {
+  return kind == null || kind === "generic" || kind === "city-focus";
+}
+
+function blendedCandidateShapeMatch({
+  candidateAnchors,
+  sourceAnchors,
+  routeCoords,
+  kind,
+}: {
+  candidateAnchors: [number, number][];
+  sourceAnchors: [number, number][];
+  routeCoords: [number, number][];
+  kind: ValidCandidate["kind"] | undefined;
+}): { shapeMatchScore: number; sourceMatchScore: number } {
+  const candidateMatch = routeShapeMatchPercent(candidateAnchors, routeCoords);
+  const sourceMatch = routeShapeMatchPercent(sourceAnchors, routeCoords);
+  if (isSourceDerivedCandidate(kind)) {
+    return {
+      shapeMatchScore: candidateMatch,
+      sourceMatchScore: sourceMatch,
+    };
+  }
+
+  const sourceWeight =
+    kind === "street-wordmark" ? 0.5 : kind === "street-design" ? 0.28 : 0.22;
+  const blended = candidateMatch * (1 - sourceWeight) + sourceMatch * sourceWeight;
+  const sourceCapPadding =
+    kind === "street-wordmark" ? 32 : kind === "street-design" ? 48 : 52;
+  const capped = Math.min(blended, sourceMatch + sourceCapPadding);
+  return {
+    shapeMatchScore: Math.round(Math.max(0, Math.min(100, capped))),
+    sourceMatchScore: sourceMatch,
+  };
+}
+
 async function snapOne(
   anchors: [number, number][],
   anchorSource: AnchorPathSource | undefined,
@@ -791,6 +1032,8 @@ type SnappedCandidate = {
   placement: PlacementTransform;
   anchors: [number, number][];
   designIntent?: string;
+  kind?: ValidCandidate["kind"];
+  routeMode?: ValidCandidate["routeMode"];
   coords: [number, number][];
   route: RouteLineString;
   /** Snapped walking distance in km (what Mapbox returned). */
@@ -799,12 +1042,20 @@ type SnappedCandidate = {
   qualityScore: number;
   /** 0-100, rewards snapped geometry that still follows the intended artwork. */
   shapeMatchScore: number;
+  /** 0-100, rewards resemblance to the user's uploaded/approved source sketch. */
+  sourceMatchScore: number;
 };
+
+type StructuralRequirement = "gas-pump-person";
 
 export type AutoFindPickSelectionCandidate = {
   placement: PlacementTransform;
+  kind?: ValidCandidate["kind"];
+  routeMode?: ValidCandidate["routeMode"];
   qualityScore: number;
   shapeMatchScore: number;
+  sourceMatchScore?: number;
+  distanceKm?: number;
 };
 
 export function scoreAutoPlacementCandidate(
@@ -813,7 +1064,746 @@ export function scoreAutoPlacementCandidate(
 ): number {
   const clean = Math.max(0, Math.min(100, qualityScore));
   const shape = Math.max(0, Math.min(100, shapeMatchScore));
-  return shape * 0.58 + clean * 0.42;
+  return shape * 0.7 + clean * 0.3;
+}
+
+function candidateDistancePenalty(distanceKm: number | undefined): number {
+  if (distanceKm == null || !Number.isFinite(distanceKm)) return 0;
+  // Runners target ~10–25 km for readable brand art; don't punish until past 25.
+  if (distanceKm <= 25) return 0;
+  if (distanceKm <= 32) return (distanceKm - 25) * 0.65;
+  return 4.55 + (distanceKm - 32) * 1.5;
+}
+
+function candidateSelectionScore(
+  candidate: AutoFindPickSelectionCandidate,
+  preferredRank: number | undefined,
+  preferredCount: number,
+  preferredWeight: number,
+): number {
+  const base = scoreAutoPlacementCandidate(
+    candidate.qualityScore,
+    candidate.shapeMatchScore,
+  );
+  const clean = Math.max(0, Math.min(100, candidate.qualityScore));
+  const cleanPenalty = clean < 30 ? (30 - clean) * 1.15 : 0;
+  const visionBonus =
+    preferredRank == null
+      ? 0
+      : preferredWeight * (1 - preferredRank / Math.max(1, preferredCount));
+  return (
+    base +
+    visionBonus -
+    cleanPenalty -
+    candidateDistancePenalty(candidate.distanceKm)
+  );
+}
+
+export function isDisplayWorthyAutoFindCandidate(
+  candidate: AutoFindPickSelectionCandidate,
+): boolean {
+  const clean = Math.max(0, Math.min(100, candidate.qualityScore));
+  const shape = Math.max(0, Math.min(100, candidate.shapeMatchScore));
+  const distance = candidate.distanceKm;
+  if (shape < 40) return false;
+  if (clean < 28) return false;
+  if (distance != null && Number.isFinite(distance) && distance > 30) {
+    return false;
+  }
+  return clean >= 28 || shape >= 58;
+}
+
+type FinalRouteTruthVerdict = {
+  ok: boolean;
+  reason: string;
+  minShape: number;
+  minSource: number;
+  minClean: number;
+  maxDistanceKm: number;
+};
+
+function clampPercent(n: number | undefined): number {
+  if (n == null || !Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, n));
+}
+
+function finalRouteTruthFloors(
+  candidate: AutoFindPickSelectionCandidate,
+  hint: ShapeHint | null | undefined,
+  requiredVisualFeatures: string[],
+): Omit<FinalRouteTruthVerdict, "ok" | "reason"> {
+  const featureText = requiredVisualFeatures.join(" ").toLowerCase();
+  const isWordmark =
+    hint?.shapeClass === "letter" ||
+    candidate.kind === "street-wordmark" ||
+    /\b(letter|letters|word|wordmark|baseline|reading order)\b/.test(
+      featureText,
+    );
+  const directGridWordmark =
+    candidate.kind === "street-wordmark" && candidate.routeMode === "direct-grid";
+  const needsSweep = requiresSweepStructure(requiredVisualFeatures);
+  const needsStar = requiresStarStructure(requiredVisualFeatures);
+  const needsBolt = requiresBoltStructure(requiredVisualFeatures);
+
+  if (directGridWordmark) {
+    return { minShape: 45, minSource: 20, minClean: 7, maxDistanceKm: 24 };
+  }
+  if (isWordmark) {
+    return { minShape: 62, minSource: 42, minClean: 18, maxDistanceKm: 22 };
+  }
+  if (hint?.shapeClass === "geometric" || needsStar || needsBolt) {
+    return { minShape: 50, minSource: 28, minClean: 35, maxDistanceKm: 25 };
+  }
+  if (needsSweep) {
+    return { minShape: 48, minSource: 26, minClean: 30, maxDistanceKm: 25 };
+  }
+  if (candidate.kind === "street-design" || candidate.kind === "vision-design") {
+    // Sketch-led routes: judge readability of the etch-a-sketch, not pixel trace.
+    return { minShape: 45, minSource: 0, minClean: 25, maxDistanceKm: 25 };
+  }
+  return { minShape: 48, minSource: 30, minClean: 28, maxDistanceKm: 30 };
+}
+
+export function finalRouteTruthVerdict(
+  candidate: AutoFindPickSelectionCandidate,
+  hint: ShapeHint | null | undefined = null,
+  requiredVisualFeatures: string[] = [],
+): FinalRouteTruthVerdict {
+  const floors = finalRouteTruthFloors(candidate, hint, requiredVisualFeatures);
+  const shape = clampPercent(candidate.shapeMatchScore);
+  const clean = clampPercent(candidate.qualityScore);
+  const source =
+    candidate.sourceMatchScore == null
+      ? shape
+      : clampPercent(candidate.sourceMatchScore);
+  const distance = candidate.distanceKm;
+
+  if (shape < floors.minShape) {
+    return { ...floors, ok: false, reason: "low final-route shape match" };
+  }
+  if (source < floors.minSource) {
+    return { ...floors, ok: false, reason: "low source-art match" };
+  }
+  if (clean < floors.minClean) {
+    return { ...floors, ok: false, reason: "messy snapped route" };
+  }
+  if (
+    distance != null &&
+    Number.isFinite(distance) &&
+    distance > floors.maxDistanceKm
+  ) {
+    return { ...floors, ok: false, reason: "route is too long to be credible" };
+  }
+  return { ...floors, ok: true, reason: "truth-worthy snapped route" };
+}
+
+function isDisplayWorthyForHint(
+  candidate: AutoFindPickSelectionCandidate,
+  hint: ShapeHint | null | undefined,
+  requiredVisualFeatures: string[] = [],
+): boolean {
+  const shape = Math.max(0, Math.min(100, candidate.shapeMatchScore));
+  const clean = Math.max(0, Math.min(100, candidate.qualityScore));
+  const source =
+    candidate.sourceMatchScore == null
+      ? shape
+      : Math.max(0, Math.min(100, candidate.sourceMatchScore));
+  const distance = candidate.distanceKm;
+  if (!finalRouteTruthVerdict(candidate, hint, requiredVisualFeatures).ok) {
+    return false;
+  }
+
+  if (hint?.shapeClass === "letter") {
+    if (candidate.kind === "street-wordmark" && candidate.routeMode === "direct-grid") {
+      if (shape < 45) return false;
+      if (source < 20) return false;
+      if (clean < 7) return false;
+      if (distance != null && Number.isFinite(distance) && distance > 24) {
+        return false;
+      }
+      return true;
+    }
+    if (shape < 70) return false;
+    if (source < 45) return false;
+    if (clean < 10) return false;
+    if (distance != null && Number.isFinite(distance) && distance > 22) {
+      return false;
+    }
+    return true;
+  }
+
+  if (candidate.kind === "street-design") {
+    if (shape < 42) return false;
+    if (clean < 22) return false;
+    if (distance != null && Number.isFinite(distance) && distance > 25) {
+      return false;
+    }
+    return true;
+  }
+
+  if (!isDisplayWorthyAutoFindCandidate(candidate)) return false;
+  if (source < 38 && shape < 82) {
+    return false;
+  }
+
+  if (hint?.shapeClass === "geometric") {
+    if (shape < 52) return false;
+    if (source < 28) return false;
+    return !(clean >= 55 && shape < 58);
+  }
+
+  return true;
+}
+
+function normalizedDesignSpacePoints(
+  coords: [number, number][],
+  placement: PlacementTransform,
+): ContourPoint[] {
+  if (coords.length < 2) return [];
+  const center = placement.center;
+  const metersPerLat = 111_320;
+  const metersPerLng =
+    metersPerLat * Math.cos((center[0] * Math.PI) / 180);
+  const rad = (placement.rotationDeg * Math.PI) / 180;
+  const xAxis = { east: Math.sin(rad), north: Math.cos(rad) };
+  const yAxis = {
+    east: Math.sin(rad + Math.PI / 2),
+    north: Math.cos(rad + Math.PI / 2),
+  };
+
+  const raw = coords.map(([lat, lng]) => {
+    const east = (lng - center[1]) * metersPerLng;
+    const north = (lat - center[0]) * metersPerLat;
+    return {
+      x: east * xAxis.east + north * xAxis.north,
+      y: east * yAxis.east + north * yAxis.north,
+    };
+  });
+  const xs = raw.map((p) => p.x);
+  const ys = raw.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const width = maxX - minX || 1;
+  const height = maxY - minY || 1;
+  return raw.map((p) => ({
+    x: (p.x - minX) / width,
+    y: (p.y - minY) / height,
+  }));
+}
+
+function span(points: ContourPoint[], axis: "x" | "y"): number {
+  if (points.length === 0) return 0;
+  const values = points.map((p) => p[axis]);
+  return Math.max(...values) - Math.min(...values);
+}
+
+function segmentLengthNorm(a: ContourPoint, b: ContourPoint): number {
+  return Math.hypot(b.x - a.x, b.y - a.y);
+}
+
+export function gasPumpPersonStructureScore(
+  coords: [number, number][],
+  placement: PlacementTransform,
+): number {
+  const pts = normalizedDesignSpacePoints(coords, placement);
+  if (pts.length < 4) return 0;
+
+  let total = 0;
+  let leftLen = 0;
+  let midLen = 0;
+  let rightLen = 0;
+  const leftPts: ContourPoint[] = [];
+  const midPts: ContourPoint[] = [];
+  const rightPts: ContourPoint[] = [];
+
+  for (const p of pts) {
+    if (p.x <= 0.44) leftPts.push(p);
+    if (p.x >= 0.32 && p.x <= 0.76) midPts.push(p);
+    if (p.x >= 0.58) rightPts.push(p);
+  }
+
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]!;
+    const b = pts[i]!;
+    const len = segmentLengthNorm(a, b);
+    const mx = (a.x + b.x) / 2;
+    total += len;
+    if (mx <= 0.44) leftLen += len;
+    if (mx >= 0.32 && mx <= 0.76) midLen += len;
+    if (mx >= 0.58) rightLen += len;
+  }
+  if (total <= 0) return 0;
+
+  const leftRatio = leftLen / total;
+  const midRatio = midLen / total;
+  const rightRatio = rightLen / total;
+  const leftY = span(leftPts, "y");
+  const leftX = span(leftPts, "x");
+  const midY = span(midPts, "y");
+  const rightY = span(rightPts, "y");
+  const rightX = span(rightPts, "x");
+
+  let score = 0;
+  score +=
+    30 *
+    Math.min(1, leftRatio / 0.25) *
+    Math.min(1, leftY / 0.45) *
+    Math.min(1, leftX / 0.12);
+  score +=
+    28 *
+    Math.min(1, rightRatio / 0.16) *
+    Math.min(1, rightY / 0.35) *
+    Math.min(1, rightX / 0.08);
+  score +=
+    24 *
+    Math.min(1, midRatio / 0.18) *
+    Math.min(1, midY / 0.24);
+  if (leftRatio >= 0.16 && midRatio >= 0.12 && rightRatio >= 0.1) {
+    score += 18;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function structuralScore(
+  candidate: SnappedCandidate,
+  requirement: StructuralRequirement | null,
+): number {
+  if (requirement === "gas-pump-person") {
+    return gasPumpPersonStructureScore(candidate.coords, candidate.placement);
+  }
+  return 100;
+}
+
+export function hasCompleteGasPumpPersonText(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    /\b(gas|pump|fuel|nozzle)\b/.test(t) &&
+    /\b(hose|nozzle|cable|loop|arc|handle)\b/.test(t) &&
+    /\b(person|human|figure|head|body|torso|legs|arm|hand|headphones)\b/.test(
+      t,
+    )
+  );
+}
+
+function hasAnyFeatureText(text: string, keywords: RegExp): boolean {
+  return keywords.test(text.toLowerCase());
+}
+
+function passesStructuralTextGate(
+  candidate: SnappedCandidate,
+  reason: string | undefined,
+  requirement: StructuralRequirement | null,
+): boolean {
+  if (requirement !== "gas-pump-person") return true;
+  if (!hasCompleteGasPumpPersonText(candidate.designIntent ?? "")) {
+    return false;
+  }
+  return reason == null || hasCompleteGasPumpPersonText(reason);
+}
+
+function isRouteNativeVisualMatch(
+  candidate: SnappedCandidate,
+  requiredVisualFeatures: string[],
+): boolean {
+  if (candidate.kind !== "street-design" && candidate.kind !== "street-wordmark") {
+    return false;
+  }
+  if (requiredVisualFeatures.length === 0) return false;
+
+  const intent = (candidate.designIntent ?? "").toLowerCase();
+  const isRouteLibrary = /\broute-library manhattan\b/.test(intent);
+  const goodEnoughRoute =
+    candidate.km >= 4.5 &&
+    candidate.qualityScore >= 42 &&
+    (isRouteLibrary || candidate.shapeMatchScore >= 38);
+
+  if (!goodEnoughRoute) return false;
+
+  if (requiresSweepStructure(requiredVisualFeatures)) {
+    if (isRouteLibrary) {
+      return (
+        /\b(swoosh|sweep|ribbon|wing|rising tail|taper)\b/.test(intent) &&
+        candidate.km >= 5.5 &&
+        candidate.qualityScore >= 35 &&
+        sweepVisualStructureScore(candidate.coords, candidate.placement) >= 34
+      );
+    }
+    return (
+      /\b(swoosh|sweep|ribbon|wing|rising tail)\b/.test(intent) &&
+      passesSweepDisplayFloor(candidate, requiredVisualFeatures)
+    );
+  }
+
+  if (requiresBoltStructure(requiredVisualFeatures)) {
+    const namesBolt = /\b(lightning|bolt|zig[-\s]?zag|notch|pointed bottom)\b/.test(
+      intent,
+    );
+    const boltStructure = boltVisualStructureScore(candidate.coords);
+    return namesBolt &&
+      candidate.qualityScore >= 50 &&
+      (isRouteLibrary || candidate.shapeMatchScore >= 45) &&
+      (isRouteLibrary || boltStructure >= 32);
+  }
+
+  if (requiresStarStructure(requiredVisualFeatures)) {
+    const namesStar = /\b(star|five[-\s]?point|sharp tip|inner crossing)\b/.test(
+      intent,
+    );
+    return namesStar &&
+      candidate.km >= 5 &&
+      candidate.km <= 13 &&
+      candidate.qualityScore >= 45 &&
+      (isRouteLibrary || candidate.shapeMatchScore >= 40);
+  }
+
+  return false;
+}
+
+function requiredFeatureCoverageThreshold(featureCount: number): number {
+  if (featureCount <= 0) return 0;
+  if (featureCount <= 3) return 33;
+  if (featureCount <= 5) return 40;
+  return 50;
+}
+
+function passesRequiredVisualFeatureGate(
+  candidate: SnappedCandidate,
+  reason: string | undefined,
+  requiredVisualFeatures: string[],
+  requireVisibleReason = false,
+): boolean {
+  if (requiredVisualFeatures.length === 0) return true;
+  if (isRouteNativeVisualMatch(candidate, requiredVisualFeatures)) return true;
+  const combinedText = [candidate.designIntent, reason].filter(Boolean).join(" ");
+  const text = requireVisibleReason ? reason ?? "" : combinedText;
+  if (!text.trim() && !candidate.designIntent?.trim()) return false;
+  const threshold = requiredFeatureCoverageThreshold(requiredVisualFeatures.length);
+  const designIntentCoverage = requiredFeatureCoverageScore(
+    candidate.designIntent ?? "",
+    requiredVisualFeatures,
+  );
+  if (
+    (candidate.kind === "street-design" ||
+      candidate.kind === "street-wordmark" ||
+      candidate.kind === "vision-design") &&
+    designIntentCoverage >= threshold
+  ) {
+    return true;
+  }
+  if (requireVisibleReason) {
+    const visibleCoverage = requiredFeatureCoverageScore(
+      text,
+      requiredVisualFeatures,
+    );
+    if (visibleCoverage >= threshold) {
+      return true;
+    }
+    if (visibleCoverage <= 0) {
+      return (
+        (candidate.kind === "street-design" ||
+          candidate.kind === "street-wordmark" ||
+          candidate.kind === "vision-design") &&
+        designIntentCoverage >= threshold
+      );
+    }
+    return (
+      requiredFeatureCoverageScore(combinedText, requiredVisualFeatures) >=
+      threshold
+    );
+  }
+  return (
+    requiredFeatureCoverageScore(text, requiredVisualFeatures) >=
+    threshold
+  );
+}
+
+function requiresSweepStructure(requiredVisualFeatures: string[]): boolean {
+  return requiredVisualFeatures.some((feature) =>
+    /\b(swoosh|sweep|sweeping|wing|ribbon|slash|checkmark|check mark|boomerang)\b/i.test(
+      feature,
+    ),
+  );
+}
+
+function requiresTaperedSweep(requiredVisualFeatures: string[]): boolean {
+  return requiredVisualFeatures.some((feature) =>
+    /\b(taper|tapered|outline|heel|belly|tip)\b/i.test(feature),
+  );
+}
+
+function requiresBoltStructure(requiredVisualFeatures: string[]): boolean {
+  return requiredVisualFeatures.some((feature) =>
+    /\b(lightning|bolt|zigzag|zig zag|notch)\b/i.test(feature),
+  );
+}
+
+function requiresStarStructure(requiredVisualFeatures: string[]): boolean {
+  return requiredVisualFeatures.some((feature) =>
+    /\b(star|five points|five point|sharp tips|inner crossings)\b/i.test(
+      feature,
+    ),
+  );
+}
+
+function requiredVisualStructureThreshold(requiredVisualFeatures: string[]): number {
+  return requiresSweepStructure(requiredVisualFeatures) ? 26 : 36;
+}
+
+function localDesignSpaceRawPoints(
+  coords: [number, number][],
+  placement: PlacementTransform,
+): ContourPoint[] {
+  if (coords.length < 2) return [];
+  const center = placement.center;
+  const metersPerLat = 111_320;
+  const metersPerLng =
+    metersPerLat * Math.cos((center[0] * Math.PI) / 180);
+  const rad = (placement.rotationDeg * Math.PI) / 180;
+  const xAxis = { east: Math.sin(rad), north: Math.cos(rad) };
+  const yAxis = {
+    east: Math.sin(rad + Math.PI / 2),
+    north: Math.cos(rad + Math.PI / 2),
+  };
+
+  return coords.map(([lat, lng]) => {
+    const east = (lng - center[1]) * metersPerLng;
+    const north = (lat - center[0]) * metersPerLat;
+    return {
+      x: east * xAxis.east + north * xAxis.north,
+      y: east * yAxis.east + north * yAxis.north,
+    };
+  });
+}
+
+function pointLineDistanceNorm(
+  p: ContourPoint,
+  a: ContourPoint,
+  b: ContourPoint,
+): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const denom = Math.hypot(dx, dy) || 1;
+  return Math.abs(dy * p.x - dx * p.y + b.x * a.y - b.y * a.x) / denom;
+}
+
+function dominantChord(
+  pts: ContourPoint[],
+): { a: ContourPoint; b: ContourPoint; length: number } {
+  const step = Math.max(1, Math.floor(pts.length / 96));
+  const sampled = pts.filter((_, i) => i % step === 0);
+  if (!sampled.includes(pts[pts.length - 1]!)) sampled.push(pts[pts.length - 1]!);
+  let best = {
+    a: sampled[0]!,
+    b: sampled[Math.min(1, sampled.length - 1)]!,
+    length: 0,
+  };
+  for (let i = 0; i < sampled.length; i++) {
+    for (let j = i + 1; j < sampled.length; j++) {
+      const a = sampled[i]!;
+      const b = sampled[j]!;
+      const d = Math.hypot(b.x - a.x, b.y - a.y);
+      if (d > best.length) best = { a, b, length: d };
+    }
+  }
+  return best;
+}
+
+export function sweepVisualStructureScore(
+  coords: [number, number][],
+  placement: PlacementTransform,
+): number {
+  const pts = localDesignSpaceRawPoints(coords, placement);
+  if (pts.length < 3) return 0;
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const height = Math.max(...ys) - Math.min(...ys);
+  if (width < 100 || height < 25) return 0;
+
+  let pathLen = 0;
+  for (let i = 1; i < pts.length; i++) {
+    pathLen += segmentLengthNorm(pts[i - 1]!, pts[i]!);
+  }
+  const chordInfo = dominantChord(pts);
+  const chord = chordInfo.length || 1;
+  const diag = Math.hypot(width, height) || 1;
+  const maxDeviation = Math.max(
+    ...pts.map((p) => pointLineDistanceNorm(p, chordInfo.a, chordInfo.b)),
+  );
+
+  const aspect = width / Math.max(height, 1);
+  const chordCoverage = chord / diag;
+  const curveRatio = maxDeviation / chord;
+  const pathRatio = pathLen / chord;
+
+  let score = 0;
+  score += Math.min(35, Math.max(0, ((aspect - 1.1) / 1.0) * 35));
+  score += Math.min(20, Math.max(0, ((chordCoverage - 0.52) / 0.35) * 20));
+  score += Math.min(25, Math.max(0, ((curveRatio - 0.045) / 0.18) * 25));
+  score += Math.min(20, Math.max(0, ((pathRatio - 1.06) / 0.55) * 20));
+
+  if (aspect < 1.2) score -= 25;
+  if (curveRatio < 0.035) score -= 20;
+  if (pathRatio > 3.2) score -= 15;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function boltVisualStructureScore(coords: [number, number][]): number {
+  if (coords.length < 4) return 0;
+  const lats = coords.map(([lat]) => lat);
+  const lngs = coords.map(([, lng]) => lng);
+  const midLat = ((Math.min(...lats) + Math.max(...lats)) / 2) * (Math.PI / 180);
+  const height = (Math.max(...lats) - Math.min(...lats)) * 111_320;
+  const width = (Math.max(...lngs) - Math.min(...lngs)) * 111_320 * Math.cos(midLat);
+  if (height < 300 || width < 120) return 0;
+
+  const aspect = height / Math.max(width, 1);
+  let directionChanges = 0;
+  let previousSign = 0;
+  const step = Math.max(1, Math.floor(coords.length / 24));
+  for (let i = step; i < coords.length; i += step) {
+    const dx = coords[i]![1] - coords[i - step]![1];
+    const sign = Math.abs(dx) < 0.0003 ? 0 : Math.sign(dx);
+    if (sign !== 0 && previousSign !== 0 && sign !== previousSign) {
+      directionChanges++;
+    }
+    if (sign !== 0) previousSign = sign;
+  }
+
+  let score = 0;
+  score += Math.min(46, Math.max(0, ((aspect - 0.55) / 0.85) * 46));
+  score += Math.min(18, Math.max(0, ((height - 700) / 700) * 18));
+  score += Math.min(24, directionChanges * 8);
+  score += Math.min(12, Math.max(0, ((width - 450) / 650) * 12));
+
+  if (aspect < 0.65) score -= 42;
+  if (aspect > 2.8) score -= 18;
+  if (directionChanges < 2) score -= 20;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function requiredVisualStructureScore(
+  candidate: SnappedCandidate,
+  requiredVisualFeatures: string[],
+): number {
+  if (!requiresSweepStructure(requiredVisualFeatures)) return 100;
+  return sweepVisualStructureScore(candidate.coords, candidate.placement);
+}
+
+function passesSweepDisplayFloor(
+  candidate: SnappedCandidate,
+  requiredVisualFeatures: string[],
+): boolean {
+  if (!requiresSweepStructure(requiredVisualFeatures)) return true;
+  if (requiresTaperedSweep(requiredVisualFeatures)) {
+    const intent = (candidate.designIntent ?? "").toLowerCase();
+    if (!/\b(taper|tapered|outline|ribbon|broad heel|wide heel|curved belly|thin rising tip)\b/.test(intent)) {
+      return false;
+    }
+  }
+  if (candidate.kind === "street-design") {
+    const intent = (candidate.designIntent ?? "").toLowerCase();
+    if (/\broute-library manhattan\b/.test(intent)) {
+      return (
+        /\b(swoosh|sweep|ribbon|wing|rising tail|taper)\b/.test(intent) &&
+        candidate.qualityScore >= 35 &&
+        candidate.km >= 5.5
+      );
+    }
+    const sweepStructure = sweepVisualStructureScore(
+      candidate.coords,
+      candidate.placement,
+    );
+    return sweepStructure >= 34 && candidate.shapeMatchScore >= 50 && candidate.km >= 5.5;
+  }
+  return candidate.shapeMatchScore >= 52 && candidate.km >= 5.5;
+}
+
+function gasRankPriority(candidate: SnappedCandidate): number {
+  const intent = (candidate.designIntent ?? "").toLowerCase();
+  let score = gasPumpPersonStructureScore(candidate.coords, candidate.placement);
+  if (candidate.kind === "street-design") score += 24;
+  if (candidate.routeMode === "direct-grid") score += 48;
+  if (/\bcurated gas logo manhattan v1\b/.test(intent)) score += 220;
+  if (/\b(east village gas pump|gas logo)\b/.test(intent)) score += 36;
+  if (/\b(pump|hose loop|headphones|nozzle)\b/.test(intent)) score += 18;
+  score += Math.min(18, Math.max(0, candidate.shapeMatchScore - 50));
+  score += Math.min(12, Math.max(0, candidate.qualityScore - 45));
+  if (candidate.km >= 8 && candidate.km <= 22) score += 14;
+  return score;
+}
+
+function sweepRankPriority(candidate: SnappedCandidate): number {
+  const intent = (candidate.designIntent ?? "").toLowerCase();
+  let score = sweepVisualStructureScore(candidate.coords, candidate.placement);
+  if (candidate.kind === "street-design") score += 20;
+  if (/\broute-library manhattan\b/.test(intent)) score += 36;
+  if (/\bhuman-grade manhattan tapered swoosh outline\b/.test(intent)) {
+    score += 80;
+  }
+  if (/\bmanhattan corridor ribbon sweep\b/.test(intent)) {
+    score += 48;
+  }
+  if (/\bstreet-native\b/.test(intent)) {
+    score -= 14;
+  }
+  if (/\btaper(?:ed)?\b/.test(intent)) score += 34;
+  if (/\boutline\b/.test(intent)) score += 28;
+  if (/\b(broad heel|wide heel|curved belly|belly|thin rising tip)\b/.test(intent)) {
+    score += 22;
+  }
+  if (/\bribbon\b/.test(intent)) score += 14;
+  if (/\b(open line|one clean open line|plain line|centerline)\b/.test(intent)) {
+    score -= 36;
+  }
+  score += Math.min(16, Math.max(0, candidate.shapeMatchScore - 68));
+  score += Math.min(10, Math.max(0, candidate.km - 5));
+  return score;
+}
+
+function prioritizeSweepRankable(snapped: SnappedCandidate[]): SnappedCandidate[] {
+  return [...snapped].sort((a, b) => sweepRankPriority(b) - sweepRankPriority(a));
+}
+
+function boltRankPriority(candidate: SnappedCandidate): number {
+  const intent = (candidate.designIntent ?? "").toLowerCase();
+  const boltStructure = boltVisualStructureScore(candidate.coords);
+  let score = 0;
+  score += boltStructure;
+  if (candidate.kind === "street-design") score += 20;
+  if (/\broute-library manhattan .*lightning\b/.test(intent)) score += 90;
+  if (/\bhuman-grade manhattan lightning bolt\b/.test(intent)) score += 120;
+  if (/\b(zigzag|zig-zag|notch|pointed bottom|lightning)\b/.test(intent)) {
+    score += 40;
+  }
+  if (/\b(open line|plain line|single slash|ribbon sweep|swoosh)\b/.test(intent)) {
+    score -= 50;
+  }
+  score += Math.min(20, Math.max(0, candidate.shapeMatchScore - 65));
+  score += Math.min(16, Math.max(0, candidate.qualityScore - 55));
+  if (boltStructure < 35) score -= 70;
+  if (candidate.km >= 5 && candidate.km <= 10) score += 16;
+  return score;
+}
+
+function starRankPriority(candidate: SnappedCandidate): number {
+  const intent = (candidate.designIntent ?? "").toLowerCase();
+  let score = 0;
+  if (candidate.kind === "street-design") score += 18;
+  if (/\broute-library manhattan .*star\b/.test(intent)) score += 90;
+  if (/\b(five[-\s]?point|sharp tip|inner crossing|closed outline)\b/.test(intent)) {
+    score += 32;
+  }
+  score += Math.min(22, Math.max(0, candidate.shapeMatchScore - 52));
+  score += Math.min(18, Math.max(0, candidate.qualityScore - 45));
+  if (candidate.km >= 6 && candidate.km <= 20) score += 16;
+  else if (candidate.km > 20 && candidate.km <= 25) score += 9;
+  return score;
 }
 
 function centerDistanceMeters(
@@ -850,6 +1840,7 @@ export function selectDiverseAutoFindPickIndices(
   candidates: AutoFindPickSelectionCandidate[],
   topK: number,
   preferredOrder?: number[],
+  preferredWeight = 4,
 ): number[] {
   const limit = Math.max(0, Math.floor(topK));
   if (limit === 0 || candidates.length === 0) return [];
@@ -859,20 +1850,19 @@ export function selectDiverseAutoFindPickIndices(
     if (!Number.isInteger(i) || i < 0 || i >= candidates.length) continue;
     if (!preferredRank.has(i)) preferredRank.set(i, preferredRank.size);
   }
-  const visionBonusMax = preferredRank.size > 0 ? 8 : 0;
-  const ordered = candidates
-    .map((c, i) => {
-      const score = scoreAutoPlacementCandidate(c.qualityScore, c.shapeMatchScore);
-      const rank = preferredRank.get(i);
-      const visionBonus =
-        rank == null
-          ? 0
-          : visionBonusMax *
-            (1 - rank / Math.max(1, preferredRank.size));
-      return { i, score: score + visionBonus };
-    })
+  const scoreOrder = candidates
+    .map((c, i) => ({
+      i,
+      score: candidateSelectionScore(
+        c,
+        preferredRank.get(i),
+        preferredRank.size,
+        preferredWeight,
+      ),
+    }))
     .sort((a, b) => b.score - a.score)
     .map((x) => x.i);
+  const ordered = scoreOrder;
 
   const picked: number[] = [];
   const tooSimilar = (idx: number) =>
@@ -916,6 +1906,7 @@ async function parallelSnap(
   candidates: ValidCandidate[],
   anchorSource: AnchorPathSource | undefined,
   preset: CityPreset,
+  sourceContour: ContourPoint[],
 ): Promise<SnappedCandidate[]> {
   const out: SnappedCandidate[] = [];
   let rejectedByRatio = 0;
@@ -924,12 +1915,58 @@ async function parallelSnap(
     const batch = candidates.slice(i, i + SNAP_BATCH_SIZE);
     const snapped = await Promise.all(
       batch.map(async (c) => {
+        if (
+          c.routeMode === "direct-grid" &&
+          c.designIntent?.includes("Curated GAS logo Manhattan v1")
+        ) {
+          const coords = c.anchors;
+          const route = curatedGasLogoRouteLine();
+          const shapeScores = blendedCandidateShapeMatch({
+            candidateAnchors: coords,
+            sourceAnchors: coords,
+            routeCoords: coords,
+            kind: c.kind,
+          });
+          return {
+            placement: c.placement,
+            anchors: coords,
+            designIntent: c.designIntent,
+            kind: c.kind,
+            routeMode: c.routeMode,
+            coords,
+            route,
+            km: c.km,
+            qualityScore: routeQualityScore(coords),
+            shapeMatchScore: shapeScores.shapeMatchScore,
+            sourceMatchScore: shapeScores.sourceMatchScore,
+          } as SnappedCandidate;
+        }
+
         const r = await snapOne(c.anchors, anchorSource);
         if (!r) return null;
 
         // Filter 1: snap-destroyed shapes (massive perimeter change)
         const ratio = r.snappedKm / Math.max(c.km, 0.1);
-        if (ratio < SNAP_RATIO_MIN || ratio > SNAP_RATIO_MAX) {
+        const streetNative =
+          c.kind === "street-design" || c.kind === "street-wordmark";
+        const directGrid = c.routeMode === "direct-grid";
+        const ratioMin =
+          c.kind === "street-wordmark"
+            ? 0.25
+            : directGrid
+              ? 0.72
+              : streetNative
+                ? 0.4
+                : SNAP_RATIO_MIN;
+        const ratioMax =
+          c.kind === "street-wordmark"
+            ? 3.2
+            : directGrid
+              ? 1.4
+              : streetNative
+                ? 2.4
+                : SNAP_RATIO_MAX;
+        if (ratio < ratioMin || ratio > ratioMax) {
           rejectedByRatio++;
           return null;
         }
@@ -943,18 +1980,28 @@ async function parallelSnap(
         const cleaned = cleanupRouteSpurs(r.route).route;
         const cleanedCoords = cleaned.coordinates;
         const cleanedKm = (cleaned.distanceMeters ?? r.snappedKm * 1000) / 1000;
+        const sourceAnchors =
+          buildAnchorLatLngsFromContour(sourceContour, c.placement)
+            .anchorLatLngs;
+        const shapeScores = blendedCandidateShapeMatch({
+          candidateAnchors: c.anchors,
+          sourceAnchors:
+            sourceAnchors.length >= 2 ? sourceAnchors : c.anchors,
+          routeCoords: cleanedCoords,
+          kind: c.kind,
+        });
         return {
           placement: c.placement,
           anchors: c.anchors,
           designIntent: c.designIntent,
+          kind: c.kind,
+          routeMode: c.routeMode,
           coords: cleanedCoords,
           route: cleaned,
           km: cleanedKm,
           qualityScore: routeQualityScore(cleanedCoords),
-          shapeMatchScore: interpretationMatchPercent(
-            c.anchors,
-            cleanedCoords,
-          ),
+          shapeMatchScore: shapeScores.shapeMatchScore,
+          sourceMatchScore: shapeScores.sourceMatchScore,
         } as SnappedCandidate;
       }),
     );
@@ -993,9 +2040,1502 @@ function parseImageBase64(imageBase64: string): ParsedImage {
 export type VisionDesignDraft = {
   label: string;
   description: string;
+  visualFeatures?: string[];
   points: ContourPoint[];
   designScore: number;
 };
+
+const REQUIRED_FEATURE_STOP_WORDS = new Set([
+  "and",
+  "aggressive",
+  "bold",
+  "classic",
+  "clean",
+  "connected",
+  "draft",
+  "feature",
+  "features",
+  "grid",
+  "icon",
+  "line",
+  "logo",
+  "mark",
+  "outline",
+  "representative",
+  "route",
+  "simple",
+  "street",
+  "style",
+  "stroke",
+  "step",
+  "symbol",
+  "version",
+]);
+
+function normalizeVisualFeature(feature: string): string | null {
+  const cleaned = feature
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return null;
+  const words = cleaned
+    .split(/\s+/)
+    .filter((word) => !REQUIRED_FEATURE_STOP_WORDS.has(word));
+  if (words.length === 0) return null;
+  return words.slice(0, 3).join(" ");
+}
+
+const APPROVED_SKETCH_LABEL = "Your approved street sketch";
+
+/** Step 1 sketch review → primary map-native design draft for Step 2. */
+export function buildApprovedSketchDraft(
+  contour: ContourPoint[],
+  visionDrafts: VisionDesignDraft[],
+): VisionDesignDraft | null {
+  if (contour.length < 2) return null;
+  const review = reviewStreetDesignSketch(contour);
+  if (review.score < 40) return null;
+  const visionFeatures = deriveRequiredVisualFeatures(
+    visionDrafts.filter((draft) => !draft.label.startsWith("Representative ")),
+  );
+  return {
+    label: APPROVED_SKETCH_LABEL,
+    description:
+      "Etch-a-sketch one-liner from Step 1 — the design city placement should interpret, not re-trace the upload.",
+    visualFeatures:
+      visionFeatures.length >= 2
+        ? visionFeatures
+        : ["readable outline", "street grid", "runnable turns"],
+    points: contour.map((p) => ({ x: p.x, y: p.y })),
+    designScore: 112,
+  };
+}
+
+export function mergeVisionDesignDrafts(
+  contour: ContourPoint[],
+  visionDrafts: VisionDesignDraft[],
+): VisionDesignDraft[] {
+  const approved = buildApprovedSketchDraft(contour, visionDrafts);
+  if (!approved) return visionDrafts;
+  const rest = visionDrafts.filter((draft) => draft.label !== APPROVED_SKETCH_LABEL);
+  return [approved, ...rest]
+    .sort((a, b) => b.designScore - a.designScore)
+    .slice(0, 10);
+}
+
+export function isSketchLedPlacementSearch(contour: ContourPoint[]): boolean {
+  if (contour.length < 4) return false;
+  return reviewStreetDesignSketch(contour).pass;
+}
+
+export function deriveRequiredVisualFeatures(
+  drafts: VisionDesignDraft[],
+  maxFeatures = 6,
+): string[] {
+  const visualFeatureDrafts = drafts.filter((draft) => draft.visualFeatures?.length);
+  const sourceDrafts = visualFeatureDrafts.length > 0
+    ? visualFeatureDrafts[0]!.visualFeatures!.length >= 2
+      ? visualFeatureDrafts.slice(0, 1)
+      : visualFeatureDrafts.slice(0, 2)
+    : drafts.slice(0, 2);
+  const scores = new Map<string, { score: number; firstSeen: number }>();
+  let seenIndex = 0;
+  for (let i = 0; i < sourceDrafts.length; i++) {
+    const draft = sourceDrafts[i]!;
+    const rankWeight = Math.max(1, 8 - i);
+    const features = draft.visualFeatures?.length
+      ? draft.visualFeatures
+      : [draft.label, draft.description];
+    for (const feature of features) {
+      const normalized = normalizeVisualFeature(feature);
+      if (!normalized) continue;
+      const existing = scores.get(normalized);
+      if (existing) {
+        existing.score += rankWeight;
+      } else {
+        scores.set(normalized, { score: rankWeight, firstSeen: seenIndex });
+      }
+      seenIndex++;
+    }
+  }
+  return [...scores.entries()]
+    .sort((a, b) => b[1].score - a[1].score || a[1].firstSeen - b[1].firstSeen)
+    .map(([feature]) => feature)
+    .slice(0, maxFeatures);
+}
+
+function featureTokens(feature: string): string[] {
+  const normalized = normalizeVisualFeature(feature);
+  if (!normalized) return [];
+  return normalized
+    .split(/\s+/)
+    .filter(Boolean)
+    .flatMap((token) => {
+      const singular = token.endsWith("s") && token.length > 3
+        ? token.slice(0, -1)
+        : token;
+      return singular === token ? [token] : [token, singular];
+    });
+}
+
+function searchableTokens(text: string): Set<string> {
+  const tokens = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .replace(/-/g, " ")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .flatMap((token) => {
+      const singular = token.endsWith("s") && token.length > 3
+        ? token.slice(0, -1)
+        : token;
+      const expanded = singular === token ? [token] : [token, singular];
+      if (singular === "letterform") expanded.push("letter");
+      if (singular === "sequence") expanded.push("order");
+      if (singular === "wordmark") expanded.push("letter", "reading");
+      if (singular === "hump") expanded.push("lobe");
+      if (singular === "notch" || singular === "dip") expanded.push("center");
+      if (singular === "point") expanded.push("tip");
+      if (singular === "readable" || singular === "legible") {
+        expanded.push("reading");
+      }
+      return expanded;
+    });
+  return new Set(tokens);
+}
+
+function featureMatchesText(tokens: string[], textTokens: Set<string>): boolean {
+  if (tokens.length === 0) return false;
+  const matched = tokens.filter((token) => textTokens.has(token)).length;
+  if (tokens.length === 1) return matched === 1;
+  return matched / tokens.length >= 0.5;
+}
+
+export function requiredFeatureCoverageScore(
+  text: string,
+  requiredVisualFeatures: string[],
+): number {
+  const features = requiredVisualFeatures
+    .map(featureTokens)
+    .filter((tokens) => tokens.length > 0);
+  if (features.length === 0) return 100;
+  const textTokens = searchableTokens(text);
+  const matched = features.filter((tokens) =>
+    featureMatchesText(tokens, textTokens),
+  ).length;
+  return Math.round((matched / features.length) * 100);
+}
+
+function normalizeDraftPoints(raw: ContourPoint[], pad = 0.06): ContourPoint[] {
+  if (raw.length < 2) return raw;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of raw) {
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y);
+    maxY = Math.max(maxY, p.y);
+  }
+  const width = maxX - minX || 1;
+  const height = maxY - minY || 1;
+  const span = Math.max(width, height);
+  const ox = (minX + maxX) / 2 - span / 2;
+  const oy = (minY + maxY) / 2 - span / 2;
+  const scale = (1 - 2 * pad) / span;
+  return raw.map((p) => ({
+    x: pad + (p.x - ox) * scale,
+    y: pad + (p.y - oy) * scale,
+  }));
+}
+
+function blockLoopTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 18, y: 92 },
+    { x: 18, y: 18 },
+    { x: 48, y: 18 },
+    { x: 48, y: 52 },
+    { x: 64, y: 52 },
+    { x: 64, y: 64 },
+    { x: 52, y: 64 },
+    { x: 48, y: 92 },
+    { x: 18, y: 92 },
+    { x: 18, y: 34 },
+    { x: 42, y: 34 },
+    { x: 42, y: 50 },
+    { x: 26, y: 50 },
+    { x: 26, y: 34 },
+    { x: 48, y: 52 },
+    { x: 58, y: 70 },
+    { x: 72, y: 78 },
+    { x: 84, y: 70 },
+    { x: 86, y: 54 },
+    { x: 78, y: 42 },
+    { x: 68, y: 36 },
+  ]);
+}
+
+function blockFigureTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 14, y: 92 },
+    { x: 14, y: 18 },
+    { x: 42, y: 18 },
+    { x: 42, y: 52 },
+    { x: 52, y: 52 },
+    { x: 52, y: 66 },
+    { x: 43, y: 66 },
+    { x: 42, y: 92 },
+    { x: 14, y: 92 },
+    { x: 14, y: 34 },
+    { x: 36, y: 34 },
+    { x: 36, y: 50 },
+    { x: 22, y: 50 },
+    { x: 22, y: 34 },
+    { x: 52, y: 66 },
+    { x: 60, y: 76 },
+    { x: 70, y: 68 },
+    { x: 66, y: 54 },
+    { x: 72, y: 38 },
+    { x: 82, y: 28 },
+    { x: 94, y: 34 },
+    { x: 94, y: 48 },
+    { x: 86, y: 54 },
+    { x: 86, y: 92 },
+    { x: 76, y: 92 },
+    { x: 76, y: 66 },
+    { x: 66, y: 66 },
+    { x: 66, y: 92 },
+  ]);
+}
+
+function gasPumpFigureTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 10, y: 95 },
+    { x: 10, y: 15 },
+    { x: 38, y: 15 },
+    { x: 38, y: 55 },
+    { x: 50, y: 55 },
+    { x: 50, y: 65 },
+    { x: 38, y: 65 },
+    { x: 38, y: 95 },
+    { x: 10, y: 95 },
+    { x: 10, y: 32 },
+    { x: 32, y: 32 },
+    { x: 32, y: 50 },
+    { x: 20, y: 50 },
+    { x: 20, y: 32 },
+    { x: 50, y: 55 },
+    { x: 58, y: 55 },
+    { x: 58, y: 75 },
+    { x: 66, y: 90 },
+    { x: 78, y: 90 },
+    { x: 86, y: 78 },
+    { x: 86, y: 62 },
+    { x: 78, y: 55 },
+    { x: 70, y: 55 },
+    { x: 70, y: 48 },
+    { x: 76, y: 48 },
+    { x: 76, y: 36 },
+    { x: 84, y: 28 },
+    { x: 94, y: 28 },
+    { x: 102, y: 36 },
+    { x: 102, y: 48 },
+    { x: 94, y: 55 },
+    { x: 84, y: 55 },
+    { x: 76, y: 48 },
+    { x: 88, y: 55 },
+    { x: 100, y: 55 },
+    { x: 100, y: 95 },
+    { x: 92, y: 95 },
+    { x: 92, y: 72 },
+    { x: 84, y: 72 },
+    { x: 84, y: 95 },
+    { x: 76, y: 95 },
+    { x: 76, y: 60 },
+    { x: 68, y: 68 },
+    { x: 68, y: 55 },
+    { x: 76, y: 48 },
+  ]);
+}
+
+function figureTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 50, y: 18 },
+    { x: 62, y: 26 },
+    { x: 62, y: 42 },
+    { x: 50, y: 50 },
+    { x: 38, y: 42 },
+    { x: 38, y: 26 },
+    { x: 50, y: 18 },
+    { x: 50, y: 50 },
+    { x: 50, y: 74 },
+    { x: 28, y: 58 },
+    { x: 50, y: 74 },
+    { x: 72, y: 58 },
+    { x: 50, y: 74 },
+    { x: 34, y: 98 },
+    { x: 50, y: 74 },
+    { x: 66, y: 98 },
+  ]);
+}
+
+function loveTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 4, y: 18 },
+    { x: 4, y: 88 },
+    { x: 28, y: 88 },
+    { x: 34, y: 88 },
+    { x: 34, y: 54 },
+    { x: 40, y: 28 },
+    { x: 52, y: 18 },
+    { x: 64, y: 28 },
+    { x: 70, y: 54 },
+    { x: 70, y: 88 },
+    { x: 46, y: 88 },
+    { x: 46, y: 18 },
+    { x: 58, y: 18 },
+    { x: 70, y: 88 },
+    { x: 82, y: 18 },
+    { x: 100, y: 18 },
+    { x: 82, y: 18 },
+    { x: 82, y: 88 },
+    { x: 102, y: 88 },
+    { x: 102, y: 56 },
+    { x: 88, y: 56 },
+  ]);
+}
+
+function connectedLetterTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 6, y: 18 },
+    { x: 6, y: 88 },
+    { x: 28, y: 88 },
+    { x: 34, y: 88 },
+    { x: 34, y: 18 },
+    { x: 58, y: 18 },
+    { x: 58, y: 52 },
+    { x: 38, y: 52 },
+    { x: 58, y: 52 },
+    { x: 58, y: 88 },
+    { x: 82, y: 88 },
+    { x: 82, y: 18 },
+    { x: 104, y: 18 },
+    { x: 104, y: 52 },
+    { x: 86, y: 52 },
+    { x: 104, y: 52 },
+    { x: 104, y: 88 },
+  ]);
+}
+
+function letterStrokePoints(letter: string): ContourPoint[] | null {
+  switch (letter) {
+    case "A":
+      return [
+        { x: 0, y: 1 },
+        { x: 0.5, y: 0 },
+        { x: 1, y: 1 },
+        { x: 0.78, y: 0.58 },
+        { x: 0.24, y: 0.58 },
+      ];
+    case "B":
+      return [
+        { x: 0, y: 1 },
+        { x: 0, y: 0 },
+        { x: 0.72, y: 0 },
+        { x: 1, y: 0.22 },
+        { x: 0.74, y: 0.5 },
+        { x: 0, y: 0.5 },
+        { x: 0.78, y: 0.5 },
+        { x: 1, y: 0.76 },
+        { x: 0.74, y: 1 },
+        { x: 0, y: 1 },
+      ];
+    case "C":
+      return [
+        { x: 1, y: 0.08 },
+        { x: 0.2, y: 0 },
+        { x: 0, y: 0.5 },
+        { x: 0.2, y: 1 },
+        { x: 1, y: 0.92 },
+      ];
+    case "D":
+      return [
+        { x: 0, y: 1 },
+        { x: 0, y: 0 },
+        { x: 0.7, y: 0 },
+        { x: 1, y: 0.5 },
+        { x: 0.7, y: 1 },
+        { x: 0, y: 1 },
+      ];
+    case "E":
+      return [
+        { x: 1, y: 0 },
+        { x: 0, y: 0 },
+        { x: 0, y: 0.5 },
+        { x: 0.75, y: 0.5 },
+        { x: 0, y: 0.5 },
+        { x: 0, y: 1 },
+        { x: 1, y: 1 },
+      ];
+    case "F":
+      return [
+        { x: 1, y: 0 },
+        { x: 0, y: 0 },
+        { x: 0, y: 1 },
+        { x: 0, y: 0.5 },
+        { x: 0.78, y: 0.5 },
+      ];
+    case "G":
+      return [
+        { x: 1, y: 0.08 },
+        { x: 0.22, y: 0 },
+        { x: 0, y: 0.5 },
+        { x: 0.22, y: 1 },
+        { x: 1, y: 0.92 },
+        { x: 1, y: 0.58 },
+        { x: 0.58, y: 0.58 },
+      ];
+    case "H":
+      return [
+        { x: 0, y: 0 },
+        { x: 0, y: 1 },
+        { x: 0, y: 0.5 },
+        { x: 1, y: 0.5 },
+        { x: 1, y: 0 },
+        { x: 1, y: 1 },
+      ];
+    case "I":
+      return [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+        { x: 0.5, y: 0 },
+        { x: 0.5, y: 1 },
+        { x: 0, y: 1 },
+        { x: 1, y: 1 },
+      ];
+    case "J":
+      return [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+        { x: 0.72, y: 0 },
+        { x: 0.72, y: 0.76 },
+        { x: 0.45, y: 1 },
+        { x: 0.08, y: 0.82 },
+      ];
+    case "K":
+      return [
+        { x: 0, y: 1 },
+        { x: 0, y: 0 },
+        { x: 0, y: 0.5 },
+        { x: 1, y: 0 },
+        { x: 0, y: 0.5 },
+        { x: 1, y: 1 },
+      ];
+    case "L":
+      return [
+        { x: 0, y: 0 },
+        { x: 0, y: 1 },
+        { x: 1, y: 1 },
+      ];
+    case "M":
+      return [
+        { x: 0, y: 1 },
+        { x: 0, y: 0 },
+        { x: 0.5, y: 0.62 },
+        { x: 1, y: 0 },
+        { x: 1, y: 1 },
+      ];
+    case "N":
+      return [
+        { x: 0, y: 1 },
+        { x: 0, y: 0 },
+        { x: 1, y: 1 },
+        { x: 1, y: 0 },
+      ];
+    case "O":
+      return [
+        { x: 0.1, y: 1 },
+        { x: 0, y: 0.15 },
+        { x: 0.5, y: 0 },
+        { x: 1, y: 0.15 },
+        { x: 0.9, y: 1 },
+        { x: 0.1, y: 1 },
+      ];
+    case "P":
+      return [
+        { x: 0, y: 1 },
+        { x: 0, y: 0 },
+        { x: 0.82, y: 0 },
+        { x: 1, y: 0.28 },
+        { x: 0.82, y: 0.55 },
+        { x: 0, y: 0.55 },
+      ];
+    case "Q":
+      return [
+        { x: 0.1, y: 1 },
+        { x: 0, y: 0.15 },
+        { x: 0.5, y: 0 },
+        { x: 1, y: 0.15 },
+        { x: 0.9, y: 1 },
+        { x: 0.1, y: 1 },
+        { x: 0.62, y: 0.68 },
+        { x: 1, y: 1 },
+      ];
+    case "R":
+      return [
+        { x: 0, y: 1 },
+        { x: 0, y: 0 },
+        { x: 0.78, y: 0 },
+        { x: 1, y: 0.26 },
+        { x: 0.78, y: 0.52 },
+        { x: 0, y: 0.52 },
+        { x: 0.9, y: 1 },
+      ];
+    case "S":
+      return [
+        { x: 1, y: 0.08 },
+        { x: 0.18, y: 0 },
+        { x: 0, y: 0.42 },
+        { x: 0.85, y: 0.52 },
+        { x: 1, y: 0.9 },
+        { x: 0.14, y: 1 },
+      ];
+    case "T":
+      return [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+        { x: 0.5, y: 0 },
+        { x: 0.5, y: 1 },
+      ];
+    case "U":
+      return [
+        { x: 0, y: 0 },
+        { x: 0, y: 0.82 },
+        { x: 0.5, y: 1 },
+        { x: 1, y: 0.82 },
+        { x: 1, y: 0 },
+      ];
+    case "V":
+      return [
+        { x: 0, y: 0 },
+        { x: 0.5, y: 1 },
+        { x: 1, y: 0 },
+      ];
+    case "W":
+      return [
+        { x: 0, y: 0 },
+        { x: 0.25, y: 1 },
+        { x: 0.5, y: 0.42 },
+        { x: 0.75, y: 1 },
+        { x: 1, y: 0 },
+      ];
+    case "X":
+      return [
+        { x: 0, y: 0 },
+        { x: 1, y: 1 },
+        { x: 0.5, y: 0.5 },
+        { x: 1, y: 0 },
+        { x: 0, y: 1 },
+      ];
+    case "Y":
+      return [
+        { x: 0, y: 0 },
+        { x: 0.5, y: 0.5 },
+        { x: 1, y: 0 },
+        { x: 0.5, y: 0.5 },
+        { x: 0.5, y: 1 },
+      ];
+    case "Z":
+      return [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+        { x: 0, y: 1 },
+        { x: 1, y: 1 },
+      ];
+    default:
+      return null;
+  }
+}
+
+function wordmarkTemplate(word: string): ContourPoint[] {
+  const letters = word
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "")
+    .slice(0, 8)
+    .split("");
+  if (letters.length === 0) return connectedLetterTemplate();
+
+  const out: ContourPoint[] = [];
+  const advance = 1.32;
+  for (let i = 0; i < letters.length; i++) {
+    const glyph = letterStrokePoints(letters[i]!) ?? letterStrokePoints("L")!;
+    const ox = i * advance;
+    for (const p of glyph) {
+      out.push({ x: ox + p.x, y: p.y });
+    }
+  }
+  return normalizeDraftPoints(out, 0.04);
+}
+
+function animalMascotTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 10, y: 66 },
+    { x: 20, y: 42 },
+    { x: 38, y: 30 },
+    { x: 62, y: 32 },
+    { x: 82, y: 44 },
+    { x: 94, y: 40 },
+    { x: 86, y: 54 },
+    { x: 92, y: 70 },
+    { x: 76, y: 72 },
+    { x: 70, y: 90 },
+    { x: 58, y: 90 },
+    { x: 60, y: 72 },
+    { x: 42, y: 72 },
+    { x: 36, y: 90 },
+    { x: 24, y: 90 },
+    { x: 28, y: 70 },
+    { x: 10, y: 66 },
+    { x: 18, y: 56 },
+    { x: 6, y: 46 },
+    { x: 18, y: 50 },
+  ]);
+}
+
+function starTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 50, y: 5 },
+    { x: 62, y: 38 },
+    { x: 96, y: 38 },
+    { x: 68, y: 58 },
+    { x: 80, y: 92 },
+    { x: 50, y: 70 },
+    { x: 20, y: 92 },
+    { x: 32, y: 58 },
+    { x: 4, y: 38 },
+    { x: 38, y: 38 },
+    { x: 50, y: 5 },
+    { x: 68, y: 58 },
+    { x: 20, y: 92 },
+    { x: 62, y: 38 },
+    { x: 80, y: 92 },
+    { x: 32, y: 58 },
+    { x: 96, y: 38 },
+  ]);
+}
+
+function shieldTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 50, y: 6 },
+    { x: 92, y: 22 },
+    { x: 84, y: 72 },
+    { x: 50, y: 112 },
+    { x: 16, y: 72 },
+    { x: 8, y: 22 },
+    { x: 50, y: 6 },
+  ]);
+}
+
+function diamondTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 55, y: 6 },
+    { x: 104, y: 55 },
+    { x: 55, y: 104 },
+    { x: 6, y: 55 },
+    { x: 55, y: 6 },
+    { x: 55, y: 104 },
+    { x: 6, y: 55 },
+    { x: 104, y: 55 },
+  ]);
+}
+
+function houseTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 12, y: 60 },
+    { x: 60, y: 14 },
+    { x: 108, y: 60 },
+    { x: 96, y: 60 },
+    { x: 96, y: 108 },
+    { x: 72, y: 108 },
+    { x: 72, y: 76 },
+    { x: 48, y: 76 },
+    { x: 48, y: 108 },
+    { x: 24, y: 108 },
+    { x: 24, y: 60 },
+    { x: 12, y: 60 },
+  ]);
+}
+
+function mountainTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 8, y: 84 },
+    { x: 42, y: 30 },
+    { x: 64, y: 58 },
+    { x: 86, y: 12 },
+    { x: 142, y: 84 },
+    { x: 8, y: 84 },
+  ]);
+}
+
+function flowerTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 65, y: 64 },
+    { x: 48, y: 38 },
+    { x: 64, y: 18 },
+    { x: 82, y: 38 },
+    { x: 65, y: 64 },
+    { x: 94, y: 50 },
+    { x: 112, y: 66 },
+    { x: 94, y: 82 },
+    { x: 65, y: 64 },
+    { x: 82, y: 94 },
+    { x: 64, y: 112 },
+    { x: 48, y: 94 },
+    { x: 65, y: 64 },
+    { x: 36, y: 82 },
+    { x: 18, y: 66 },
+    { x: 36, y: 50 },
+    { x: 65, y: 64 },
+    { x: 65, y: 120 },
+  ]);
+}
+
+function boltTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 62, y: 4 },
+    { x: 18, y: 56 },
+    { x: 48, y: 56 },
+    { x: 30, y: 116 },
+    { x: 82, y: 42 },
+    { x: 52, y: 42 },
+    { x: 62, y: 4 },
+  ]);
+}
+
+function arrowTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 6, y: 48 },
+    { x: 104, y: 48 },
+    { x: 78, y: 20 },
+    { x: 126, y: 48 },
+    { x: 78, y: 76 },
+    { x: 104, y: 48 },
+  ]);
+}
+
+function crownTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 8, y: 78 },
+    { x: 22, y: 28 },
+    { x: 48, y: 58 },
+    { x: 70, y: 10 },
+    { x: 92, y: 58 },
+    { x: 118, y: 28 },
+    { x: 132, y: 78 },
+    { x: 8, y: 78 },
+  ]);
+}
+
+function waveTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 6, y: 52 },
+    { x: 26, y: 22 },
+    { x: 50, y: 22 },
+    { x: 74, y: 52 },
+    { x: 98, y: 82 },
+    { x: 124, y: 82 },
+    { x: 154, y: 28 },
+  ]);
+}
+
+function swooshTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 4, y: 72 },
+    { x: 18, y: 68 },
+    { x: 36, y: 58 },
+    { x: 58, y: 42 },
+    { x: 84, y: 20 },
+    { x: 108, y: 8 },
+    { x: 94, y: 28 },
+    { x: 74, y: 48 },
+    { x: 52, y: 66 },
+    { x: 30, y: 78 },
+    { x: 12, y: 80 },
+    { x: 4, y: 72 },
+  ]);
+}
+
+function heartTemplate(): ContourPoint[] {
+  return normalizeDraftPoints([
+    { x: 50, y: 92 },
+    { x: 22, y: 68 },
+    { x: 9, y: 46 },
+    { x: 12, y: 24 },
+    { x: 29, y: 12 },
+    { x: 43, y: 20 },
+    { x: 50, y: 34 },
+    { x: 57, y: 20 },
+    { x: 71, y: 12 },
+    { x: 88, y: 24 },
+    { x: 91, y: 46 },
+    { x: 78, y: 68 },
+    { x: 50, y: 92 },
+  ]);
+}
+
+function collectDraftText(value: unknown, depth = 0): string[] {
+  if (depth > 3 || value == null) return [];
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectDraftText(item, depth + 1));
+  }
+  if (typeof value !== "object") return [];
+  const rec = value as Record<string, unknown>;
+  const keys = [
+    "label",
+    "description",
+    "visualFeatures",
+    "features",
+    "subject",
+    "primaryFeatures",
+    "primitivePlan",
+    "routePlan",
+  ];
+  return keys.flatMap((key) => collectDraftText(rec[key], depth + 1));
+}
+
+function collectWordmarkNameText(value: unknown, depth = 0): string[] {
+  if (depth > 3 || value == null) return [];
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectWordmarkNameText(item, depth + 1));
+  }
+  if (typeof value !== "object") return [];
+  const rec = value as Record<string, unknown>;
+  const keys = ["label", "subject", "title", "name"];
+  return keys.flatMap((key) => collectWordmarkNameText(rec[key], depth + 1));
+}
+
+function rawDraftText(rawDrafts: unknown[]): string {
+  return collectDraftText(rawDrafts).join(" ").toLowerCase();
+}
+
+const WORDMARK_STOP_WORDS = new Set([
+  "AND",
+  "AGGRESSIVE",
+  "AGGRESSI",
+  "ARC",
+  "ARCS",
+  "BADGE",
+  "BASELINE",
+  "BEST",
+  "BOLD",
+  "BLOCK",
+  "BOX",
+  "BRIDGE",
+  "BRIDGES",
+  "CLEAN",
+  "COMPACT",
+  "CONNECTED",
+  "CROSSBAR",
+  "CROSSBARS",
+  "CURVE",
+  "CURVES",
+  "DESIGN",
+  "DIAGONAL",
+  "DISPLAY",
+  "DRAFT",
+  "EACH",
+  "EMPHASIS",
+  "FEATURE",
+  "FEATURES",
+  "FINAL",
+  "FIVE",
+  "FOUR",
+  "FRAME",
+  "GENERIC",
+  "GRID",
+  "ICON",
+  "LEG",
+  "LETTER",
+  "LETTERS",
+  "LINE",
+  "LINES",
+  "LOGO",
+  "LOOP",
+  "LOOPS",
+  "MANHATTAN",
+  "MARK",
+  "MONOGRAM",
+  "MULTI",
+  "ONE",
+  "ORDER",
+  "OUTLINE",
+  "PRESERVE",
+  "READING",
+  "REPRESENTATIVE",
+  "ROUTE",
+  "SIMPLE",
+  "STREET",
+  "STROKE",
+  "STROKES",
+  "SUBJECT",
+  "TEXT",
+  "THREE",
+  "TYPE",
+  "TYPOGRAPHY",
+  "TWO",
+  "UPPERCASE",
+  "VERSION",
+  "WIDE",
+  "WITH",
+  "WORD",
+  "WORDMARK",
+]);
+
+function inferWordmarkText(rawDrafts: unknown[]): string | null {
+  const nameText = collectWordmarkNameText(rawDrafts).join(" ");
+  const text = nameText.trim() ? nameText : collectDraftText(rawDrafts).join(" ");
+  const tokens = text.match(/[A-Za-z]{2,8}/g) ?? [];
+  const scores = new Map<string, number>();
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    const upper = token.toUpperCase();
+    if (WORDMARK_STOP_WORDS.has(upper)) continue;
+
+    let score = Math.max(0, 12 - i);
+    if (token === upper) score += 18;
+    if (/^[A-Z][a-z]+$/.test(token)) score += 5;
+    if (upper === "LOVE") score += 10;
+    if (upper.length >= 4) score += 2;
+
+    scores.set(upper, (scores.get(upper) ?? 0) + score + 4);
+  }
+  const best = [...scores.entries()].sort((a, b) => b[1] - a[1])[0];
+  return best?.[0] ?? null;
+}
+
+export function inferWordmarkTextFromSourceName(
+  sourceName: string | undefined,
+): string | null {
+  if (!sourceName) return null;
+  const base = sourceName
+    .replace(/\.[a-z0-9]{1,6}$/i, " ")
+    .replace(/[_\-]+/g, " ");
+  const tokens = base.match(/[A-Za-z]{2,8}/g) ?? [];
+  const candidates = tokens
+    .map((token) => token.toUpperCase())
+    .filter((token) => !WORDMARK_STOP_WORDS.has(token));
+  if (candidates.length === 0) return null;
+  const exactish = candidates.find((token) => token.length >= 4) ?? candidates[0]!;
+  return exactish;
+}
+
+export function inferGasLogoFromSourceName(
+  sourceName: string | undefined,
+): boolean {
+  if (!sourceName) return false;
+  const base = sourceName
+    .replace(/\.[a-z0-9]{1,6}$/i, " ")
+    .replace(/[_\-]+/g, " ")
+    .toLowerCase();
+  return /\b(gas|pump|fuel)\b/.test(base);
+}
+
+export function injectGasRepresentativeDrafts(
+  drafts: VisionDesignDraft[],
+  sourceName: string | undefined,
+): VisionDesignDraft[] {
+  if (!inferGasLogoFromSourceName(sourceName)) return drafts;
+  if (drafts.some((draft) => draft.label === "Representative gas pump + person logo")) {
+    return drafts;
+  }
+  return addRepresentativeDesignDrafts(drafts, [
+    {
+      label: "Uploaded gas mark",
+      description:
+        "yellow circle gas pump with hose loop and headphone person holding nozzle",
+      visualFeatures: [
+        "gas",
+        "pump",
+        "hose loop",
+        "headphones",
+        "person",
+        "window",
+        "body",
+        "legs",
+      ],
+    },
+  ]);
+}
+
+type RepresentativeFeatureSet = {
+  block: boolean;
+  loop: boolean;
+  figure: boolean;
+  gasPump: boolean;
+  animal: boolean;
+  star: boolean;
+  swoosh: boolean;
+  heart: boolean;
+  bolt: boolean;
+  arrow: boolean;
+  crown: boolean;
+  wave: boolean;
+  shield: boolean;
+  diamond: boolean;
+  house: boolean;
+  mountain: boolean;
+  flower: boolean;
+  wordmark: boolean;
+  love: boolean;
+};
+
+function inferRepresentativeFeatures(text: string): RepresentativeFeatureSet {
+  const block =
+    /\b(gas|pump|fuel|phone|device|screen|display|bottle|can|box|badge|sign|cup|mug|camera|building|tower|car|truck|vehicle|rectangle|square|block|container|frame|panel|window)\b/.test(
+      text,
+    );
+  const loop =
+    /\b(hose|nozzle|cable|cord|wire|tail|handle|loop|ring|circle|arc|curve|hook|strap|headphones|earphone)\b/.test(
+      text,
+    );
+  const figure =
+    /\b(person|runner|human|figure|head|face|body|legs|arms|arm|hand|headphones)\b/.test(
+      text,
+    );
+  const gasPump = /\b(gas|pump|fuel|nozzle)\b/.test(text);
+  const animal =
+    /\b(tiger|lion|cat|dog|bear|horse|animal|mascot|creature|mane|stripe|stripes|paw|tail)\b/.test(
+      text,
+    );
+  const flower = /\b(flower|flowers|clover|shamrock|petal|petals)\b/.test(text);
+  const shield = /\b(shield|crest|badge)\b/.test(text);
+  const diamond = /\b(diamond|gem|rhombus)\b/.test(text);
+  const house = /\b(house|home|roof|walls|door|building)\b/.test(text);
+  const mountain = /\b(mountain|mountains|range|ridge)\b/.test(text);
+  const heart = !flower && /\b(heart|hearts|lobe|lobes)\b/.test(text);
+  const arrow = /\b(arrow|arrowhead|pointer|chevron)\b/.test(text);
+  const crown = /\b(crown|tiara|royal)\b/.test(text);
+  const wave = /\b(wave|waves|sine|wavy|undulating)\b/.test(text);
+  const bolt =
+    /\b(lightning|thunderbolt)\b/.test(text) ||
+    (!wave && /\b(zigzag|zig-zag)\b/.test(text)) ||
+    (/\bbolt\b/.test(text) &&
+      /\b(icon|symbol|sharp|pointed|notch|diagonal|zigzag|zig-zag)\b/.test(
+        text,
+      ));
+  const swoosh =
+    !bolt &&
+    !wave &&
+    /\b(nike|swoosh|checkmark|check-mark|tick|wing|slash|sweep|sweeping|boomerang|ribbon|s-curve)\b/.test(
+      text,
+    );
+  const explicitStar =
+    /\b(star|stars|pentagram|five-point|five-pointed)\b/.test(text);
+  const pointOnlyStar = /\b(spike|spikes|pointed)\b/.test(text) && !swoosh && !bolt;
+  const star =
+    !heart &&
+    !shield &&
+    !diamond &&
+    !mountain &&
+    !flower &&
+    (explicitStar || pointOnlyStar);
+  const love = /\b(love)\b/.test(text);
+  const wordmark =
+    love ||
+    (!(
+      star ||
+      heart ||
+      bolt ||
+      arrow ||
+      crown ||
+      wave ||
+      shield ||
+      diamond ||
+      house ||
+      mountain ||
+      flower
+    ) &&
+      /\b(wordmark|letters|text|type|typography|initials|monogram)\b/.test(
+        text,
+      ));
+  return {
+    block,
+    loop,
+    figure,
+    gasPump,
+    animal,
+    star,
+    swoosh,
+    heart,
+    bolt,
+    arrow,
+    crown,
+    wave,
+    shield,
+    diamond,
+    house,
+    mountain,
+    flower,
+    wordmark,
+    love,
+  };
+}
+
+function pushRepresentativeDraft(
+  out: VisionDesignDraft[],
+  next: Omit<VisionDesignDraft, "designScore"> & { designScore?: number },
+): void {
+  if (out.some((d) => d.label === next.label)) return;
+  out.push({
+    ...next,
+    designScore: next.designScore ?? 100,
+  });
+}
+
+export function addRepresentativeDesignDrafts(
+  drafts: VisionDesignDraft[],
+  rawDrafts: unknown[],
+): VisionDesignDraft[] {
+  const text = rawDraftText(rawDrafts);
+  const features = inferRepresentativeFeatures(text);
+  const gasLogo = features.gasPump && features.block && features.loop && features.figure;
+  const out = gasLogo
+    ? drafts.filter((draft) => {
+        const draftText = rawDraftText([draft]);
+        return (
+          /\b(gas|pump|fuel|nozzle)\b/.test(draftText) &&
+          /\b(hose|nozzle|cable|loop|arc|handle)\b/.test(draftText) &&
+          /\b(person|human|figure|head|body|legs|arm|hand|headphones)\b/.test(
+            draftText,
+          )
+        );
+      })
+    : drafts.slice();
+
+  if (features.wordmark) {
+    const word = inferWordmarkText(rawDrafts);
+    pushRepresentativeDraft(out, {
+      label: word
+        ? `Representative ${word} wordmark`
+        : features.love
+          ? "Representative LOVE wordmark"
+          : "Representative connected letters",
+      description:
+        "Left-to-right block-letter strokes that preserve reading order instead of tracing filled text outlines.",
+      visualFeatures: ["letters", "reading order", "bridges"],
+      points: word
+        ? word === "LOVE"
+          ? loveTemplate()
+          : wordmarkTemplate(word)
+        : features.love
+          ? loveTemplate()
+          : connectedLetterTemplate(),
+      designScore: 105,
+    });
+    return out.sort((a, b) => b.designScore - a.designScore).slice(0, 10);
+  }
+
+  if (features.star && !gasLogo) {
+    pushRepresentativeDraft(out, {
+      label: "Representative star icon",
+      description:
+        "Street-scale five-point star with sharp tips and inner crossings so it does not collapse into a rounded heart-like outline.",
+      visualFeatures: ["star", "five points", "sharp tips", "inner crossings"],
+      points: starTemplate(),
+      designScore: 104,
+    });
+  }
+
+  if (features.shield && !gasLogo) {
+    pushRepresentativeDraft(out, {
+      label: "Representative shield icon",
+      description:
+        "Street-scale shield or badge with a broad top, two side shoulders, and a bottom point.",
+      visualFeatures: ["shield", "broad top", "side shoulders", "bottom point"],
+      points: shieldTemplate(),
+      designScore: 104,
+    });
+    return out
+      .filter((draft) =>
+        hasAnyFeatureText(
+          `${draft.label} ${draft.description} ${(draft.visualFeatures ?? []).join(" ")}`,
+          /\b(shield|crest|badge|shoulder|shoulders|bottom|point|outline)\b/,
+        ),
+      )
+      .sort((a, b) => b.designScore - a.designScore)
+      .slice(0, 10);
+  }
+
+  if (features.diamond && !gasLogo) {
+    pushRepresentativeDraft(out, {
+      label: "Representative diamond icon",
+      description:
+        "Street-scale diamond or gem with four clear corners and optional center cross.",
+      visualFeatures: ["diamond", "corners", "center cross"],
+      points: diamondTemplate(),
+      designScore: 104,
+    });
+    return out
+      .filter((draft) =>
+        hasAnyFeatureText(
+          `${draft.label} ${draft.description} ${(draft.visualFeatures ?? []).join(" ")}`,
+          /\b(diamond|gem|rhombus|corner|corners|cross)\b/,
+        ),
+      )
+      .sort((a, b) => b.designScore - a.designScore)
+      .slice(0, 10);
+  }
+
+  if (features.house && !gasLogo) {
+    pushRepresentativeDraft(out, {
+      label: "Representative house icon",
+      description:
+        "Street-scale house with roof peak, walls, base, and doorway simplified into one runnable line.",
+      visualFeatures: ["house", "roof", "walls", "door"],
+      points: houseTemplate(),
+      designScore: 103,
+    });
+    return out
+      .filter((draft) =>
+        hasAnyFeatureText(
+          `${draft.label} ${draft.description} ${(draft.visualFeatures ?? []).join(" ")}`,
+          /\b(house|home|roof|wall|walls|base|door|building)\b/,
+        ),
+      )
+      .sort((a, b) => b.designScore - a.designScore)
+      .slice(0, 10);
+  }
+
+  if (features.mountain && !gasLogo) {
+    pushRepresentativeDraft(out, {
+      label: "Representative mountain icon",
+      description:
+        "Street-scale mountain range with a baseline and two or three sharp peaks.",
+      visualFeatures: ["mountain", "baseline", "left peak", "center peak", "right peak"],
+      points: mountainTemplate(),
+      designScore: 103,
+    });
+    return out
+      .filter((draft) =>
+        hasAnyFeatureText(
+          `${draft.label} ${draft.description} ${(draft.visualFeatures ?? []).join(" ")}`,
+          /\b(mountain|range|ridge|baseline|peak|peaks)\b/,
+        ),
+      )
+      .sort((a, b) => b.designScore - a.designScore)
+      .slice(0, 10);
+  }
+
+  if (features.flower && !gasLogo) {
+    pushRepresentativeDraft(out, {
+      label: "Representative flower icon",
+      description:
+        "Street-scale flower or clover with multiple petals and a stem, not a two-lobe heart.",
+      visualFeatures: ["flower", "petals", "center", "stem"],
+      points: flowerTemplate(),
+      designScore: 103,
+    });
+    return out
+      .filter((draft) =>
+        hasAnyFeatureText(
+          `${draft.label} ${draft.description} ${(draft.visualFeatures ?? []).join(" ")}`,
+          /\b(flower|clover|shamrock|petal|petals|center|stem)\b/,
+        ),
+      )
+      .sort((a, b) => b.designScore - a.designScore)
+      .slice(0, 10);
+  }
+
+  if (features.heart && !gasLogo) {
+    pushRepresentativeDraft(out, {
+      label: "Representative heart icon",
+      description:
+        "Street-scale heart with clear left lobe, right lobe, center dip, and bottom point.",
+      visualFeatures: ["heart", "left lobe", "right lobe", "center dip", "bottom point"],
+      points: heartTemplate(),
+      designScore: 105,
+    });
+    return out
+      .filter((draft) =>
+        hasAnyFeatureText(
+          `${draft.label} ${draft.description} ${(draft.visualFeatures ?? []).join(" ")}`,
+          /\b(heart|lobe|lobes|hump|humps|dip|notch|bottom|point|valentine)\b/,
+        ),
+      )
+      .sort((a, b) => b.designScore - a.designScore)
+      .slice(0, 10);
+  }
+
+  if (features.bolt && !gasLogo) {
+    pushRepresentativeDraft(out, {
+      label: "Representative lightning bolt icon",
+      description:
+        "Street-scale lightning bolt with sharp top, middle notch, lower zigzag, and pointed bottom.",
+      visualFeatures: ["lightning", "zigzag", "notch", "point"],
+      points: boltTemplate(),
+      designScore: 105,
+    });
+    return out
+      .filter((draft) =>
+        hasAnyFeatureText(
+          `${draft.label} ${draft.description} ${(draft.visualFeatures ?? []).join(" ")}`,
+          /\b(lightning|bolt|zigzag|zig-zag|sharp|notch|point)\b/,
+        ),
+      )
+      .sort((a, b) => b.designScore - a.designScore)
+      .slice(0, 10);
+  }
+
+  if (features.arrow && !gasLogo) {
+    pushRepresentativeDraft(out, {
+      label: "Representative arrow icon",
+      description:
+        "Street-scale arrow with a long shaft and clear triangular head.",
+      visualFeatures: ["arrow", "shaft", "head", "point"],
+      points: arrowTemplate(),
+      designScore: 104,
+    });
+    return out
+      .filter((draft) =>
+        hasAnyFeatureText(
+          `${draft.label} ${draft.description} ${(draft.visualFeatures ?? []).join(" ")}`,
+          /\b(arrow|shaft|head|point|pointer|chevron|direction)\b/,
+        ),
+      )
+      .sort((a, b) => b.designScore - a.designScore)
+      .slice(0, 10);
+  }
+
+  if (features.crown && !gasLogo) {
+    pushRepresentativeDraft(out, {
+      label: "Representative crown icon",
+      description:
+        "Street-scale crown with flat base, three peaks, and two valleys.",
+      visualFeatures: ["crown", "flat base", "left peak", "center peak", "right peak"],
+      points: crownTemplate(),
+      designScore: 104,
+    });
+    return out
+      .filter((draft) =>
+        hasAnyFeatureText(
+          `${draft.label} ${draft.description} ${(draft.visualFeatures ?? []).join(" ")}`,
+          /\b(crown|tiara|base|peak|peaks|valley|valleys|royal)\b/,
+        ),
+      )
+      .sort((a, b) => b.designScore - a.designScore)
+      .slice(0, 10);
+  }
+
+  if (features.wave && !gasLogo) {
+    pushRepresentativeDraft(out, {
+      label: "Representative wave icon",
+      description:
+        "Street-scale wave with two alternating bends, not a single swoosh.",
+      visualFeatures: ["wave", "first bend", "second bend", "flow"],
+      points: waveTemplate(),
+      designScore: 103,
+    });
+    return out
+      .filter((draft) =>
+        hasAnyFeatureText(
+          `${draft.label} ${draft.description} ${(draft.visualFeatures ?? []).join(" ")}`,
+          /\b(wave|sine|wavy|bend|bends|flow|curve)\b/,
+        ),
+      )
+      .sort((a, b) => b.designScore - a.designScore)
+      .slice(0, 10);
+  }
+
+  if (features.swoosh && !features.star && !features.heart && !gasLogo) {
+    pushRepresentativeDraft(out, {
+      label: "Representative swoosh mark",
+      description:
+        "Street-scale tapered swoosh outline with a broad heel, curved belly, thin rising tip, and clear Nike-like sweep.",
+      visualFeatures: [
+        "swoosh",
+        "tapered outline",
+        "broad heel",
+        "curved belly",
+        "thin rising tip",
+        "sweep",
+      ],
+      points: swooshTemplate(),
+      designScore: 106,
+    });
+    return out
+      .filter((draft) =>
+        hasAnyFeatureText(
+          `${draft.label} ${draft.description} ${(draft.visualFeatures ?? []).join(" ")}`,
+          /\b(nike|swoosh|checkmark|check-mark|tick|wing|slash|sweep|sweeping|boomerang|wave|ribbon|s-curve|curve|flowing)\b/,
+        ),
+      )
+      .sort((a, b) => b.designScore - a.designScore)
+      .slice(0, 10);
+  }
+
+  if (gasLogo) {
+    pushRepresentativeDraft(out, {
+      label: "Representative gas pump + person logo",
+      description:
+        "Street-scale pump body, display window, hose loop, headphone head, torso, and split legs as one connected route.",
+      visualFeatures: ["pump", "window", "hose loop", "headphones", "body", "legs"],
+      points: gasPumpFigureTemplate(),
+      designScore: 108,
+    });
+    return out.sort((a, b) => b.designScore - a.designScore).slice(0, 10);
+  }
+
+  if (features.block && features.loop) {
+    pushRepresentativeDraft(out, {
+      label: "Representative block + loop icon",
+      description:
+        "Street-scale block, inner feature, and connected loop/handle/cable shape inferred from the uploaded art.",
+      visualFeatures: ["block", "inner feature", "loop connector"],
+      points: blockLoopTemplate(),
+      designScore: 100,
+    });
+  }
+
+  if (features.block && features.figure && !features.star) {
+    pushRepresentativeDraft(out, {
+      label: "Representative block + figure icon",
+      description:
+        "Street-scale block plus simplified human/mascot figure with tiny detail removed.",
+      visualFeatures: ["block", "connector", "head", "body", "legs"],
+      points: blockFigureTemplate(),
+      designScore: 96,
+    });
+  }
+
+  if (features.figure && !features.block && !features.animal && !features.star) {
+    pushRepresentativeDraft(out, {
+      label: "Representative figure icon",
+      description:
+        "Street-scale head, torso, arms, and legs as one connected runnable line.",
+      visualFeatures: ["head", "body", "arms", "legs"],
+      points: figureTemplate(),
+      designScore: 94,
+    });
+  }
+
+  if (features.animal && !features.swoosh) {
+    pushRepresentativeDraft(out, {
+      label: "Representative animal silhouette",
+      description:
+        "Street-scale animal silhouette with head, back, tail, and legs instead of tiny texture.",
+      visualFeatures: ["head", "back", "tail", "legs"],
+      points: animalMascotTemplate(),
+      designScore: 92,
+    });
+  }
+
+  return out.sort((a, b) => b.designScore - a.designScore).slice(0, 10);
+}
 
 function validDesignPoint(v: unknown): ContourPoint | null {
   if (!v || typeof v !== "object") return null;
@@ -1017,7 +3557,7 @@ function validDesignPoint(v: unknown): ContourPoint | null {
 export function cleanVisionDesignDrafts(raw: unknown): VisionDesignDraft[] {
   if (!raw || typeof raw !== "object") return [];
   const rec = raw as Record<string, unknown>;
-  const rawDrafts = Array.isArray(rec.drafts) ? rec.drafts : [rec];
+  const rawDrafts = Array.isArray(rec.drafts) ? [rec, ...rec.drafts] : [rec];
   const out: VisionDesignDraft[] = [];
   for (const item of rawDrafts) {
     if (!item || typeof item !== "object") continue;
@@ -1046,12 +3586,107 @@ export function cleanVisionDesignDrafts(raw: unknown): VisionDesignDraft[] {
         typeof draft.description === "string" && draft.description.trim()
           ? draft.description.trim().slice(0, 180)
           : "Street-native GPS-art sketch.",
+      visualFeatures: Array.isArray(draft.visualFeatures)
+        ? draft.visualFeatures
+            .filter(
+              (v): v is string => typeof v === "string" && v.trim().length > 0,
+            )
+            .map((v) => v.trim().slice(0, 40))
+            .slice(0, 8)
+        : undefined,
       points,
       designScore: review.score,
     });
     if (out.length >= 8) break;
   }
-  return out.sort((a, b) => b.designScore - a.designScore);
+  return addRepresentativeDesignDrafts(out, rawDrafts);
+}
+
+function parseCompleteObjectsFromDraftArray(raw: string): unknown[] {
+  const keyIndex = raw.indexOf('"drafts"');
+  if (keyIndex < 0) return [];
+  const arrayStart = raw.indexOf("[", keyIndex);
+  if (arrayStart < 0) return [];
+
+  const out: unknown[] = [];
+  let objectStart = -1;
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+
+  for (let i = arrayStart + 1; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      } else if (ch === "\\") {
+        escaping = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{" && depth === 0) {
+      objectStart = i;
+      depth = 1;
+      continue;
+    }
+    if (ch === "{" && depth > 0) {
+      depth++;
+      continue;
+    }
+    if (ch === "}" && depth > 0) {
+      depth--;
+      if (depth === 0 && objectStart >= 0) {
+        try {
+          out.push(JSON.parse(raw.slice(objectStart, i + 1)));
+        } catch {
+          // Keep scanning; a later draft object may still be complete.
+        }
+        objectStart = -1;
+      }
+    }
+  }
+
+  return out;
+}
+
+function looseVisionDesignPayload(raw: string): unknown | null {
+  const trimmed = raw.trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch {
+      // Fall through and salvage complete draft objects from a truncated reply.
+    }
+  }
+
+  const drafts = parseCompleteObjectsFromDraftArray(trimmed);
+  if (drafts.length === 0) return null;
+
+  const draftKeyIndex = trimmed.indexOf('"drafts"');
+  const topLevelPrefix =
+    draftKeyIndex > 0 ? trimmed.slice(0, draftKeyIndex) : trimmed;
+  const labelMatch = topLevelPrefix.match(/"label"\s*:\s*"([^"]+)"/);
+  const descriptionMatch = topLevelPrefix.match(
+    /"description"\s*:\s*"([^"]+)"/,
+  );
+  return {
+    ...(labelMatch ? { label: labelMatch[1] } : {}),
+    ...(descriptionMatch ? { description: descriptionMatch[1] } : {}),
+    drafts,
+  };
+}
+
+export function recoverLooseVisionDesignDrafts(raw: string): VisionDesignDraft[] {
+  return cleanVisionDesignDrafts(looseVisionDesignPayload(raw));
 }
 
 async function getVisionDesignDrafts(
@@ -1068,14 +3703,28 @@ async function getVisionDesignDrafts(
         imageBase64: originalData,
         mediaType: originalMediaType,
         cityLabel,
-        draftCount: 8,
+        draftCount: 6,
       }),
     });
     if (!res.ok) {
+      const failure = (await res.json().catch(() => null)) as
+        | { raw?: unknown }
+        | null;
+      const recovered =
+        typeof failure?.raw === "string"
+          ? recoverLooseVisionDesignDrafts(failure.raw)
+          : [];
+      if (recovered.length > 0) {
+        console.warn(
+          "[autoFindTop5] recovered vision-design drafts from malformed response",
+          recovered.map((d) => `${d.label} (${d.designScore})`),
+        );
+        return recovered;
+      }
       console.warn(
         "[autoFindTop5] vision-design http",
         res.status,
-        await res.text().catch(() => ""),
+        failure ?? (await res.text().catch(() => "")),
       );
       return [];
     }
@@ -1147,6 +3796,7 @@ async function visionRank(
   userHistory: FinalizedRouteMemory[],
   cityLabel: string,
   candidateNotes: string[],
+  requiredVisualFeatures: string[],
 ): Promise<{ id: number; reason: string }[] | null> {
   console.log(
     `[autoFindTop5] calling vision-rank with count=${count}, topK=${topK}, gridB64=${gridRawBase64.length}ch, origB64=${originalData.length}ch, historyEntries=${userHistory.length}, city=${cityLabel}`,
@@ -1163,6 +3813,7 @@ async function visionRank(
         topK,
         cityLabel,
         candidateNotes,
+        requiredVisualFeatures,
         userHistory: userHistory.map((h) => ({
           center: h.center,
           rotationDeg: h.rotationDeg,
@@ -1207,14 +3858,294 @@ function makePicks(
   order: number[] | null,
   reasons: Map<number, string> | null,
   topK: number,
+  hint: ShapeHint | null | undefined,
+  allowBestEffort = false,
+  structuralRequirement: StructuralRequirement | null = null,
+  requiredVisualFeatures: string[] = [],
 ): Top5Pick[] {
+  const semanticFallbackCandidates = () =>
+    snapped
+      .map((candidate, originalIndex) => ({ candidate, originalIndex }))
+      .filter(({ candidate }) => {
+        if (
+          !passesRequiredVisualFeatureGate(
+            candidate,
+            undefined,
+            requiredVisualFeatures,
+            false,
+          )
+        ) {
+          return false;
+        }
+        if (
+          requiredVisualStructureScore(candidate, requiredVisualFeatures) <
+          requiredVisualStructureThreshold(requiredVisualFeatures)
+        ) {
+          return false;
+        }
+        if (!passesSweepDisplayFloor(candidate, requiredVisualFeatures)) {
+          return false;
+        }
+        return isDisplayWorthyForHint({
+          placement: candidate.placement,
+          kind: candidate.kind,
+          routeMode: candidate.routeMode,
+          qualityScore: candidate.qualityScore,
+          shapeMatchScore: candidate.shapeMatchScore,
+          sourceMatchScore: candidate.sourceMatchScore,
+          distanceKm: candidate.km,
+        }, hint, requiredVisualFeatures);
+      });
+
+  let eligible = snapped
+    .map((candidate, originalIndex) => ({ candidate, originalIndex }))
+    .filter(({ candidate, originalIndex }) => {
+      const reason = reasons?.get(originalIndex);
+      if (
+        !passesRequiredVisualFeatureGate(
+          candidate,
+          reason,
+          requiredVisualFeatures,
+          order != null && reasons != null,
+        )
+      ) {
+        console.log("[autoFindTop5] dropped feature-incomplete candidate", {
+          requiredVisualFeatures,
+          coverage: requiredFeatureCoverageScore(
+            order != null && reasons != null
+              ? reason ?? ""
+              : [candidate.designIntent, reason].filter(Boolean).join(" "),
+            requiredVisualFeatures,
+          ),
+          reason,
+          km: Number(candidate.km.toFixed(1)),
+          clean: candidate.qualityScore,
+          shape: candidate.shapeMatchScore,
+          source: candidate.sourceMatchScore,
+          intent: candidate.designIntent,
+        });
+        return false;
+      }
+      const visualStructure = requiredVisualStructureScore(
+        candidate,
+        requiredVisualFeatures,
+      );
+      if (
+        visualStructure <
+        requiredVisualStructureThreshold(requiredVisualFeatures)
+      ) {
+        console.log("[autoFindTop5] dropped visually incomplete candidate", {
+          requiredVisualFeatures,
+          visualStructure,
+          reason,
+          km: Number(candidate.km.toFixed(1)),
+          clean: candidate.qualityScore,
+          shape: candidate.shapeMatchScore,
+          source: candidate.sourceMatchScore,
+          intent: candidate.designIntent,
+        });
+        return false;
+      }
+      if (!passesSweepDisplayFloor(candidate, requiredVisualFeatures)) {
+        console.log("[autoFindTop5] dropped weak sweep candidate", {
+          requiredVisualFeatures,
+          km: Number(candidate.km.toFixed(1)),
+          clean: candidate.qualityScore,
+          shape: candidate.shapeMatchScore,
+          source: candidate.sourceMatchScore,
+          intent: candidate.designIntent,
+        });
+        return false;
+      }
+      if (!passesStructuralTextGate(candidate, reason, structuralRequirement)) {
+        console.log("[autoFindTop5] dropped semantically incomplete candidate", {
+          requirement: structuralRequirement,
+          reason,
+          km: Number(candidate.km.toFixed(1)),
+          clean: candidate.qualityScore,
+          shape: candidate.shapeMatchScore,
+          source: candidate.sourceMatchScore,
+          intent: candidate.designIntent,
+        });
+        return false;
+      }
+      const structure = structuralScore(candidate, structuralRequirement);
+      if (structure < 62) {
+        console.log("[autoFindTop5] dropped structurally incomplete candidate", {
+          requirement: structuralRequirement,
+          structure,
+          km: Number(candidate.km.toFixed(1)),
+          clean: candidate.qualityScore,
+          shape: candidate.shapeMatchScore,
+          source: candidate.sourceMatchScore,
+          intent: candidate.designIntent,
+        });
+        return false;
+      }
+      const truthVerdict = finalRouteTruthVerdict(
+        {
+          placement: candidate.placement,
+          kind: candidate.kind,
+          routeMode: candidate.routeMode,
+          qualityScore: candidate.qualityScore,
+          shapeMatchScore: candidate.shapeMatchScore,
+          sourceMatchScore: candidate.sourceMatchScore,
+          distanceKm: candidate.km,
+        },
+        hint,
+        requiredVisualFeatures,
+      );
+      if (!truthVerdict.ok) {
+        console.log("[autoFindTop5] dropped final-route mismatch", {
+          reason: truthVerdict.reason,
+          requiredVisualFeatures,
+          km: Number(candidate.km.toFixed(1)),
+          clean: candidate.qualityScore,
+          shape: candidate.shapeMatchScore,
+          source: candidate.sourceMatchScore,
+          minShape: truthVerdict.minShape,
+          minSource: truthVerdict.minSource,
+          minClean: truthVerdict.minClean,
+          maxDistanceKm: truthVerdict.maxDistanceKm,
+          intent: candidate.designIntent,
+        });
+        return false;
+      }
+      return isDisplayWorthyForHint({
+        placement: candidate.placement,
+        kind: candidate.kind,
+        routeMode: candidate.routeMode,
+        qualityScore: candidate.qualityScore,
+        shapeMatchScore: candidate.shapeMatchScore,
+        sourceMatchScore: candidate.sourceMatchScore,
+        distanceKm: candidate.km,
+      }, hint, requiredVisualFeatures);
+    });
+  if (
+    eligible.length > 0 &&
+    eligible.length < topK &&
+    allowBestEffort &&
+    structuralRequirement == null &&
+    requiredVisualFeatures.length > 0
+  ) {
+    const seen = new Set(eligible.map(({ originalIndex }) => originalIndex));
+    const backfill = semanticFallbackCandidates().filter(
+      ({ originalIndex }) => !seen.has(originalIndex),
+    );
+    if (backfill.length > 0) {
+      console.warn(
+        "[autoFindTop5] backfilled sparse vision-ranked survivors with semantically matching routes",
+        backfill.map(({ candidate }) => ({
+          km: Number(candidate.km.toFixed(1)),
+          clean: candidate.qualityScore,
+          shape: candidate.shapeMatchScore,
+          source: candidate.sourceMatchScore,
+          intent: candidate.designIntent,
+        })),
+      );
+      eligible = [...eligible, ...backfill];
+    }
+  }
+  if (
+    eligible.length === 0 &&
+    allowBestEffort &&
+    structuralRequirement == null &&
+    requiredVisualFeatures.length > 0
+  ) {
+    const semanticFallback = semanticFallbackCandidates();
+    if (semanticFallback.length > 0) {
+      console.warn(
+        "[autoFindTop5] no vision-ranked survivors; showing best semantically matching snapped routes",
+        semanticFallback.map(({ candidate }) => ({
+          km: Number(candidate.km.toFixed(1)),
+          clean: candidate.qualityScore,
+          shape: candidate.shapeMatchScore,
+          source: candidate.sourceMatchScore,
+          intent: candidate.designIntent,
+        })),
+      );
+      eligible = semanticFallback;
+    }
+  }
+  if (eligible.length === 0) return [];
+
+  const indexByOriginal = new Map<number, number>();
+  eligible.forEach(({ originalIndex }, displayIndex) => {
+    indexByOriginal.set(originalIndex, displayIndex);
+  });
+  const displayOrder =
+    order == null
+      ? null
+      : order
+          .map((originalIndex) => indexByOriginal.get(originalIndex))
+          .filter((idx): idx is number => idx != null);
+  const displayReasons =
+    reasons == null
+      ? null
+      : new Map(
+          eligible
+            .map(({ originalIndex }, displayIndex) => {
+              const reason = reasons.get(originalIndex);
+              return reason ? ([displayIndex, reason] as const) : null;
+            })
+            .filter((entry): entry is readonly [number, string] => entry != null),
+        );
+  const displaySnapped = eligible.map(({ candidate }) => candidate);
+  const needsSweepSelection = requiresSweepStructure(requiredVisualFeatures);
+  const needsBoltSelection = requiresBoltStructure(requiredVisualFeatures);
+  const needsStarSelection = requiresStarStructure(requiredVisualFeatures);
+  const needsGasSelection = structuralRequirement === "gas-pump-person";
+  const gasOrder = needsGasSelection
+    ? displaySnapped
+        .map((candidate, index) => ({ index, score: gasRankPriority(candidate) }))
+        .sort((a, b) => b.score - a.score)
+        .map(({ index }) => index)
+    : null;
+  const sweepOrder = needsSweepSelection
+    ? displaySnapped
+        .map((candidate, index) => ({ index, score: sweepRankPriority(candidate) }))
+        .sort((a, b) => b.score - a.score)
+        .map(({ index }) => index)
+    : null;
+  const boltOrder = needsBoltSelection
+    ? displaySnapped
+        .map((candidate, index) => ({ index, score: boltRankPriority(candidate) }))
+        .sort((a, b) => b.score - a.score)
+        .map(({ index }) => index)
+    : null;
+  const starOrder = needsStarSelection
+    ? displaySnapped
+        .map((candidate, index) => ({ index, score: starRankPriority(candidate) }))
+        .sort((a, b) => b.score - a.score)
+        .map(({ index }) => index)
+    : null;
+  const effectiveDisplayOrder =
+    gasOrder ?? sweepOrder ?? boltOrder ?? starOrder ?? displayOrder;
+  const preferredWeight = needsGasSelection
+    ? 36
+    : needsSweepSelection
+    ? 32
+    : needsBoltSelection
+      ? 28
+      : needsStarSelection
+        ? 24
+    : hint?.shapeClass === "creature"
+      ? 9
+      : hint?.shapeClass === "letter"
+        ? 1
+      : 4;
   const indices =
-    order != null
-      ? selectDiverseAutoFindPickIndices(snapped, topK, order)
-      : selectDiverseAutoFindPickIndices(snapped, topK);
+    effectiveDisplayOrder != null
+      ? selectDiverseAutoFindPickIndices(
+          displaySnapped,
+          topK,
+          effectiveDisplayOrder,
+          preferredWeight,
+        )
+      : selectDiverseAutoFindPickIndices(displaySnapped, topK);
   const out: Top5Pick[] = [];
   for (const i of indices) {
-    const s = snapped[i]!;
+    const s = displaySnapped[i]!;
     out.push({
       placement: s.placement,
       anchorLatLngs: s.anchors,
@@ -1225,7 +4156,8 @@ function makePicks(
       distanceKm: s.km,
       qualityScore: s.qualityScore,
       shapeMatchScore: s.shapeMatchScore,
-      reason: reasons?.get(i),
+      sourceMatchScore: s.sourceMatchScore,
+      reason: displayReasons?.get(i),
     });
   }
   return out;
@@ -1253,7 +4185,7 @@ export async function autoFindTop5(
       preset.label,
     );
   }
-  const visionDesignDrafts =
+  let visionDesignDrafts =
     parsedOrig && !options.anchorAround
       ? await getVisionDesignDrafts(
           parsedOrig.data,
@@ -1261,27 +4193,85 @@ export async function autoFindTop5(
           preset.label,
         )
       : [];
+  if (!options.anchorAround && contour.length >= 2) {
+    visionDesignDrafts = mergeVisionDesignDrafts(contour, visionDesignDrafts);
+  }
+  if (!options.anchorAround) {
+    visionDesignDrafts = injectGasRepresentativeDrafts(
+      visionDesignDrafts,
+      options.imageSourceName,
+    );
+  }
+  const sketchLedSearch =
+    !options.anchorAround && isSketchLedPlacementSearch(contour);
+  const effectiveTargetDistanceKm = usableTargetDistanceKm(
+    parsedOrig ? hint : null,
+    options.targetDistanceKm,
+  );
+  const wordmarkText =
+    parsedOrig && hint?.shapeClass === "letter"
+      ? inferWordmarkTextFromSourceName(options.imageSourceName) ??
+        inferWordmarkText(visionDesignDrafts)
+      : null;
+  const approvedSketchDraft = visionDesignDrafts.find(
+    (draft) => draft.label === APPROVED_SKETCH_LABEL,
+  );
+  const requiredVisualFeatures = wordmarkText
+    ? ["letters", "reading order", "baseline"]
+    : approvedSketchDraft?.visualFeatures?.length
+      ? approvedSketchDraft.visualFeatures
+      : deriveRequiredVisualFeatures(visionDesignDrafts);
+  const structuralRequirement: StructuralRequirement | null =
+    inferGasLogoFromSourceName(options.imageSourceName) ||
+    visionDesignDrafts.some(
+      (draft) => draft.label === "Representative gas pump + person logo",
+    )
+      ? "gas-pump-person"
+      : null;
 
-  const designedCityRoutes = !options.anchorAround
+  const mapNativeRoutes = !options.anchorAround
+    ? (() => {
+        const routes = generateMapNativeCandidates({
+          drafts: visionDesignDrafts,
+          preset,
+          targetDistanceKm: effectiveTargetDistanceKm,
+          wordmarkText,
+        });
+        if (inferGasLogoFromSourceName(options.imageSourceName)) {
+          return [curatedGasLogoMapNativeCandidate(), ...routes];
+        }
+        return routes;
+      })()
+    : [];
+  const useWordmarkOnly =
+    wordmarkText != null &&
+    mapNativeRoutes.some((candidate) => candidate.kind === "street-wordmark");
+  const streetWordmarkRoutes = mapNativeRoutes.filter(
+    (candidate) => candidate.kind === "street-wordmark",
+  );
+  const streetDesignRoutes = mapNativeRoutes.filter(
+    (candidate) => candidate.kind === "street-design",
+  );
+  const designedCityRoutes = !options.anchorAround && !useWordmarkOnly
     ? manhattanDesignedHeartCandidates(
         contour,
         preset,
-        options.targetDistanceKm,
+        effectiveTargetDistanceKm,
       )
     : [];
-  const cityFirstRaw = !options.anchorAround
+  const cityFirstRaw = !options.anchorAround && !useWordmarkOnly
     ? enumerateCityFirstHeartPlacements(
         contour,
         preset,
-        options.targetDistanceKm,
+        effectiveTargetDistanceKm,
       )
     : [];
-  const cityFocusRaw = !options.anchorAround
+  const cityFocusRaw = !options.anchorAround && !useWordmarkOnly
     ? enumerateCityFocusPlacements(
         contour,
         preset,
         hint,
-        options.targetDistanceKm,
+        effectiveTargetDistanceKm,
       )
     : [];
   const raw = enumerateCandidates(
@@ -1289,7 +4279,7 @@ export async function autoFindTop5(
     preset,
     hint,
     options.anchorAround,
-    options.targetDistanceKm,
+    effectiveTargetDistanceKm,
   );
 
   const validCityFirst: ValidCandidate[] = [];
@@ -1309,15 +4299,17 @@ export async function autoFindTop5(
     const v = sanityFilter(contour, preset, p);
     if (v) validGeneric.push(v);
   }
-  const validVisionDesign = !options.anchorAround
+  const validVisionDesign = !options.anchorAround && !useWordmarkOnly
     ? designDraftCandidates(
         visionDesignDrafts,
         preset,
         hint,
-        options.targetDistanceKm,
+        effectiveTargetDistanceKm,
       )
     : [];
   const valid = [
+    ...streetWordmarkRoutes,
+    ...streetDesignRoutes,
     ...validVisionDesign,
     ...designedCityRoutes,
     ...validCityFirst,
@@ -1328,9 +4320,43 @@ export async function autoFindTop5(
     return { picks: [], visionUsed: false, hint: hint ?? undefined };
   }
 
+  const streetWordmarkBudget =
+    streetWordmarkRoutes.length > 0 ? Math.min(16, streetWordmarkRoutes.length) : 0;
+  const streetWordmarkSubset =
+    streetWordmarkBudget > 0
+      ? diverseSubsample(streetWordmarkRoutes, streetWordmarkBudget, preset)
+      : [];
+  const needsSweepDesign = requiresSweepStructure(requiredVisualFeatures);
+  const streetDesignBudget =
+    streetDesignRoutes.length > 0
+      ? Math.min(
+          structuralRequirement === "gas-pump-person"
+            ? 40
+            : sketchLedSearch
+              ? 32
+              : needsSweepDesign
+                ? 24
+                : 12,
+          Math.max(0, snapCount - streetWordmarkSubset.length),
+        )
+      : 0;
+  const streetDesignSubset =
+    streetDesignBudget > 0
+      ? needsSweepDesign
+        ? streetDesignRoutes.slice(0, streetDesignBudget)
+        : diverseSubsample(streetDesignRoutes, streetDesignBudget, preset)
+      : [];
   const visionDesignBudget =
     validVisionDesign.length > 0
-      ? Math.min(18, Math.ceil(snapCount * 0.5))
+      ? Math.min(
+          28,
+          Math.ceil(
+            (snapCount -
+              streetWordmarkSubset.length -
+              streetDesignSubset.length) *
+              0.7,
+          ),
+        )
       : 0;
   const visionDesignSubset =
     visionDesignBudget > 0
@@ -1342,7 +4368,13 @@ export async function autoFindTop5(
           4,
           Math.max(
             0,
-            Math.ceil((snapCount - visionDesignSubset.length) * 0.25),
+            Math.ceil(
+              (snapCount -
+                streetWordmarkSubset.length -
+                streetDesignSubset.length -
+                visionDesignSubset.length) *
+                0.25,
+            ),
           ),
         )
       : 0;
@@ -1357,7 +4389,11 @@ export async function autoFindTop5(
           Math.max(
             0,
             Math.ceil(
-              (snapCount - visionDesignSubset.length - designedSubset.length) *
+              (snapCount -
+                streetWordmarkSubset.length -
+                streetDesignSubset.length -
+                visionDesignSubset.length -
+                designedSubset.length) *
                 0.6,
             ),
           ),
@@ -1375,6 +4411,8 @@ export async function autoFindTop5(
             0,
             Math.ceil(
               (snapCount -
+                streetWordmarkSubset.length -
+                streetDesignSubset.length -
                 visionDesignSubset.length -
                 designedSubset.length -
                 cityFirstSubset.length) *
@@ -1387,33 +4425,67 @@ export async function autoFindTop5(
     cityFocusBudget > 0
       ? diverseSubsample(validCityFocus, cityFocusBudget, preset)
       : [];
+  const sourceReserveBudget =
+    validGeneric.length > 0
+      ? Math.min(
+          validGeneric.length,
+          useWordmarkOnly ? Math.max(8, Math.ceil(snapCount * 0.25)) : 0,
+        )
+      : 0;
+  const genericBudget =
+    structuralRequirement === "gas-pump-person"
+      ? Math.min(validGeneric.length, 2)
+      : sketchLedSearch
+    ? Math.min(
+        validGeneric.length,
+        Math.max(4, Math.ceil(snapCount * 0.12)),
+      )
+    : Math.max(
+        sourceReserveBudget,
+        snapCount -
+          streetWordmarkSubset.length -
+          streetDesignSubset.length -
+          visionDesignSubset.length -
+          designedSubset.length -
+          cityFirstSubset.length -
+          cityFocusSubset.length,
+      );
   const genericSubset = diverseSubsample(
     validGeneric,
-    Math.max(
-      0,
-      snapCount -
-        visionDesignSubset.length -
-        designedSubset.length -
-        cityFirstSubset.length -
-        cityFocusSubset.length,
-    ),
+    genericBudget,
     preset,
   );
   const subset = [
+    ...streetWordmarkSubset,
+    ...streetDesignSubset,
     ...visionDesignSubset,
     ...designedSubset,
     ...cityFirstSubset,
     ...cityFocusSubset,
     ...genericSubset,
   ];
-  const snapped = await parallelSnap(subset, options.anchorSource, preset);
+  const snapped = await parallelSnap(
+    subset,
+    options.anchorSource,
+    preset,
+    contour,
+  );
   if (snapped.length === 0) {
     return { picks: [], visionUsed: false, hint: hint ?? undefined };
   }
 
   if (!parsedOrig) {
     return {
-      picks: makePicks(snapped, null, null, topK),
+      picks: makePicks(
+        snapped,
+        null,
+        null,
+        topK,
+        hint,
+        false,
+        structuralRequirement,
+        requiredVisualFeatures,
+      ),
       visionUsed: false,
       hint: hint ?? undefined,
     };
@@ -1423,17 +4495,33 @@ export async function autoFindTop5(
   // Putting the route on an actual Mapbox backdrop (streets + water visible) is
   // what lets the vision ranker reject candidates that sit over water or
   // inside parks — outline-only tiles can't carry that signal.
+  const rankableSnapped = needsSweepDesign
+    ? prioritizeSweepRankable(snapped).slice(0, Math.min(snapped.length, 20))
+    : snapped.slice(0, Math.min(snapped.length, 20));
+
   const mapImages = await Promise.all(
-    snapped.map((s) => loadRouteStaticMapImage(s.coords, { size: 256 })),
+    rankableSnapped.map((s) => loadRouteStaticMapImage(s.coords, { size: 224 })),
   );
 
   const grid = buildCompositeGridDataUrl(
-    snapped.map((s, i) => ({ route: s.coords, mapImage: mapImages[i] ?? null })),
-    { tileSize: 256, cols: 5 },
+    rankableSnapped.map((s, i) => ({
+      route: s.coords,
+      mapImage: mapImages[i] ?? null,
+    })),
+    { tileSize: 224, cols: 5 },
   );
   if (!grid) {
     return {
-      picks: makePicks(snapped, null, null, topK),
+      picks: makePicks(
+        rankableSnapped,
+        null,
+        null,
+        topK,
+        hint,
+        true,
+        structuralRequirement,
+        requiredVisualFeatures,
+      ),
       visionUsed: false,
       hint: hint ?? undefined,
     };
@@ -1447,16 +4535,26 @@ export async function autoFindTop5(
     grid.rawBase64,
     parsedOrig.data,
     parsedOrig.mediaType,
-    snapped.length,
+    rankableSnapped.length,
     topK,
     userHistory,
     preset.label,
-    snapped.map((s) => s.designIntent ?? ""),
+    rankableSnapped.map((s) => s.designIntent ?? ""),
+    requiredVisualFeatures,
   );
 
   if (!ranked || ranked.length === 0) {
     return {
-      picks: makePicks(snapped, null, null, topK),
+      picks: makePicks(
+        rankableSnapped,
+        null,
+        null,
+        topK,
+        hint,
+        true,
+        structuralRequirement,
+        requiredVisualFeatures,
+      ),
       visionUsed: false,
       hint: hint ?? undefined,
     };
@@ -1466,14 +4564,23 @@ export async function autoFindTop5(
   const reasons = new Map<number, string>();
   for (const r of ranked) {
     const idx = r.id - 1;
-    if (idx < 0 || idx >= snapped.length) continue;
+    if (idx < 0 || idx >= rankableSnapped.length) continue;
     if (order.includes(idx)) continue; // dedupe
     order.push(idx);
     reasons.set(idx, r.reason);
   }
 
   return {
-    picks: makePicks(snapped, order, reasons, topK),
+    picks: makePicks(
+      rankableSnapped,
+      order,
+      reasons,
+      topK,
+      hint,
+      true,
+      structuralRequirement,
+      requiredVisualFeatures,
+    ),
     visionUsed: true,
     hint: hint ?? undefined,
   };

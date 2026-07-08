@@ -68,9 +68,14 @@ assert(
 );
 
 const logoVariants = buildArtPathInterpretations(disconnectedLogoTrace);
+assert.equal(
+  logoVariants[0]?.id,
+  "bold",
+  "logo art should lead with the etch-a-sketch interpretation",
+);
 assert(
-  logoVariants.some((v) => v.id === "trace"),
-  "disconnected logo art should keep the faithful trace option",
+  logoVariants.some((v) => v.id === "bold"),
+  "disconnected logo art should get an etch-a-sketch interpretation",
 );
 assert(
   !logoVariants.some((v) => v.id === "grid"),

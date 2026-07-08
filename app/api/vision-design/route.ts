@@ -27,6 +27,7 @@ type NormalizedPoint = { x: number; y: number };
 type DesignDraft = {
   label: string;
   description: string;
+  visualFeatures?: string[];
   points: NormalizedPoint[];
 };
 
@@ -39,19 +40,25 @@ function clientKey(req: Request): string {
 function buildPrompt(cityLabel: string | null, draftCount: number): string {
   const city = cityLabel || "a dense city";
   const multiple = draftCount > 1;
-  return `Convert this image into ${multiple ? `${draftCount} different` : "a"} simplified one-line GPS-art sketch${multiple ? "es" : ""} for ${city}.
+  return `Convert this image into ${multiple ? `${draftCount} different` : "a"} etch-a-sketch style one-line GPS-art design${multiple ? "s" : ""} for ${city}.
 
-This is NOT image tracing. You are the visual designer before routing.
+This is NOT image tracing. You are designing route intents that will be placed and snapped onto real ${city} streets. The runner should recognize the subject from the route alone — like an Etch A Sketch drawing, not a faithful logo reproduction.
 
 Rules:
 - Ignore backgrounds, badges, circles, shadows, and decorative fills unless they are the subject.
 - Preserve only the 3-6 features that make the subject recognizable.
+- Name those features in "visualFeatures" using simple nouns a route generator can use, such as block, loop, handle, cable, head, body, legs, tail, letters, window, connector.
 - Redraw the subject as one continuous polyline, like a runner drawing it with GPS.
-- Design for streets first. Use rectangles, stair-steps, loops, strong corners, and long strokes a runner could plausibly make on city blocks.
+- Design for streets first. Use rectangles, stair-steps, loops, diagonals, strong corners, and long strokes a runner could plausibly make on city blocks.
 - Exaggerate key readable features; drop tiny detail.
 - The line should be symbolic when needed. A person should recognize the subject when viewing only the route.
-- Prefer a bold icon version over a faithful contour. For example: a gas-pump logo should become pump block + hose curve + simplified person/headphones, not every hand/nozzle pixel; a face can become face outline + connected glasses + one mouth instead of tiny eyes.
+- Prefer a neighborhood-scale runnable idea over a giant city mural. A strong 10-22 km simplification is better than a 35 km route that preserves more detail but looks messy. Up to ~25 km is fine when it clearly improves readability.
+- Prefer a bold etch-a-sketch icon over a faithful contour. For example: a gas-pump logo should become pump block + hose curve + simplified person/headphones, not every hand/nozzle pixel; a face can become face outline + connected glasses + one mouth instead of tiny eyes.
 - For internal features, use connected features that can share travel strokes. If literal disconnected details would require ugly connector jumps, replace them with a street-friendly symbol.
+- If the subject is a wordmark or letters (for example LOVE), preserve reading order and major letter strokes. Use simple block-letter strokes and purposeful bridges between letters; do not trace the outside blob of filled text.
+- If the subject is an animal or mascot (for example tiger/lion), preserve the big silhouette and 2-4 signature features such as head, back, tail, legs, mane/stripes. Do not chase fur, small facial marks, or texture.
+- If the subject is a logo/icon with multiple objects (for example a gas pump plus person), make several feature-subset drafts: one aggressive simple version, one balanced version, and one fuller version. It is acceptable to drop optional objects if the remaining route reads better and runs cleaner.
+- Avoid pretty fantasy curves that need empty space to work. Prefer the kind of blocky, slightly jagged route that would still read after snapping to ${city}'s streets.
 - Coordinates must be normalized to the image box: x and y from 0 to 1.
 - Use 8-40 points. Fewer, stronger points are better.
 - Avoid self-crossing unless it is needed to move between features.
@@ -61,16 +68,19 @@ Rules:
 - Include at least one draft that is outline-only, one that emphasizes the most distinctive internal feature, and one that uses an alternate connected symbol if the literal details are too small.
 - For logos with multiple objects, merge them into one readable route story. The runner should not draw every object separately; connectors should feel like part of the icon.
 - Make at least two drafts aggressively simple enough to still read after being forced onto a rectangular street grid.
+- The first draft should be your best map-realistic representation, not the closest trace.
 
 Return ONLY JSON with this exact shape:
 {
   "label": "short name",
   "description": "short explanation of what was preserved",
+  "visualFeatures": ["block", "loop", "head"],
   "points": [{"x": 0.12, "y": 0.84}, ...],
   "drafts": [
     {
       "label": "short name",
       "description": "what this draft emphasizes",
+      "visualFeatures": ["block", "loop", "head"],
       "points": [{"x": 0.12, "y": 0.84}, ...]
     }
   ]
@@ -128,6 +138,15 @@ function cleanPoints(raw: unknown): NormalizedPoint[] {
   return out;
 }
 
+function cleanVisualFeatures(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out = raw
+    .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+    .map((v) => v.trim().slice(0, 40))
+    .slice(0, 8);
+  return out.length > 0 ? out : undefined;
+}
+
 function cleanDraft(raw: unknown, fallbackLabel: string): DesignDraft | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
@@ -142,6 +161,7 @@ function cleanDraft(raw: unknown, fallbackLabel: string): DesignDraft | null {
       typeof rec.description === "string" && rec.description.trim()
         ? rec.description.trim().slice(0, 180)
         : "Street-friendly one-line GPS-art sketch.",
+    visualFeatures: cleanVisualFeatures(rec.visualFeatures),
     points,
   };
 }
@@ -216,9 +236,8 @@ export async function POST(req: Request) {
 
   try {
     const message = await client.messages.create({
-      model: "claude-opus-4-7",
-      max_tokens: 2600,
-      thinking: { type: "adaptive" },
+      model: "claude-sonnet-4-6",
+      max_tokens: 3800,
       messages: [
         {
           role: "user",
@@ -286,6 +305,7 @@ export async function POST(req: Request) {
         typeof rec.description === "string" && rec.description.trim()
           ? rec.description.trim().slice(0, 160)
           : "Simplified one-line GPS-art sketch.",
+      visualFeatures: cleanVisualFeatures(rec.visualFeatures),
       points,
     };
     const drafts = cleanDrafts(rec, fallbackDraft);

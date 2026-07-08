@@ -36,6 +36,7 @@ saveCreateDraft({
     { x: 0, y: 0 },
     { x: 1, y: 1 },
   ],
+  sketchApproved: true,
   anchorLocation: {
     anchorLatLngs: [
       [40, -73],
@@ -94,6 +95,7 @@ assert.equal(
   undefined,
 );
 assert.equal(loaded.editedRoute?.preserveBlockWaypoints, true);
+assert.equal(loaded.sketchApproved, true);
 
 const staleFinalWithoutSnap = reconcileDraft({
   version: 1,
@@ -105,6 +107,7 @@ const staleFinalWithoutSnap = reconcileDraft({
     { x: 0, y: 0 },
     { x: 1, y: 1 },
   ],
+  sketchApproved: true,
   anchorLocation: {
     anchorLatLngs: [
       [40, -73],
@@ -130,8 +133,49 @@ const staleFinalWithoutSnap = reconcileDraft({
   uploadedImageBase64: "data:image/png;base64,abc",
 });
 assert.equal(staleFinalWithoutSnap.currentStep, 4);
+assert.equal(staleFinalWithoutSnap.sketchApproved, true);
 assert.equal(staleFinalWithoutSnap.editedRoute, null);
 assert.equal(staleFinalWithoutSnap.finalRoute, null);
+
+const approvedImageWithoutAnchor = reconcileDraft({
+  version: 1,
+  updatedAt: new Date().toISOString(),
+  currentStep: 4,
+  selectedCityId: "manhattan",
+  sourceKind: "image",
+  contourCoordinates: [
+    { x: 0, y: 0 },
+    { x: 1, y: 1 },
+  ],
+  sketchApproved: false,
+  anchorLocation: null,
+  snappedRoute: null,
+  editedRoute: null,
+  finalRoute: null,
+  uploadedImageBase64: "data:image/png;base64,abc",
+});
+assert.equal(approvedImageWithoutAnchor.currentStep, 3);
+assert.equal(approvedImageWithoutAnchor.sketchApproved, true);
+
+const unapprovedImageAtReview = reconcileDraft({
+  version: 1,
+  updatedAt: new Date().toISOString(),
+  currentStep: 3,
+  selectedCityId: "manhattan",
+  sourceKind: "image",
+  contourCoordinates: [
+    { x: 0, y: 0 },
+    { x: 1, y: 1 },
+  ],
+  sketchApproved: false,
+  anchorLocation: null,
+  snappedRoute: null,
+  editedRoute: null,
+  finalRoute: null,
+  uploadedImageBase64: "data:image/png;base64,abc",
+});
+assert.equal(unapprovedImageAtReview.currentStep, 3);
+assert.equal(unapprovedImageAtReview.sketchApproved, false);
 
 const staleSourceOnly = reconcileDraft({
   version: 1,
@@ -143,6 +187,7 @@ const staleSourceOnly = reconcileDraft({
     { x: 0, y: 0 },
     { x: 1, y: 1 },
   ],
+  sketchApproved: true,
   anchorLocation: {
     anchorLatLngs: [
       [40, -73],
@@ -164,6 +209,7 @@ const staleSourceOnly = reconcileDraft({
 });
 assert.equal(staleSourceOnly.currentStep, 1);
 assert.equal(staleSourceOnly.contourCoordinates, null);
+assert.equal(staleSourceOnly.sketchApproved, false);
 assert.equal(staleSourceOnly.anchorLocation, null);
 assert.equal(staleSourceOnly.snappedRoute, null);
 assert.equal(staleSourceOnly.uploadedImageBase64, null);

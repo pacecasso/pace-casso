@@ -42,6 +42,7 @@ function buildPrompt(
   userHistory: UserHistoryEntry[],
   cityLabel: string,
   candidateNotes: string[],
+  requiredVisualFeatures: string[],
 ): string {
   const historyBlock =
     userHistory.length > 0
@@ -63,6 +64,16 @@ ${userHistory
           .map((note, i) => `${i + 1}. ${note || "no design note"}`)
           .join("\n")}`
       : "";
+  const requiredFeaturesBlock =
+    requiredVisualFeatures.length > 0
+      ? `\n\n**Required visual features from the uploaded art**:
+The image-analysis step says the route should preserve these features if possible:
+${requiredVisualFeatures.map((feature, i) => `${i + 1}. ${feature}`).join("\n")}
+
+Use this as a generic checklist for the uploaded art. Do not assume what the object is; ask whether the visible red route still contains these important visual ideas. Penalize candidates that are clean but drop too many checklist features. Prefer candidates that preserve more checklist features while still staying on real ${city} streets.
+
+For every ranked candidate, your "reason" must name at least one checklist feature that is visibly present in that red route. If you cannot name a visible checklist feature for a candidate, do not rank that candidate.`
+      : "";
 
   return `You are seeing two images:
 1. A grid of ${count} candidate GPS walking routes, numbered 1–${count} in the top-left of each tile. Each tile shows the route drawn in red on a real map of **${city}** — you can see streets (light gray), water (pale blue), and parks (pale green) underneath.
@@ -74,12 +85,19 @@ Rank by TWO things, in this priority order:
 
 A) **Geographic plausibility in ${city}** — the route must sit on walkable streets **in ${city}**. IMMEDIATELY disqualify any candidate whose red line crosses water, sits mostly in a park or cemetery, hugs a shoreline in a way that doesn't match the subject, cuts across non-walkable infrastructure (rail yards, freeways, bridges-as-shortcuts), or has long straight segments jumping across non-street areas. A route that fails here should not appear in your top ${topK}, no matter how good the shape is.
 
-B) **Shape recognizability** — among the geographically valid candidates, pick the ones where a person would most likely recognize the reference subject. Focus on gestalt: silhouette, proportions, distinctive features, correct orientation (not upside-down or mirrored in a way that breaks the subject). A route may be a symbolic simplification of the image, not a literal trace. A shape that reads clearly against ${city}'s particular grid character is worth more than one that is geometrically closer to the reference but fights the street layout.${notesBlock}${historyBlock}
+B) **Shape recognizability** — among the geographically valid candidates, pick the ones where a person would most likely recognize the reference subject. Focus on gestalt: silhouette, proportions, distinctive features, correct orientation (not upside-down or mirrored in a way that breaks the subject). A route may be a symbolic simplification of the image, not a literal trace. A shape that reads clearly against ${city}'s particular grid character is worth more than one that is geometrically closer to the reference but fights the street layout.${requiredFeaturesBlock}${notesBlock}${historyBlock}
+
+Use these representative-design rules while judging the actual red routes:
+- Wordmarks/letters such as LOVE should read in the correct order with major letter strokes; do not reward a route that merely traces the outside blob of filled text.
+- Stars/geometric icons should preserve the defining vertices and negative-space rhythm. For a star, prefer sharp five-point or pentagram-like routes; penalize rounded heart-like silhouettes even if the route is clean.
+- Animals/mascots such as tiger or lion should preserve the big silhouette and signature features (head/back/tail/legs/mane/stripes) even when simplified into city-block strokes.
+- Multi-object logos such as a gas pump plus runner may omit optional detail if the remaining route is more readable and realistic. A clear pump + hose route can beat a noisy full-person trace.
+- Penalize candidates that only look good because the prompt note says they should. Rank what is visibly present in the real snapped ${city} route.
 
 Return ONLY a JSON array of exactly ${topK} objects ordered best-first:
 [{"id": N, "reason": "short phrase"}]
 
-In "reason", lead with why the candidate is geographically sound in ${city} ("solid grid placement", "all on ${city} streets", "walkable corridor") AND why the shape reads (e.g. "clear R silhouette", "apple proportions with stem"). No other text, no markdown code fences.`;
+In "reason", lead with why the candidate is geographically sound in ${city} ("solid grid placement", "all on ${city} streets", "walkable corridor") AND why the shape reads using the uploaded-art checklist words where possible (e.g. "clear R silhouette", "five points with sharp tips", "curve with rising tail"). No other text, no markdown code fences.`;
 }
 
 export async function POST(req: Request) {
@@ -103,6 +121,7 @@ export async function POST(req: Request) {
     userHistory?: unknown;
     cityLabel?: unknown;
     candidateNotes?: unknown;
+    requiredVisualFeatures?: unknown;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -137,6 +156,12 @@ export async function POST(req: Request) {
     ? body.candidateNotes
         .map((v) => (typeof v === "string" ? v.trim().slice(0, 160) : ""))
         .slice(0, count)
+    : [];
+  const requiredVisualFeatures = Array.isArray(body.requiredVisualFeatures)
+    ? body.requiredVisualFeatures
+        .map((v) => (typeof v === "string" ? v.trim().slice(0, 48) : ""))
+        .filter(Boolean)
+        .slice(0, 8)
     : [];
 
   // User's previously-finalized placements, if any. Validated loosely —
@@ -217,6 +242,7 @@ export async function POST(req: Request) {
                 userHistory,
                 cityLabel,
                 candidateNotes,
+                requiredVisualFeatures,
               ),
             },
           ],

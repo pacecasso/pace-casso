@@ -51,6 +51,7 @@ type Step1ImageUploadProps = {
   onComplete: (
     normalizedContour: NormalizedPoint[],
     imageBase64: string | null,
+    sourceName?: string | null,
   ) => void;
   /** Selected city name, used by the AI designer sketch prompt. */
   cityLabel?: string;
@@ -107,6 +108,11 @@ async function imageFileToSizedDataUrl(
 
 type Tool = "draw" | "erase";
 type FastTraceMode = "svg" | "alpha" | null;
+type DesignerSketchPick = {
+  label: string;
+  description: string;
+  points: NormalizedPoint[];
+};
 
 /** Same hex as contour stroke; line-art raster uses these RGB values (no drift). */
 const CONTOUR_STROKE = "#404040";
@@ -147,6 +153,137 @@ function lineArtCursorCss(tool: Tool, brushRadius: number): string {
   const hy = Math.round((PEN_HOTSPOT_Y * penPx) / 32);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${penPx}" height="${penPx}" viewBox="0 0 32 32"><path d="M4 26 L10 20 L22 8 L26 12 L14 24 L8 28 Z" fill="#e5e5e5" stroke="#171717" stroke-width="1.2" stroke-linejoin="round"/><path d="M22 8 L24 6 L27 9 L25 11 Z" fill="#a3a3a3" stroke="#171717" stroke-width="1"/></svg>`;
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${hx} ${hy}, crosshair`;
+}
+
+function jsonObjectFromText(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(text.slice(start, end + 1));
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+function cleanDesignerPoints(input: unknown): NormalizedPoint[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .filter(
+      (p): p is NormalizedPoint =>
+        !!p &&
+        typeof p === "object" &&
+        typeof (p as NormalizedPoint).x === "number" &&
+        typeof (p as NormalizedPoint).y === "number" &&
+        Number.isFinite((p as NormalizedPoint).x) &&
+        Number.isFinite((p as NormalizedPoint).y),
+    )
+    .map((p) => ({
+      x: Math.max(0, Math.min(1, p.x)),
+      y: Math.max(0, Math.min(1, p.y)),
+    }));
+}
+
+function pickDesignerSketch(payload: unknown, depth = 0): DesignerSketchPick | null {
+  if (!payload || typeof payload !== "object") return null;
+  const rec = payload as Record<string, unknown>;
+  const ownPoints = cleanDesignerPoints(rec.points);
+  if (ownPoints.length >= 2) {
+    return {
+      label:
+        typeof rec.label === "string" && rec.label.trim()
+          ? rec.label.trim().slice(0, 28)
+          : "AI sketch",
+      description:
+        typeof rec.description === "string" && rec.description.trim()
+          ? rec.description.trim()
+          : "Simplified one-line GPS-art sketch.",
+      points: ownPoints,
+    };
+  }
+
+  if (Array.isArray(rec.drafts)) {
+    for (const draft of rec.drafts) {
+      const picked = pickDesignerSketch(draft, depth + 1);
+      if (picked) return picked;
+    }
+  }
+
+  if (depth < 2 && typeof rec.raw === "string") {
+    return pickDesignerSketch(jsonObjectFromText(rec.raw), depth + 1);
+  }
+  return null;
+}
+
+function designerTurnStrength(
+  prev: NormalizedPoint,
+  cur: NormalizedPoint,
+  next: NormalizedPoint,
+): number {
+  const ax = prev.x - cur.x;
+  const ay = prev.y - cur.y;
+  const bx = next.x - cur.x;
+  const by = next.y - cur.y;
+  const al = Math.hypot(ax, ay);
+  const bl = Math.hypot(bx, by);
+  if (al < 1e-6 || bl < 1e-6) return 0;
+  const dot = (ax * bx + ay * by) / (al * bl);
+  const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
+  return Math.abs(Math.PI - angle);
+}
+
+function simplifyDesignerPoints(
+  points: NormalizedPoint[],
+  maxPoints: number,
+): NormalizedPoint[] {
+  if (points.length <= maxPoints) return points;
+  const first = points[0]!;
+  const last = points[points.length - 1]!;
+  const closed = Math.hypot(first.x - last.x, first.y - last.y) < 0.04;
+  const keep = new Set<number>([0, points.length - 1]);
+  const turns = points
+    .slice(1, -1)
+    .map((p, offset) => ({
+      idx: offset + 1,
+      score: designerTurnStrength(points[offset]!, p, points[offset + 2]!),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  for (const t of turns) {
+    if (keep.size >= maxPoints - (closed ? 1 : 0)) break;
+    if (t.score <= 0.08) continue;
+    keep.add(t.idx);
+  }
+
+  const target = Math.min(maxPoints, points.length);
+  if (keep.size < Math.min(target, 6)) {
+    const stride = (points.length - 1) / (target - 1);
+    for (let i = 1; i < target - 1; i++) {
+      keep.add(Math.round(i * stride));
+    }
+  }
+
+  const out = [...keep]
+    .sort((a, b) => a - b)
+    .map((idx) => points[idx]!)
+    .filter((p, idx, arr) => {
+      const prev = arr[idx - 1];
+      return !prev || Math.hypot(prev.x - p.x, prev.y - p.y) > 0.015;
+    });
+  if (closed && out.length >= 3) {
+    const start = out[0]!;
+    const end = out[out.length - 1]!;
+    if (Math.hypot(start.x - end.x, start.y - end.y) > 0.04) {
+      out.push(start);
+    }
+  }
+  return out.length >= 2 ? out : points;
 }
 
 /**
@@ -404,6 +541,7 @@ export default function Step1ImageUpload({
   const contourReqIdRef = useRef(0);
   const workerInFlightRef = useRef(0);
   const uploadSeqRef = useRef(0);
+  const autoDesignerSeqRef = useRef<number | null>(null);
   const applyContourRef = useRef<(pts: NormalizedPoint[] | null) => void>(() => {});
   const pendingFastTraceRef = useRef<{
     file: File;
@@ -541,10 +679,11 @@ export default function Step1ImageUpload({
     if (!interpretations.length) return null;
     return (
       interpretations.find((v) => v.id === selectedInterpretationId) ??
-      interpretations.find((v) => v.id === "iconic-heart") ??
-      interpretations.find((v) => v.id === "trace") ??
+      interpretations.find((v) => v.id === "ai-sketch") ??
       interpretations.find((v) => v.id === "bold") ??
       interpretations.find((v) => v.id === "grid") ??
+      interpretations.find((v) => v.id === "iconic-heart") ??
+      interpretations.find((v) => v.id === "trace") ??
       interpretations[0]!
     );
   }, [interpretations, selectedInterpretationId]);
@@ -564,54 +703,49 @@ export default function Step1ImageUpload({
           cityLabel,
         }),
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(text || `Designer sketch failed (${res.status})`);
-      }
-      const json = (await res.json()) as {
-        label?: unknown;
-        description?: unknown;
-        points?: unknown;
-      };
-      const points = Array.isArray(json.points)
-        ? json.points
-            .filter(
-              (p): p is NormalizedPoint =>
-                !!p &&
-                typeof p === "object" &&
-                typeof (p as NormalizedPoint).x === "number" &&
-                typeof (p as NormalizedPoint).y === "number" &&
-                Number.isFinite((p as NormalizedPoint).x) &&
-                Number.isFinite((p as NormalizedPoint).y),
-            )
-            .map((p) => ({
-              x: Math.max(0, Math.min(1, p.x)),
-              y: Math.max(0, Math.min(1, p.y)),
-            }))
-        : [];
-      if (points.length < 2) {
+      const text = await res.text();
+      const picked = pickDesignerSketch(jsonObjectFromText(text));
+      if (!picked) {
+        if (!res.ok) {
+          throw new Error(`Designer sketch failed (${res.status})`);
+        }
         throw new Error("Designer sketch did not return enough points.");
       }
-      const review = reviewStreetDesignSketch(points);
+      let points = picked.points;
+      let review = reviewStreetDesignSketch(points);
       if (!review.pass) {
+        let bestPoints = points;
+        let bestReview = review;
+        for (const maxPoints of [28, 22, 18, 14, 11]) {
+          const simplified = simplifyDesignerPoints(picked.points, maxPoints);
+          const simplifiedReview = reviewStreetDesignSketch(simplified);
+          if (simplifiedReview.score > bestReview.score) {
+            bestPoints = simplified;
+            bestReview = simplifiedReview;
+          }
+          if (simplifiedReview.pass) {
+            bestPoints = simplified;
+            bestReview = simplifiedReview;
+            break;
+          }
+        }
+        points = bestPoints;
+        review = bestReview;
+      }
+      if (!review.pass && review.score < 48) {
         throw new Error(
           "Designer sketch was too detailed for city streets. Try the normal trace or generate again.",
         );
       }
       const next: ArtPathInterpretation = {
         id: "ai-sketch",
-        label:
-          typeof json.label === "string" && json.label.trim()
-            ? json.label.trim().slice(0, 28)
-            : "AI sketch",
-        description:
-          typeof json.description === "string" && json.description.trim()
-            ? json.description.trim()
-            : "Simplified one-line GPS-art sketch.",
+        label: picked.label,
+        description: picked.description,
         points,
       };
       setDesignerSketch(next);
       setSelectedInterpretationId("ai-sketch");
+      setContourHint("Etch-a-sketch ready. Approve it, then we'll hunt for the best streets to draw it on.");
       requestAnimationFrame(() => applyContourToCanvas(next.points));
     } catch (err) {
       console.warn("[Step1] designer sketch failed:", err);
@@ -624,6 +758,27 @@ export default function Step1ImageUpload({
       setDesignerBusy(false);
     }
   }, [applyContourToCanvas, cityLabel, designerBusy, uploadedImage]);
+
+  useEffect(() => {
+    if (!uploadedImage || !imageReady) return;
+    if (svgBusy || alphaBusy || designerBusy) return;
+    if (fastTraceMode || contourBuilt || selectedContour || designerSketch) return;
+    if (pendingFastTraceRef.current?.file === uploadedImage.file) return;
+    if (autoDesignerSeqRef.current === uploadedImage.seq) return;
+    autoDesignerSeqRef.current = uploadedImage.seq;
+    void generateDesignerSketch();
+  }, [
+    alphaBusy,
+    contourBuilt,
+    designerBusy,
+    designerSketch,
+    fastTraceMode,
+    generateDesignerSketch,
+    imageReady,
+    selectedContour,
+    svgBusy,
+    uploadedImage,
+  ]);
 
   useEffect(() => {
     if (!selectedInterpretation && normalizedContour) {
@@ -779,6 +934,7 @@ export default function Step1ImageUpload({
 
   const invalidateCurrentTrace = useCallback(() => {
     pendingFastTraceRef.current = null;
+    autoDesignerSeqRef.current = null;
     contourReqIdRef.current++;
     workerInFlightRef.current = 0;
     lineArtDirtyRef.current = false;
@@ -1177,8 +1333,8 @@ export default function Step1ImageUpload({
       ) : null}
 
       <p className="mb-1 max-w-xl text-center font-dm text-[11px] leading-snug text-pace-muted sm:mb-1.5 sm:text-[11px]">
-        Your photo is traced in the browser—we don’t upload the image to our
-        servers.{" "}
+        Your photo is traced in the browser. For logos, PaceCasso turns it into an
+        etch-a-sketch one-liner first — recognizable, not pixel-perfect.{" "}
         <strong className="text-pace-ink">Got an SVG or a transparent PNG?</strong>{" "}
         Upload it and we&apos;ll build the trace first so you can review it.{" "}
         <span className="whitespace-nowrap">Photo threshold</span>{" "}
@@ -1191,7 +1347,7 @@ export default function Step1ImageUpload({
         automatically.
       </p>
 
-      {svgBusy || alphaBusy ? (
+      {svgBusy || alphaBusy || designerBusy ? (
         <div
           className="mb-2 flex items-center gap-2 rounded-md border border-pace-blue/40 bg-pace-blue/5 px-3 py-2 text-[11px] leading-snug text-pace-ink"
           role="status"
@@ -1204,7 +1360,9 @@ export default function Step1ImageUpload({
           <span>
             {svgBusy
               ? "Reading vector paths from your SVG…"
-              : "Reading the transparent PNG — no tracing needed…"}
+              : alphaBusy
+                ? "Reading the transparent PNG — no tracing needed…"
+                : "Designing a street-ready sketch from the logo..."}
           </span>
         </div>
       ) : null}
@@ -1215,6 +1373,15 @@ export default function Step1ImageUpload({
           role="status"
         >
           {svgError || alphaError}
+        </div>
+      ) : null}
+
+      {designerError && !designerSketch && !designerBusy ? (
+        <div
+          className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-900"
+          role="status"
+        >
+          {designerError}
         </div>
       ) : null}
 
@@ -1522,7 +1689,7 @@ export default function Step1ImageUpload({
                         b64 = null;
                       }
                     }
-                    onComplete(selectedContour, b64);
+                    onComplete(selectedContour, b64, uploadedImage?.file.name ?? null);
                   }}
                   className="pace-toolbar-btn-primary px-4 py-2"
                 >

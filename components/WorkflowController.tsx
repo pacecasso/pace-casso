@@ -35,6 +35,7 @@ import Step4RouteEditor from "./Step4RouteEditor";
 import Step5RouteComplete from "./Step5RouteComplete";
 import StepCityGate from "./StepCityGate";
 import StepFreehandMapDraw from "./StepFreehandMapDraw";
+import StepSketchReview from "./StepSketchReview";
 import StepSourceChoice from "./StepSourceChoice";
 import BrandLogo from "./BrandLogo";
 import SocialLinks from "./SocialLinks";
@@ -75,6 +76,8 @@ export default function WorkflowController() {
   const [uploadedImageBase64, setUploadedImageBase64] = useState<string | null>(
     null,
   );
+  const [uploadedImageName, setUploadedImageName] = useState<string | null>(null);
+  const [sketchApproved, setSketchApproved] = useState(false);
   const [anchorLocation, setAnchorLocation] = useState<AnchorLocation>(null);
   const [snappedRoute, setSnappedRoute] = useState<RouteLineString | null>(
     null,
@@ -131,6 +134,7 @@ export default function WorkflowController() {
       setEditedRoute(d.editedRoute);
       setFinalRoute(d.finalRoute);
       setUploadedImageBase64(d.uploadedImageBase64 ?? null);
+      setSketchApproved(d.sketchApproved);
     }
     setDraftHydrated(true);
   }, []);
@@ -161,6 +165,7 @@ export default function WorkflowController() {
     if (!contour || contour.length < 4) return;
     setSourceKind("image");
     setContourCoordinates(contour as NormalizedPoint[]);
+    setSketchApproved(true);
     setCurrentStep(3);
   }, [draftHydrated, pendingShape, currentStep, sourceKind, contourCoordinates]);
 
@@ -196,6 +201,7 @@ export default function WorkflowController() {
         selectedCityId,
         sourceKind,
         contourCoordinates,
+        sketchApproved,
         anchorLocation: anchorLocation
           ? {
               anchorLatLngs: anchorLocation.anchorLatLngs,
@@ -221,6 +227,7 @@ export default function WorkflowController() {
     selectedCityId,
     sourceKind,
     contourCoordinates,
+    sketchApproved,
     anchorLocation,
     snappedRoute,
     editedRoute,
@@ -231,6 +238,8 @@ export default function WorkflowController() {
   const resetWorkflowData = useCallback(() => {
     setContourCoordinates(null);
     setUploadedImageBase64(null);
+    setUploadedImageName(null);
+    setSketchApproved(false);
     setAnchorLocation(null);
     setSnappedRoute(null);
     setEditedRoute(null);
@@ -260,12 +269,20 @@ export default function WorkflowController() {
   const goBackToSourcePicker = useCallback(() => {
     setContourCoordinates(null);
     setUploadedImageBase64(null);
+    setUploadedImageName(null);
+    setSketchApproved(false);
     clearPlacedRouteData();
     setSourceKind(null);
     setCurrentStep(1);
   }, [clearPlacedRouteData]);
 
+  const isSketchReviewStep =
+    currentStep === 3 &&
+    sourceKind === "image" &&
+    contourCoordinates != null &&
+    !sketchApproved;
   const { stepNum, total, label } = getStepDisplay(currentStep, sourceKind);
+  const displayLabel = isSketchReviewStep ? "Approve sketch" : label;
 
   const showHeaderStartOver =
     currentStep > 0 ||
@@ -403,7 +420,7 @@ export default function WorkflowController() {
                   tabIndex={-1}
                   className="font-bebas min-w-0 truncate text-sm tracking-[0.1em] text-pace-ink outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2 sm:text-base"
                 >
-                  {label}
+                  {displayLabel}
                 </h2>
                 <p className="shrink-0 text-[11px] font-medium tracking-wide text-pace-muted sm:text-xs">
                   Step {stepNum} of {total}
@@ -511,6 +528,8 @@ export default function WorkflowController() {
               setSourceKind("image");
               setContourCoordinates(null);
               setUploadedImageBase64(null);
+              setUploadedImageName(null);
+              setSketchApproved(false);
               clearPlacedRouteData();
               setCurrentStep(2);
             }}
@@ -518,6 +537,8 @@ export default function WorkflowController() {
               setSourceKind("freehand");
               setContourCoordinates(null);
               setUploadedImageBase64(null);
+              setUploadedImageName(null);
+              setSketchApproved(true);
               clearPlacedRouteData();
               setCurrentStep(2);
             }}
@@ -526,6 +547,8 @@ export default function WorkflowController() {
               setSourceKind("image");
               setContourCoordinates(contour as NormalizedPoint[]);
               setUploadedImageBase64(null);
+              setUploadedImageName(null);
+              setSketchApproved(true);
               clearPlacedRouteData();
               setCurrentStep(3);
             }}
@@ -536,9 +559,11 @@ export default function WorkflowController() {
           <Step1ImageUpload
             cityLabel={cityPreset.label}
             onBack={goBackToSourcePicker}
-            onComplete={(normalizedContour, imageBase64) => {
+            onComplete={(normalizedContour, imageBase64, sourceName) => {
               setContourCoordinates(normalizedContour);
               setUploadedImageBase64(imageBase64);
+              setUploadedImageName(sourceName ?? null);
+              setSketchApproved(false);
               clearPlacedRouteData();
               setCurrentStep(3);
             }}
@@ -552,6 +577,8 @@ export default function WorkflowController() {
             onComplete={({ anchorLatLngs, contour, center }) => {
               setContourCoordinates(contour);
               setUploadedImageBase64(null);
+              setUploadedImageName(null);
+              setSketchApproved(true);
               setSnappedRoute(null);
               setEditedRoute(null);
               setFinalRoute(null);
@@ -566,13 +593,34 @@ export default function WorkflowController() {
           />
         )}
 
-        {currentStep === 3 && contourCoordinates && sourceKind === "image" && (
+        {isSketchReviewStep && contourCoordinates && (
+          <StepSketchReview
+            contour={contourCoordinates}
+            imageBase64={uploadedImageBase64}
+            sourceName={uploadedImageName}
+            onBack={() => setCurrentStep(2)}
+            onApprove={(approvedContour) => {
+              setContourCoordinates(approvedContour);
+              setSketchApproved(true);
+              clearPlacedRouteData();
+            }}
+          />
+        )}
+
+        {currentStep === 3 &&
+          contourCoordinates &&
+          sourceKind === "image" &&
+          sketchApproved && (
           <Step2MapAnchor
             contour={contourCoordinates}
             cityPreset={cityPreset}
             defaultCenter={cityPreset.defaultCenter}
             imageBase64={uploadedImageBase64}
-            onBack={() => setCurrentStep(2)}
+            imageSourceName={uploadedImageName}
+            onBack={() => {
+              setSketchApproved(false);
+              clearPlacedRouteData();
+            }}
             onComplete={({
               anchorLatLngs,
               center,

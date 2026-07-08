@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import type { LatLngExpression } from "leaflet";
+import L from "leaflet";
 import { NormalizedPoint } from "./Step1ImageUpload";
 import {
   autoFindTop5,
@@ -44,6 +45,32 @@ const Marker = dynamic(
   () => import("react-leaflet").then((m) => m.Marker),
   { ssr: false },
 );
+const FitBounds = dynamic(
+  () => import("react-leaflet").then((m) => {
+    function Step2FitBounds({
+      line,
+    }: {
+      line: [number, number][];
+    }) {
+      const map = m.useMap();
+      useEffect(() => {
+        if (line.length < 2) return;
+        const bounds = L.latLngBounds(
+          line.map(([lat, lng]) => L.latLng(lat, lng)),
+        );
+        if (!bounds.isValid()) return;
+        map.fitBounds(bounds, {
+          padding: [72, 72],
+          maxZoom: 15,
+          animate: false,
+        });
+      }, [line, map]);
+      return null;
+    }
+    return Step2FitBounds;
+  }),
+  { ssr: false },
+);
 
 type Step2MapAnchorProps = {
   contour: NormalizedPoint[];
@@ -56,6 +83,7 @@ type Step2MapAnchorProps = {
    * match.
    */
   imageBase64?: string | null;
+  imageSourceName?: string | null;
   onBack: () => void;
   onComplete: (args: {
     anchorLatLngs: [number, number][];
@@ -72,6 +100,7 @@ export default function Step2MapAnchor({
   cityPreset,
   defaultCenter = MANHATTAN_PRESET.defaultCenter,
   imageBase64,
+  imageSourceName,
   onBack,
   onComplete,
 }: Step2MapAnchorProps) {
@@ -126,6 +155,7 @@ export default function Step2MapAnchor({
         const r = await autoFindTop5(contour, cityPreset, {
           anchorSource: "image",
           imageBase64: imageBase64 ?? undefined,
+          imageSourceName: imageSourceName ?? undefined,
           anchorAround:
             mode === "refine"
               ? { center, rotationDeg, scale }
@@ -169,6 +199,7 @@ export default function Step2MapAnchor({
       contour,
       cityPreset,
       imageBase64,
+      imageSourceName,
       center,
       rotationDeg,
       scale,
@@ -356,7 +387,7 @@ export default function Step2MapAnchor({
                 id="target-distance"
                 type="number"
                 min={2}
-                max={40}
+                max={25}
                 step={0.5}
                 value={targetDistanceKm ?? ""}
                 onChange={(e) => {
@@ -366,9 +397,13 @@ export default function Step2MapAnchor({
                     return;
                   }
                   const n = parseFloat(v);
-                  setTargetDistanceKm(Number.isFinite(n) ? n : null);
+                  if (!Number.isFinite(n)) {
+                    setTargetDistanceKm(null);
+                    return;
+                  }
+                  setTargetDistanceKm(Math.min(25, Math.max(2, n)));
                 }}
-                placeholder="any"
+                placeholder="≈15"
                 className="w-14 border-0 bg-transparent p-0 text-xs font-semibold tabular-nums text-pace-ink placeholder:font-normal placeholder:text-pace-muted focus:outline-none focus:ring-0"
               />
               <span className="text-[11px] font-medium text-pace-muted">km</span>
@@ -384,6 +419,11 @@ export default function Step2MapAnchor({
                 </button>
               )}
             </div>
+            <p className="text-[10px] leading-snug text-pace-muted">
+              Optional target — leave blank to search the full 2–25 km range. We
+              may suggest slightly longer or shorter routes when they read better
+              on streets.
+            </p>
             <button
               type="button"
               disabled={autoBusy || !contour.length}
@@ -461,7 +501,8 @@ export default function Step2MapAnchor({
                         className="absolute left-0 top-7 z-10 w-[260px] rounded-md border border-pace-line bg-white p-2.5 text-[11px] leading-snug text-pace-ink shadow-md"
                       >
                         PaceCasso ranks placements by walkability,
-                        clean-line quality, and shape match:
+                        clean lines, and whether the route still reads like your
+                        etch-a-sketch:
                         <ol className="mt-1.5 space-y-1 pl-4 [list-style-type:decimal]">
                           <li>
                             <span className="font-semibold">Walkability</span> —
@@ -474,8 +515,9 @@ export default function Step2MapAnchor({
                             shape still reads without them.
                           </li>
                           <li>
-                            <span className="font-semibold">Shape match</span> —
-                            the silhouette reads clearly from above.
+                            <span className="font-semibold">Reads like the sketch</span> —
+                            you should recognize the subject from above, even if
+                            it is not a faithful logo trace.
                           </li>
                         </ol>
                       </div>
@@ -508,6 +550,8 @@ export default function Step2MapAnchor({
                 {picks.map((p, idx) => {
                   const selected = selectedPickIdx === idx;
                   const isTopPick = picksVisionUsed && idx === 0;
+                  const isRunnableStarter =
+                    p.qualityScore < 25 || p.sourceMatchScore < 45;
                   return (
                     <button
                       key={idx}
@@ -547,7 +591,7 @@ export default function Step2MapAnchor({
                       </span>
                       {isTopPick && (
                         <span className="absolute right-1.5 top-1.5 rounded-full bg-pace-yellow px-2 py-0.5 font-bebas text-[10px] tracking-[0.1em] text-pace-ink shadow-sm">
-                          ★ TOP PICK
+                          {isRunnableStarter ? "RUNNABLE STARTER" : "TOP PICK"}
                         </span>
                       )}
                       <div className="flex flex-col gap-1 px-2 py-2">
@@ -576,6 +620,18 @@ export default function Step2MapAnchor({
                           title="Shape match score: estimates how closely the snapped streets still follow the artwork."
                         >
                           Shape match {p.shapeMatchScore}%
+                        </span>
+                        <span
+                          className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
+                            p.sourceMatchScore >= 72
+                              ? "bg-sky-50 text-sky-700"
+                              : p.sourceMatchScore >= 52
+                                ? "bg-amber-50 text-amber-700"
+                                : "bg-red-50 text-red-700"
+                          }`}
+                          title="Art match score: checks the final snapped route against the original uploaded art."
+                        >
+                          Art match {p.sourceMatchScore}%
                         </span>
                         <span
                           className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
@@ -651,6 +707,7 @@ export default function Step2MapAnchor({
           >
             <LeafletInvalidateOnResize />
             <TileLayer attribution={OSM_TILE_ATTRIBUTION} url={OSM_TILE_URL} />
+            <FitBounds line={anchorLatLngs} />
 
             {leafletPolyline.length > 0 && (
               <>

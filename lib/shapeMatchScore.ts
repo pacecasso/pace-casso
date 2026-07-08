@@ -125,9 +125,9 @@ function simplifyWaypoints(pts: Waypoint[], toleranceDeg: number): Waypoint[] {
 }
 
 /** Softer decay than tight fit — rewards coarse silhouette alignment. */
-const INTERP_MULTISCALE_SENSITIVITY_M = 82;
+const INTERP_MULTISCALE_SENSITIVITY_M = 94;
 /** Blend with original-resolution error so fine detail still matters a little. */
-const INTERP_ORIGINAL_SENSITIVITY_M = 56;
+const INTERP_ORIGINAL_SENSITIVITY_M = 68;
 
 /**
  * 0–100: “GPS-art style” agreement — multi-scale simplified polylines + softer

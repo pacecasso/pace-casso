@@ -259,20 +259,21 @@ export function buildArtPathInterpretations(
   const box = bboxOf(trace);
   const diag = box ? Math.hypot(box.width, box.height) : 1;
 
-  const out: ArtPathInterpretation[] = [
-    {
-      id: "trace",
-      label: "Trace",
-      description: "Closest to the edited line art.",
-      points: trace,
-    },
-  ];
+  const out: ArtPathInterpretation[] = [];
 
+  const boldPoints = simplifyPath(trace, diag * 0.022, 34);
   pushUnique(out, {
     id: "bold",
-    label: "Bold sketch",
-    description: "Drops fine detail and keeps broad readable gestures.",
-    points: simplifyPath(trace, diag * 0.022, 34),
+    label: "Etch-a-sketch",
+    description: "Bold one-line interpretation — best starting point for GPS art.",
+    points: boldPoints,
+  });
+
+  pushUnique(out, {
+    id: "trace",
+    label: "Detailed trace",
+    description: "Closer to the raw outline; usually too fussy for city streets.",
+    points: trace,
   });
 
   const analysis = analyzeOneLinePath(trace);
