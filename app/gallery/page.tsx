@@ -1,5 +1,6 @@
 import Link from "next/link";
 import MarketingNav from "../../components/MarketingNav";
+import { CURATED_MANHATTAN_RUNS } from "../../lib/curatedManhattanRuns";
 
 /**
  * Curated style references — shapes that tend to snap cleanly to city grids.
@@ -83,7 +84,64 @@ export default function GalleryPage() {
             pick a city and drop into placement without tracing a thing.
           </p>
 
-          <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <h2 className="mt-10 font-pace-heading text-2xl uppercase tracking-wide text-pace-ink">
+            NYC · run-ready routes
+          </h2>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-pace-muted">
+            Real Manhattan routes drawn street by street on the actual grid —
+            every block verified walkable against live walking directions.
+            Download the GPX and run the picture today.
+          </p>
+
+          <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {CURATED_MANHATTAN_RUNS.map((run) => (
+              <a
+                key={run.id}
+                href={`/api/curated-gpx/${run.id}`}
+                download
+                className="pace-card-editorial group flex flex-col overflow-hidden shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2"
+                title={`Download ${run.title} as GPX`}
+              >
+                <div className="relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden bg-white">
+                  <div
+                    className="absolute inset-0 opacity-[0.2]"
+                    style={{
+                      backgroundImage:
+                        "linear-gradient(var(--pace-line) 1px, transparent 1px), linear-gradient(90deg, var(--pace-line) 1px, transparent 1px)",
+                      backgroundSize: "24px 24px",
+                    }}
+                    aria-hidden
+                  />
+                  <span
+                    aria-hidden
+                    className="relative select-none text-[5rem] leading-none drop-shadow-sm transition group-hover:scale-110 sm:text-[5.5rem]"
+                  >
+                    {run.icon}
+                  </span>
+                </div>
+                <div className="border-t border-pace-line p-4">
+                  <h3 className="font-bebas text-lg tracking-[0.08em] text-pace-ink">
+                    {run.title}
+                  </h3>
+                  <p className="mt-0.5 font-bebas text-[11px] tracking-[0.14em] text-pace-yellow">
+                    {run.area} · {run.distanceKm} km
+                  </p>
+                  <p className="mt-2 text-xs leading-relaxed text-pace-muted">
+                    {run.blurb}
+                  </p>
+                  <p className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-pace-blue">
+                    Download GPX →
+                  </p>
+                </div>
+              </a>
+            ))}
+          </div>
+
+          <h2 className="mt-12 font-pace-heading text-2xl uppercase tracking-wide text-pace-ink">
+            Style references
+          </h2>
+
+          <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {CURATED_ROUTES.map((item) => (
               <Link
                 key={item.title}
