@@ -958,8 +958,17 @@ export default function Step4RouteEditor({
     setLegOverrides([]);
   }, [snappedRoute, routeSource]);
 
+  /**
+   * Monotonic edit counter. Async mutators (detour insert, far drag, bulk
+   * delete) snapshot this before their Mapbox fetches and abandon their
+   * commit if any other edit landed meanwhile — latest user action wins,
+   * stale fetches can no longer clobber newer edits.
+   */
+  const editSeqRef = useRef(0);
+
   const commitWaypoints = useCallback(
     (next: Waypoint[], nextLegOverrides?: (LegOverride | null)[]) => {
+      editSeqRef.current += 1;
       setUndoPast((past) => [
         ...past,
         makeEditSnapshot(waypointsRef.current, legOverridesRef.current),
@@ -979,6 +988,7 @@ export default function Step4RouteEditor({
   );
 
   const undo = useCallback(() => {
+    editSeqRef.current += 1;
     setUndoPast((past) => {
       if (!past.length) return past;
       const prev = past[past.length - 1];
@@ -996,6 +1006,7 @@ export default function Step4RouteEditor({
   }, []);
 
   const redo = useCallback(() => {
+    editSeqRef.current += 1;
     setRedoFuture((future) => {
       if (!future.length) return future;
       const next = future[0];
@@ -1013,6 +1024,7 @@ export default function Step4RouteEditor({
   }, []);
 
   const restart = useCallback(() => {
+    editSeqRef.current += 1;
     const sl = (initialRef.current.coordinates ?? []) as Waypoint[];
     const raw = initialWaypoints(initialRef.current, routeSource);
     const next = sl.length >= 2 ? orderWaypointsAlongLine(sl, raw) : raw;
@@ -1179,6 +1191,7 @@ export default function Step4RouteEditor({
        */
       if (spurBusy) return;
       setSpurBusy(true);
+      const seqAtStart = editSeqRef.current;
       try {
         let nearestI = 0;
         let bestD = Infinity;
@@ -1210,6 +1223,7 @@ export default function Step4RouteEditor({
           newOv[nearestI + 1] = await mapboxWalkingPolylineWithRetry(P, oldRight);
         }
 
+        if (editSeqRef.current !== seqAtStart) return; // superseded by a newer edit
         commitWaypoints(newWp, newOv);
         setShiftSelectedIndices([]);
         setSelectedWaypointIndex(nearestI + 1);
@@ -1320,6 +1334,7 @@ export default function Step4RouteEditor({
     }
 
     setSpurBusy(true);
+    const seqAtStart = editSeqRef.current;
     try {
       const nL = ordered.length - 1;
       const ovs: (LegOverride | null)[] = [];
@@ -1328,6 +1343,7 @@ export default function Step4RouteEditor({
           await mapboxWalkingPolylineWithRetry(ordered[i], ordered[i + 1]),
         );
       }
+      if (editSeqRef.current !== seqAtStart) return; // superseded by a newer edit
       commitWaypoints(ordered, ovs);
       setShiftSelectedIndices([]);
       setSelectedWaypointIndex(null);
@@ -1459,6 +1475,7 @@ export default function Step4RouteEditor({
       }
 
       setSpurBusy(true);
+      const seqAtStart = editSeqRef.current;
       try {
         if (index > 0) {
           const from = wp[index - 1];
@@ -1470,6 +1487,7 @@ export default function Step4RouteEditor({
           const to = wp[index + 1];
           nextOv[index] = await mapboxWalkingPolylineWithRetry(from, to);
         }
+        if (editSeqRef.current !== seqAtStart) return; // superseded by a newer edit
         commitWaypoints(wp, nextOv);
         setShiftSelectedIndices([]);
         setSelectedWaypointIndex(index);
