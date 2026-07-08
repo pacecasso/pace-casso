@@ -169,6 +169,11 @@ test.describe("smoke", () => {
     await expect(nextButton).toBeEnabled({ timeout: 30_000 });
     await nextButton.click();
 
+    // The sketch-review gate sits between tracing and placement for photo
+    // uploads; approve the suggested sketch to continue.
+    await expect(page.getByText("APPROVE THE SKETCH")).toBeVisible();
+    await page.getByRole("button", { name: /Use sketch/i }).last().click();
+
     await expect(page.getByText("Place on map").first()).toBeVisible();
     await expect(
       page.getByRole("button", { name: /Snap to streets/i }),
@@ -196,8 +201,13 @@ test.describe("smoke", () => {
     await expect(
       page.getByRole("button", { name: /Next: place on map/i }),
     ).toBeEnabled({ timeout: 30_000 });
-    await page.getByRole("button", { name: /^Trace\b/i }).click();
+    await page.getByRole("button", { name: /Detailed trace/i }).click();
     await page.getByRole("button", { name: /Next: place on map/i }).click();
+
+    // Approve the sketch-review gate before placement.
+    await expect(page.getByText("APPROVE THE SKETCH")).toBeVisible();
+    await page.getByRole("button", { name: /Use sketch/i }).last().click();
+
     await expect(page.getByText("Place on map").first()).toBeVisible();
     await page.getByRole("button", { name: /Snap to streets/i }).click();
 
