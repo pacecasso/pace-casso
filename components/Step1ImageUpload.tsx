@@ -737,7 +737,7 @@ export default function Step1ImageUpload({
       }
       if (!review.pass && review.score < 48) {
         throw new Error(
-          "Designer sketch was too detailed for city streets. Try the normal trace or generate again.",
+          "That sketch was too detailed for city streets — try again, or use the traced version.",
         );
       }
       const next: ArtPathInterpretation = {
@@ -1083,9 +1083,7 @@ export default function Step1ImageUpload({
     };
     img.onerror = () => {
       if (uploadSeqRef.current !== uploadedImage.seq) return;
-      setDecodeError(
-        "Couldn't read that image. HEIC and some camera formats aren't supported in the browser — try a PNG, JPEG, or SVG export instead.",
-      );
+      setDecodeError("Couldn't open that image — try a PNG or JPG.");
     };
     img.src = uploadedImage.url;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1335,18 +1333,8 @@ export default function Step1ImageUpload({
       ) : null}
 
       <p className="mb-1 max-w-xl text-center font-dm text-[11px] leading-snug text-pace-muted sm:mb-1.5 sm:text-[11px]">
-        Your photo is traced in the browser. For logos, PaceCasso turns it into an
-        etch-a-sketch one-liner first — recognizable, not pixel-perfect.{" "}
-        <strong className="text-pace-ink">Got an SVG or a transparent PNG?</strong>{" "}
-        Upload it and we&apos;ll build the trace first so you can review it.{" "}
-        <span className="whitespace-nowrap">Photo threshold</span>{" "}
-        rebuilds a <strong className="text-pace-ink">stroke outline</strong>{" "}
-        (not a solid fill) when you have not drawn yet; use{" "}
-        <strong className="text-pace-ink">Line art</strong> draw / erase to
-        refine it. After <strong className="text-pace-ink">Done</strong>, the{" "}
-        <strong className="text-pace-ink">Final contour</strong> follows that
-        mask. Small blobs fully inside a letter hole are merged from the photo
-        automatically.
+        Upload a photo or logo and we&apos;ll turn it into a simple one-line
+        drawing you can run. Touch it up if you like, then keep going.
       </p>
 
       {svgBusy || alphaBusy || designerBusy ? (
@@ -1426,7 +1414,7 @@ export default function Step1ImageUpload({
             </span>
           </label>
           <label className="font-dm flex shrink-0 items-center gap-1.5 pr-0.5 text-[11px] text-pace-ink sm:gap-2 sm:text-xs">
-            <span className="whitespace-nowrap">Photo threshold</span>
+            <span className="whitespace-nowrap">Detail</span>
             <input
               type="range"
               min={0.1}
@@ -1436,9 +1424,6 @@ export default function Step1ImageUpload({
               onChange={(e) => setThreshold(parseFloat(e.target.value))}
               className="w-[72px] accent-pace-yellow sm:w-[84px]"
             />
-            <span className="w-7 shrink-0 text-right text-[11px] tabular-nums text-pace-muted sm:text-[11px]">
-              {threshold.toFixed(2)}
-            </span>
           </label>
           <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-x-1 pl-1">
             <span className="shrink-0 font-bebas text-[11px] tracking-[0.1em] text-pace-muted sm:text-[11px]">
@@ -1507,7 +1492,7 @@ export default function Step1ImageUpload({
             <div className="flex min-w-0 flex-col items-center">
               <div className={columnTitleClass}>
                 <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted sm:text-xs">
-                  1 · Original
+                  Your image
                 </span>
               </div>
               <canvas
@@ -1521,7 +1506,7 @@ export default function Step1ImageUpload({
             <div className="flex min-w-0 flex-col items-center">
               <div className={columnTitleClass}>
                 <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted sm:text-xs">
-                  2 · Line art
+                  Touch up
                 </span>
               </div>
               <canvas
@@ -1543,7 +1528,7 @@ export default function Step1ImageUpload({
             <div className="flex min-w-0 flex-col items-center">
               <div className={columnTitleClass}>
                 <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted sm:text-xs">
-                  3 · Final contour
+                  Your route line
                 </span>
               </div>
               <canvas
@@ -1562,11 +1547,8 @@ export default function Step1ImageUpload({
                 <p className="mt-2 max-w-[min(100vw-1rem,280px)] rounded border-l-2 border-pace-blue bg-pace-blue/5 px-2 py-1.5 text-center font-dm text-[11px] leading-snug text-pace-ink sm:text-[11px]">
                   {oneLineAnalysis.connectorCount > 0 ? (
                     <>
-                      <strong>Yellow</strong> marks{" "}
-                      {oneLineAnalysis.connectorCount} connector{" "}
-                      {oneLineAnalysis.connectorCount === 1 ? "stroke" : "strokes"}.
-                      Keep them if the route still reads, or edit the line art
-                      and tap <strong>Done</strong> again.
+                      <strong>Yellow</strong> shows where the pen jumps between
+                      shapes. Keep it, or erase and redraw.
                     </>
                   ) : (
                     <>
@@ -1579,7 +1561,7 @@ export default function Step1ImageUpload({
               {interpretations.length > 1 ? (
                 <div className="mt-2 flex w-full max-w-[min(100vw-1rem,280px)] flex-col gap-1.5 rounded border border-pace-line bg-pace-white px-2 py-2 text-left">
                   <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
-                    Interpretation
+                    Style
                   </span>
                   <div className="grid grid-cols-2 gap-1.5">
                     {interpretations.map((variant) => {
@@ -1599,9 +1581,6 @@ export default function Step1ImageUpload({
                           <span className="block font-bebas text-[11px] tracking-[0.08em]">
                             {variant.label}
                           </span>
-                          <span className="block truncate font-dm text-[10px] leading-tight">
-                            {variant.points.length} pts
-                          </span>
                         </button>
                       );
                     })}
@@ -1614,7 +1593,7 @@ export default function Step1ImageUpload({
                       className="rounded border border-pace-blue/40 bg-pace-blue/5 px-2 py-1.5 text-left font-dm text-[10px] leading-tight text-pace-ink transition hover:border-pace-blue disabled:opacity-50"
                     >
                       {designerBusy
-                        ? "Designing GPS-art sketch..."
+                        ? "Sketching your route…"
                         : designerSketch
                           ? "Regenerate AI sketch"
                           : "Create AI sketch"}
@@ -1645,12 +1624,7 @@ export default function Step1ImageUpload({
                     contourBuilt ? "text-pace-muted" : "text-pace-muted/60"
                   }`}
                 >
-                  <span className="flex justify-between gap-2 font-medium">
-                    <span>Contour level</span>
-                    <span className="tabular-nums text-pace-muted">
-                      {contourLevel.toFixed(2)}
-                    </span>
-                  </span>
+                  <span className="font-medium">Smoothing</span>
                   <input
                     type="range"
                     min={0.08}

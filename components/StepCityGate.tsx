@@ -31,8 +31,8 @@ export default function StepCityGate({
           Pick your city
         </h2>
         <p className="max-w-md font-dm text-xs leading-relaxed text-pace-muted sm:text-sm">
-          Your shape will be placed on this city&apos;s streets and snapped to
-          real walkable routes. More cities coming.
+          We&apos;ll draw your art across this city&apos;s streets. More cities
+          soon!
         </p>
       </div>
 
@@ -63,16 +63,6 @@ export default function StepCityGate({
           </p>
         )}
 
-        <p className="mt-3 flex items-baseline justify-between gap-2 border-t border-pace-line pt-3 text-[11px] tabular-nums text-pace-muted">
-          <span className="font-bebas tracking-[0.14em]">Coverage</span>
-          <span>
-            {preset.searchBounds.south.toFixed(2)}°–
-            {preset.searchBounds.north.toFixed(2)}° N ·{" "}
-            {Math.abs(preset.searchBounds.west).toFixed(2)}°–
-            {Math.abs(preset.searchBounds.east).toFixed(2)}°{" "}
-            {preset.searchBounds.west < 0 ? "W" : "E"}
-          </span>
-        </p>
       </div>
 
       <button

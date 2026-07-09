@@ -150,7 +150,7 @@ test.describe("smoke", () => {
 
     await page.getByRole("button", { name: /From a photo/i }).click();
     await expect(page.getByText("Choose file")).toBeVisible();
-    await expect(page.getByText("Photo threshold").nth(1)).toBeVisible();
+    await expect(page.getByText("Detail", { exact: true })).toBeVisible();
     await expect(
       page.getByRole("button", { name: /Next: place on map/i }),
     ).toBeDisabled();

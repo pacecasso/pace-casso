@@ -285,10 +285,10 @@ export default function Step5RouteComplete({
         : "Heavy route clutter";
   const cleanLineDetail =
     cleanLineTone === "ready"
-      ? "Little obvious retracing or fussy stair-stepping. This is a strong watch-export candidate."
+      ? "Nice clean line — great for your watch."
       : cleanLineTone === "check"
-        ? "A few streets retrace or use small corrective jogs. Keep it if the artwork needs it, or fine-tune for a cleaner run."
-        : "The route has noticeable retracing or stair-stepping. Fine-tune before running unless that geometry is part of the design.";
+        ? "A little doubling back — still runs fine."
+        : "Quite a bit of doubling back — worth a quick tune.";
   const artworkMatchTone =
     artworkMatchScore == null
       ? null
@@ -307,11 +307,11 @@ export default function Step5RouteComplete({
           : "";
   const artworkMatchDetail =
     artworkMatchTone === "ready"
-      ? "The final street route still follows the uploaded art closely enough for GPS-art use."
+      ? "Your art reads loud and clear from above."
       : artworkMatchTone === "check"
-        ? "The final route keeps the general idea, but street constraints changed the drawing."
+        ? "Streets bent your art a little — still reads great."
         : artworkMatchTone === "warn"
-          ? "The final route has drifted far from the uploaded art. Fine-tune or try another placement before sharing."
+          ? "The streets drifted from your art — a quick tune could help."
           : "";
 
   const shareBlurb = useMemo(() => {
@@ -390,20 +390,12 @@ export default function Step5RouteComplete({
                   {etaDisplay}
                 </dd>
               </div>
-              <div className="flex justify-between gap-6 border-b border-pace-line pb-3">
+              <div className="flex justify-between gap-6">
                 <dt className="font-bebas text-xs tracking-[0.1em] text-pace-muted">
                   Waypoints
                 </dt>
                 <dd className="font-bold tabular-nums text-pace-ink">
                   {waypointCount > 0 ? waypointCount : "—"}
-                </dd>
-              </div>
-              <div className="flex justify-between gap-6">
-                <dt className="font-bebas text-xs tracking-[0.1em] text-pace-muted">
-                  Vertices
-                </dt>
-                <dd className="font-bold tabular-nums text-pace-ink">
-                  {pathVertices}
                 </dd>
               </div>
             </dl>
@@ -684,27 +676,20 @@ export default function Step5RouteComplete({
                 </h3>
                 <ul className="font-dm mt-2 list-disc space-y-1.5 pl-4 text-[11px] leading-relaxed text-pace-muted">
                   <li>
-                    Tap <strong className="text-pace-ink">GPX</strong> — the file
-                    downloads to your computer or phone. PaceCasso does not upload
-                    your route to our servers.
+                    Tap <strong className="text-pace-ink">GPX</strong> to
+                    download the route file.
                   </li>
                   <li>
-                    In your watch maker&apos;s app or site (e.g. Garmin
-                    Connect, Coros, Suunto), use{" "}
-                    <strong className="text-pace-ink">import course</strong>,{" "}
-                    <strong className="text-pace-ink">import route</strong>, or{" "}
-                    <strong className="text-pace-ink">add from file</strong> —
-                    labels differ by brand.
+                    Import it in your watch app (Garmin Connect, Coros,
+                    Suunto…).
                   </li>
                   <li>
-                    Sync to the watch, start an{" "}
-                    <strong className="text-pace-ink">outdoor</strong> run or
-                    walk, and follow the course on the map screen.
+                    Sync, start an outdoor run, and follow the line.
                   </li>
                   <li>
-                    If turns don&apos;t show on-wrist, use{" "}
-                    <strong className="text-pace-ink">Cues (.txt)</strong> on your
-                    phone, or open the GPX in another app that reads waypoints.
+                    No turns on your wrist? Grab{" "}
+                    <strong className="text-pace-ink">Cues (.txt)</strong> for
+                    your phone.
                   </li>
                 </ul>
               </div>

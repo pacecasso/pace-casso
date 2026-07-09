@@ -734,12 +734,10 @@ export default function Step4RouteEditor({
 
   const matchMeterLabel =
     routeSource === "freehand"
-      ? "Interpretation (sketch)"
-      : "Interpretation (your art)";
-  const matchMeterTitle =
-    "GPS-art style score on the initial full snap: silhouette, not pixel tracing.";
-  const tightMeterTitle =
-    "Strict mean distance between outline and route (often lower on real streets).";
+      ? "Looks like your sketch"
+      : "Looks like your art";
+  const matchMeterTitle = "How much the route looks like your art.";
+  const tightMeterTitle = "A stricter, corner-by-corner check.";
 
   /**
    * Geometry used only for FitRouteBounds — must not depend on showOriginalArt
@@ -884,9 +882,9 @@ export default function Step4RouteEditor({
     if (spurs > 0) {
       return {
         tone: "check",
-        title: `${spurs} segment${spurs === 1 ? "" : "s"} not street-snapped`,
+        title: `${spurs} part${spurs === 1 ? " isn't" : "s aren't"} on streets yet`,
         detail:
-          "Amber dashed = straight-line placeholders. Tap the re-snap button above the options, or drag those handles onto walkable streets.",
+          "Amber dashed = not on streets yet. Tap Re-snap, or drag those points onto nearby streets.",
       };
     }
     if (waypoints.length < 4) {
@@ -1660,21 +1658,10 @@ export default function Step4RouteEditor({
               Tune your route
             </span>
             <span className="font-dm text-[11px] leading-relaxed text-pace-muted">
-              <strong className="text-pace-ink">Double-tap</strong> near the
-              red line to add a handle · <strong className="text-pace-ink">Drag</strong>{" "}
-              along the line to slide it · <strong className="text-pace-ink">Delete</strong>{" "}
-              joins neighbours. Double-tap far away to route a detour there.{" "}
-              {showArtControls ? (
-                <>
-                  <span className="text-emerald-600">Green dashed</span> = your
-                  art. Toggle dots off for a clean preview.
-                </>
-              ) : (
-                <>
-                  Interpretation rewards the overall street read (like grid GPS
-                  art); tight fit is stricter. Toggle dots off for a clean preview.
-                </>
-              )}
+              <strong className="text-pace-ink">Double-tap</strong> the line to
+              add a point · <strong className="text-pace-ink">drag</strong> to
+              move · <strong className="text-pace-ink">Delete</strong> to
+              remove.
               {spurBusy ? (
                 <span className="ml-1 font-medium text-pace-yellow">
                   Connecting…
@@ -1704,12 +1691,11 @@ export default function Step4RouteEditor({
             >
               <span className="flex items-center gap-1.5 font-bebas text-[11px] tracking-[0.12em] text-amber-900">
                 <span aria-hidden>⚠</span>
-                {spurLegIndices.length} segment
-                {spurLegIndices.length === 1 ? "" : "s"} not street-snapped
+                {spurLegIndices.length} part
+                {spurLegIndices.length === 1 ? "" : "s"} not on streets yet
               </span>
               <span>
-                Shown as amber dashed lines on the map. Mapbox couldn&apos;t
-                route these — usually a transient hiccup.
+                Some parts aren&apos;t on streets yet — tap Re-snap to fix.
               </span>
               <button
                 type="button"
@@ -1720,26 +1706,6 @@ export default function Step4RouteEditor({
               </button>
             </div>
           ) : null}
-
-          <div className="mt-3 rounded-md border border-pace-line bg-pace-panel/60 px-2.5 py-2 font-dm text-[11px] leading-snug text-pace-muted">
-            <span className="font-bebas text-[10px] tracking-[0.12em] text-pace-yellow">
-              Keyboard
-            </span>
-            <p className="mt-1 text-pace-muted">
-              <kbd className="rounded border border-pace-line bg-pace-white px-1 py-0.5 font-mono text-[10px] text-pace-ink">
-                Delete
-              </kbd>{" "}
-              or{" "}
-              <kbd className="rounded border border-pace-line bg-pace-white px-1 py-0.5 font-mono text-[10px] text-pace-ink">
-                Backspace
-              </kbd>{" "}
-              — remove selected ·{" "}
-              <kbd className="rounded border border-pace-line bg-pace-white px-1 py-0.5 font-mono text-[10px] text-pace-ink">
-                Shift
-              </kbd>
-              + click — multi-select · Double-tap map — add waypoint
-            </p>
-          </div>
 
           <div className="mt-5 flex flex-col gap-4 border-t border-pace-line pt-4 text-sm">
             <button
@@ -1792,8 +1758,8 @@ export default function Step4RouteEditor({
                   type="button"
                   role="switch"
                   aria-checked={showFullSnapReference}
-                  aria-label="Show full Mapbox snapped polyline behind your route"
-                  title="Show the full original snap as a faint reference under your current route."
+                  aria-label="Show the first snapped route as a faint reference line"
+                  title="Show the first snapped route as a faint reference under your current one."
                   onClick={() => setShowFullSnapReference((v) => !v)}
                   className={`flex min-h-[32px] items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 font-bebas text-[11px] tracking-[0.08em] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow ${
                     showFullSnapReference
@@ -1805,7 +1771,7 @@ export default function Step4RouteEditor({
                     aria-hidden
                     className={`inline-block h-2 w-2 shrink-0 rounded-full ${showFullSnapReference ? "bg-pace-yellow" : "bg-pace-line"}`}
                   />
-                  Full snap
+                  Reference line
                 </button>
                 <button
                   type="button"
@@ -1829,20 +1795,10 @@ export default function Step4RouteEditor({
               </div>
               {showArtControls ? (
                 <p className="font-dm text-[11px] leading-snug text-pace-muted">
-                  The dashed <span className="text-emerald-600">green</span>{" "}
-                  overlay is the outline you traced in Step 1;{" "}
-                  <span className="text-pace-yellow">yellow</span> pieces are
-                  connector strokes from the one-line drawing. This is a
-                  reference for comparison, not part of the route. Toggle{" "}
-                  <strong className="text-pace-ink">Traced outline</strong> off
-                  if it&apos;s distracting.
+                  <span className="text-emerald-600">Green</span> = your
+                  original art, just for reference.
                 </p>
-              ) : (
-                <p className="font-dm text-[11px] leading-snug text-pace-muted">
-                  Same idea as photo traces: we care how the route reads at
-                  city scale, not every corner hugging the sketch.
-                </p>
-              )}
+              ) : null}
               <ShapeMatchMeter
                 label={matchMeterLabel}
                 percent={routeInterpretationPct}
@@ -1852,9 +1808,9 @@ export default function Step4RouteEditor({
                 secondaryTitle={tightMeterTitle}
               />
               <ShapeMatchMeter
-                label="Clean line"
+                label="Clean route"
                 percent={routeCleanLineScore}
-                title="Penalizes unnecessary retracing and tiny corrective jogs. Some out-and-back is okay when the design needs it."
+                title="Higher means less doubling back."
               />
             </div>
 
@@ -2005,13 +1961,13 @@ export default function Step4RouteEditor({
                 </button>
               </div>
               <p className="mt-1 leading-snug pr-1">
-                For loops, pick one dot and tap{" "}
-                <strong className="text-pace-ink">Set start</strong>. For open
-                routes, use <strong className="text-pace-ink">Reverse</strong>{" "}
-                to swap start and finish.{" "}
-                <strong className="text-pace-ink">Shift+click</strong> for
-                multi-select. <strong className="text-pace-ink">Delete</strong>{" "}
-                removes selected and rebuilds the path.
+                <strong className="text-pace-ink">Set start</strong> picks where
+                your run begins · <strong className="text-pace-ink">Reverse</strong>{" "}
+                flips direction.
+              </p>
+              <p className="mt-0.5 leading-snug pr-1">
+                <strong className="text-pace-ink">Shift+click</strong> selects
+                more than one point.
               </p>
             </div>
           ) : null}

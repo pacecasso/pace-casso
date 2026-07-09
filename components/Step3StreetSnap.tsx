@@ -24,19 +24,19 @@ import type { AnchorLocation, RouteLineString } from "./WorkflowController";
 
 function formatSnapError(err: unknown): string {
   if (!(err instanceof Error)) {
-    return "We couldn’t reach the directions service. Check your connection and tap Retry.";
+    return "Couldn’t fit your route to streets — tap Retry.";
   }
   const m = err.message.toLowerCase();
   if (m.includes("401") || m.includes("403")) {
-    return "Directions were blocked (access token). If this keeps happening, contact support.";
+    return "The map service said no — tap Retry.";
   }
   if (m.includes("429")) {
-    return "Too many requests right now. Wait a moment and tap Retry.";
+    return "The map service is busy — give it a minute and tap Retry.";
   }
   if (m.includes("network") || m.includes("failed to fetch")) {
-    return "Network error while snapping. Check your connection and tap Retry.";
+    return "Couldn’t reach the map — check your connection and tap Retry.";
   }
-  return `Couldn’t snap to streets: ${err.message}`;
+  return "Couldn’t fit your route to streets — tap Retry.";
 }
 
 const MapContainer = dynamic(
@@ -184,12 +184,10 @@ export default function Step3StreetSnap({
 
   const matchMeterLabel =
     routeSource === "freehand"
-      ? "Interpretation (sketch)"
-      : "Interpretation (your art)";
-  const matchMeterTitle =
-    "GPS-art style score: multi-scale silhouette, forgiving of grid stair-steps.";
-  const tightTitle =
-    "Strict mean distance between outline and route (often lower on real streets).";
+      ? "Looks like your sketch"
+      : "Looks like your art";
+  const matchMeterTitle = "How much the route looks like your art.";
+  const tightTitle = "A stricter, corner-by-corner check.";
 
   return (
     <MapStepSplitLayout
@@ -202,9 +200,7 @@ export default function Step3StreetSnap({
               Snap to streets
             </span>
             <span className="font-dm text-xs leading-snug text-pace-muted">
-              We fit your shape to walkable streets using Mapbox Directions. If
-              the request fails, it’s usually network or rate limits—Retry
-              usually fixes it.
+              We&apos;re fitting your shape onto real, walkable streets.
             </span>
           </div>
 
@@ -269,10 +265,10 @@ export default function Step3StreetSnap({
             />
             <div className="mt-3">
               <ShapeMatchMeter
-                label="Clean line"
+                label="Clean route"
                 percent={cleanLineScore}
                 pendingText={snapping ? "..." : "-"}
-                title="Penalizes unnecessary retracing and tiny corrective jogs."
+                title="Higher means less doubling back."
               />
             </div>
           </div>

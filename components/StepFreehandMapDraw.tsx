@@ -210,14 +210,10 @@ export default function StepFreehandMapDraw({
               Draw on the map
             </span>
             <span className="font-dm text-[11px] leading-snug text-pace-muted">
-              <strong className="text-pace-ink">Move map</strong> to pan/zoom.{" "}
-              <strong className="text-pace-ink">Draw</strong> to sketch.{" "}
-              <strong className="text-pace-ink">Double-click</strong> to drop a
-              corner anchor, or <strong className="text-pace-ink">
-                Shift+click
-              </strong>{" "}
-              if double-click still zooms your browser. Each drag is one stroke —
-              connect corners yourself if you need one continuous path.
+              Tap <strong className="text-pace-ink">Draw</strong>, then sketch
+              your shape right on the map. Tap{" "}
+              <strong className="text-pace-ink">Move map</strong> to pan around.
+              (Double-click drops a sharp corner.)
             </span>
           </div>
 
@@ -251,9 +247,7 @@ export default function StepFreehandMapDraw({
               mode === "draw" ? "text-pace-yellow" : "text-pace-muted"
             }`}
           >
-            {mode === "draw"
-              ? "Drawing on — sketch or double-click anchors. Switch to Move map to pan."
-              : "Move mode — pan the map. Switch to Draw when you’re ready."}
+            {mode === "draw" ? "Drawing" : "Moving the map"}
           </p>
 
           <div className="mt-4 flex flex-wrap gap-2 border-t border-pace-line pt-4">

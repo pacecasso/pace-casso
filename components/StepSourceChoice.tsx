@@ -13,7 +13,6 @@ import {
 import {
   AREA_TEMPLATE_SNAP_MAX_TRIES,
   bestPlacementBySnapMatch,
-  MIN_SNAP_MATCH_PERCENT_TO_ADOPT,
 } from "../lib/autoFindPlacement";
 import type { CityPreset } from "../lib/cityPresets";
 import type { ContourPoint } from "../lib/placementFromContour";
@@ -113,14 +112,6 @@ export default function StepSourceChoice({
         title="How do you want to draw?"
         onBack={onBack}
         backLabel="← Change city"
-        description={
-          <>
-            <strong className="text-pace-ink">From a photo</strong> — trace a
-            shape, then drop it on the map.{" "}
-            <strong className="text-pace-ink">Freehand</strong> — draw right on
-            the map, then we snap it to streets.
-          </>
-        }
       />
 
       <div className="grid w-full max-w-2xl gap-3 sm:grid-cols-2 sm:gap-4">
@@ -169,9 +160,9 @@ export default function StepSourceChoice({
             {AREA_TEMPLATE_INTRO}
           </p>
           <p className="mt-1.5 font-dm text-[11px] leading-snug text-pace-muted sm:text-[11px]">
-            Each starter gets snap-tested against {cityPreset?.label ?? "the city"} (top{" "}
-            {AREA_TEMPLATE_SNAP_MAX_TRIES} placements). &quot;Street-ready&quot; means
-            interpretation score ≥{MIN_SNAP_MATCH_PERCENT_TO_ADOPT}%.
+            We&apos;ve checked each starter shape against{" "}
+            {cityPreset?.label ?? "the city"}&apos;s streets — ✓ means it&apos;s
+            ready to run.
           </p>
 
           {(["simple", "medium", "elaborate"] as AreaDesignComplexity[]).map(
@@ -209,8 +200,8 @@ export default function StepSourceChoice({
                             {row.meetsThreshold
                               ? "✓ street-ready"
                               : row.bestPercent != null
-                                ? `best ~${Math.round(row.bestPercent)}% — try auto-find`
-                                : "preview unavailable"}
+                                ? "needs a nudge"
+                                : "no preview yet"}
                           </span>
                         ) : null;
 

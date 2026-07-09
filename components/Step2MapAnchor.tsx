@@ -344,31 +344,15 @@ export default function Step2MapAnchor({
             </label>
           </div>
 
-          <div
-            className={`mt-4 rounded-md border px-2.5 py-2 text-[11px] leading-snug ${
-              oneLineAnalysis.connectorCount > 0
-                ? "border-pace-yellow bg-pace-yellow/10 text-pace-ink"
-                : "border-emerald-200 bg-emerald-50 text-emerald-900"
-            }`}
-            role="status"
-          >
-            {oneLineAnalysis.connectorCount > 0 ? (
-              <>
-                <span className="font-semibold">
-                  {oneLineAnalysis.connectorCount} connector{" "}
-                  {oneLineAnalysis.connectorCount === 1 ? "stroke" : "strokes"}
-                </span>{" "}
-                in this one-line drawing. Yellow map segments show where the
-                route travels between separated art pieces.
-              </>
-            ) : (
-              <>
-                This reads as one clean{" "}
-                {oneLineAnalysis.isClosed ? "closed" : "open"} line before
-                street snapping.
-              </>
-            )}
-          </div>
+          {oneLineAnalysis.connectorCount > 0 ? (
+            <div
+              className="mt-4 rounded-md border border-pace-yellow bg-pace-yellow/10 px-2.5 py-2 text-[11px] leading-snug text-pace-ink"
+              role="status"
+            >
+              <span className="font-semibold">Yellow</span> shows where the
+              route travels between separate pieces of your art.
+            </div>
+          ) : null}
 
           <div className="mt-4 flex flex-col gap-2">
             <div
@@ -421,9 +405,7 @@ export default function Step2MapAnchor({
               )}
             </div>
             <p className="text-[10px] leading-snug text-pace-muted">
-              Optional target — leave blank to search the full 2–25 km range. We
-              may suggest slightly longer or shorter routes when they read better
-              on streets.
+              Optional: target distance (km).
             </p>
             <button
               type="button"
@@ -444,13 +426,7 @@ export default function Step2MapAnchor({
             </button>
             {autoHint ? (
               <p className="text-[11px] leading-snug text-pace-muted">{autoHint}</p>
-            ) : (
-              <p className="text-[11px] leading-snug text-pace-muted">
-                <strong>Auto-find:</strong> searches the whole city.{" "}
-                <strong>Refine:</strong> searches ~2 km around where you&apos;ve
-                put it now, at similar size and angle.
-              </p>
-            )}
+            ) : null}
           </div>
 
           {autoBusy && picks.length === 0 && (
@@ -501,26 +477,8 @@ export default function Step2MapAnchor({
                         role="tooltip"
                         className="absolute left-0 top-7 z-10 w-[260px] rounded-md border border-pace-line bg-white p-2.5 text-[11px] leading-snug text-pace-ink shadow-md"
                       >
-                        PaceCasso ranks placements by walkability,
-                        clean lines, and whether the route still reads like your
-                        etch-a-sketch:
-                        <ol className="mt-1.5 space-y-1 pl-4 [list-style-type:decimal]">
-                          <li>
-                            <span className="font-semibold">Walkability</span> —
-                            the route stays on real streets, no water or park
-                            detours.
-                          </li>
-                          <li>
-                            <span className="font-semibold">Clean line</span> -
-                            avoids unnecessary retracing and tiny jogs when the
-                            shape still reads without them.
-                          </li>
-                          <li>
-                            <span className="font-semibold">Reads like the sketch</span> —
-                            you should recognize the subject from above, even if
-                            it is not a faithful logo trace.
-                          </li>
-                        </ol>
+                        Ranked by how runnable and how recognizable each option
+                        is.
                       </div>
                     </details>
                   )}
@@ -533,18 +491,9 @@ export default function Step2MapAnchor({
                   clear
                 </button>
               </div>
-              {picksHint && (
-                <p className="-mt-1 text-[11px] leading-tight text-pace-muted">
-                  <span className="font-semibold text-pace-ink">
-                    {picksHint.shapeClass}
-                  </span>
-                  <span> · {picksHint.rotationStrategy}</span>
-                  <span> · {picksHint.scaleHint}</span>
-                  {picksHint.reason && (
-                    <span className="block italic text-pace-muted">
-                      “{picksHint.reason}”
-                    </span>
-                  )}
+              {picksHint?.reason && (
+                <p className="-mt-1 text-[11px] italic leading-tight text-pace-muted">
+                  “{picksHint.reason}”
                 </p>
               )}
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
@@ -618,9 +567,9 @@ export default function Step2MapAnchor({
                                 ? "bg-amber-50 text-amber-700"
                                 : "bg-red-50 text-red-700"
                           }`}
-                          title="Shape match score: estimates how closely the snapped streets still follow the artwork."
+                          title="How closely the streets follow your shape."
                         >
-                          Shape match {p.shapeMatchScore}%
+                          Shape {p.shapeMatchScore}%
                         </span>
                         <span
                           className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
@@ -630,9 +579,9 @@ export default function Step2MapAnchor({
                                 ? "bg-amber-50 text-amber-700"
                                 : "bg-red-50 text-red-700"
                           }`}
-                          title="Art match score: checks the final snapped route against the original uploaded art."
+                          title="How much the route resembles your art."
                         >
-                          Art match {p.sourceMatchScore}%
+                          Looks like your art {p.sourceMatchScore}%
                         </span>
                         <span
                           className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
@@ -642,9 +591,9 @@ export default function Step2MapAnchor({
                                 ? "bg-amber-50 text-amber-700"
                                 : "bg-red-50 text-red-700"
                           }`}
-                          title="Clean line score: penalizes unnecessary retracing and tiny corrective jogs."
+                          title="Higher means less doubling back."
                         >
-                          Clean line {p.qualityScore}%
+                          Clean route {p.qualityScore}%
                         </span>
                         {p.reason && (
                           <span className="text-[11px] leading-snug text-pace-ink/75">
