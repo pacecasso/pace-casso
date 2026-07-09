@@ -35,6 +35,8 @@ import { heartConfidence } from "./artPathInterpretation";
 import { reviewStreetDesignSketch } from "./streetDesignSketch";
 import { cleanupRouteSpurs } from "./routeSpurCleanup";
 import { generateMapNativeCandidates } from "./mapNativeDesigner";
+import { compileContourToLattice } from "./latticeCompiler";
+import { getManhattanLatticeGraph } from "./manhattanLattice";
 
 const MARGIN = 0.012;
 const MIN_PERIMETER_KM = 3;
@@ -2022,6 +2024,76 @@ async function parallelSnap(
       scoreAutoPlacementCandidate(a.qualityScore, a.shapeMatchScore),
   );
   return { snapped: out, snapFailures };
+}
+
+/**
+ * Compile placed candidates onto the real street-junction lattice
+ * (Manhattan only for now). The compiled chain visits actual intersections
+ * one block at a time, so the walking-directions snap reproduces it almost
+ * losslessly — this is the same "compile onto the lattice" approach that
+ * produced the curated Manhattan runs, automated. Compiles cost ~2 ms each;
+ * bad placements (over parks, off-grid, big forced detours) fail fidelity
+ * gates and are simply not emitted.
+ */
+async function buildLatticeCompiledCandidates(
+  preset: CityPreset,
+  sources: ValidCandidate[],
+  maxOut: number,
+): Promise<ValidCandidate[]> {
+  if (preset.id !== "manhattan" || sources.length === 0 || maxOut <= 0) {
+    return [];
+  }
+  let graph;
+  try {
+    graph = await getManhattanLatticeGraph();
+  } catch (err) {
+    // The lattice is an enhancement, never a dependency — fall back silently.
+    console.warn("[autoFindTop5] lattice dataset unavailable", err);
+    return [];
+  }
+  const scored: { cand: ValidCandidate; score: number; key: string }[] = [];
+  for (const src of sources) {
+    const result = compileContourToLattice(src.anchors, graph);
+    if (!result) continue;
+    const detour = result.km / Math.max(result.inputKm, 0.05);
+    if (result.meanDeviationMeters > 60 || detour > 1.8) continue;
+    if (result.km < MIN_PERIMETER_KM * 0.8 || result.km > MAX_PERIMETER_KM) {
+      continue;
+    }
+    const j = result.junctions;
+    const key = `${j.length}:${j[0][0].toFixed(4)},${j[0][1].toFixed(4)}:${result.km.toFixed(1)}`;
+    scored.push({
+      cand: {
+        placement: src.placement,
+        anchors: j,
+        km: result.km,
+        kind: "street-design",
+        routeMode: "direct-grid",
+        designIntent:
+          "Your drawing compiled corner-by-corner onto real street intersections",
+      },
+      score:
+        result.meanDeviationMeters +
+        Math.max(0, detour - 1.4) * 40 +
+        result.skippedPins * 8,
+      key,
+    });
+  }
+  scored.sort((a, b) => a.score - b.score);
+  const seen = new Set<string>();
+  const out: ValidCandidate[] = [];
+  for (const s of scored) {
+    if (seen.has(s.key)) continue;
+    seen.add(s.key);
+    out.push(s.cand);
+    if (out.length >= maxOut) break;
+  }
+  if (out.length > 0) {
+    console.log(
+      `[autoFindTop5] lattice-compiled ${out.length}/${sources.length} candidates onto real intersections`,
+    );
+  }
+  return out;
 }
 
 type ParsedImage = { data: string; mediaType: string };
@@ -4467,7 +4539,22 @@ export async function autoFindTop5(
     genericBudget,
     preset,
   );
+  // Lattice-compile the placed candidates onto real Manhattan intersections.
+  // These go at the head of the snap queue; the tail (weakest generics) is
+  // trimmed so the total stays inside the Mapbox call budget.
+  const latticeSubset = await buildLatticeCompiledCandidates(
+    preset,
+    [
+      ...genericSubset,
+      ...visionDesignSubset,
+      ...designedSubset,
+      ...cityFirstSubset,
+      ...cityFocusSubset,
+    ],
+    6,
+  );
   const subset = [
+    ...latticeSubset,
     ...streetWordmarkSubset,
     ...streetDesignSubset,
     ...visionDesignSubset,
@@ -4475,7 +4562,10 @@ export async function autoFindTop5(
     ...cityFirstSubset,
     ...cityFocusSubset,
     ...genericSubset,
-  ];
+  ].slice(
+    0,
+    Math.max(snapCount, latticeSubset.length + streetWordmarkSubset.length),
+  );
   const { snapped, snapFailures } = await parallelSnap(
     subset,
     options.anchorSource,
