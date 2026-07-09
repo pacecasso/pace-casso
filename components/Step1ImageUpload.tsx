@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 import { filledSilhouetteToLineArtMask } from "../lib/filledSilhouetteToLineArtMask";
-import { fillLineMaskPrimaryPlusEnclosedHoles } from "../lib/inkMaskUnionEnclosed";
+import { fillLineMaskSignificantComponents } from "../lib/inkMaskUnionEnclosed";
 import { extractNormalizedContourFromLineMask } from "../lib/extractNormalizedContourFromLineMask";
 import { rasterizeNormalizedPathToLineMask } from "../lib/artPathMask";
 import { describeLineMaskHealth } from "../lib/lineMaskHealth";
@@ -347,15 +347,37 @@ function luminanceFromRgba(data: Uint8ClampedArray, idx: number): number {
 }
 
 /**
- * Fraction of pixels with meaningful transparency. A transparent-background
- * PNG (typical corporate logo) scores near the non-shape area ratio; JPEGs
- * and flattened-on-white PNGs score 0 because alpha is always 255.
+ * Fraction of pixels with meaningful transparency, measured ONLY inside the
+ * rect where the image was actually drawn. A transparent-background PNG
+ * (typical corporate logo) scores near the non-shape area ratio; JPEGs and
+ * flattened-on-white PNGs score ~0 because alpha is always 255.
+ *
+ * Measuring the whole canvas was a bug: non-square images are letterboxed
+ * onto the square canvas, and the transparent margins alone pushed opaque
+ * logos over the alpha-path trigger — the "trace" was then the image's
+ * bounding rectangle.
  */
-function transparentPixelFraction(data: Uint8ClampedArray): number {
+function transparentPixelFractionInRect(
+  data: Uint8ClampedArray,
+  width: number,
+  x0: number,
+  y0: number,
+  w: number,
+  h: number,
+): number {
   let n = 0;
-  const total = data.length / 4;
-  for (let i = 3; i < data.length; i += 4) {
-    if (data[i] < 128) n++;
+  let total = 0;
+  const xa = Math.max(0, Math.round(x0));
+  const ya = Math.max(0, Math.round(y0));
+  const xb = Math.min(width, Math.round(x0 + w));
+  const yb = Math.round(y0 + h);
+  for (let y = ya; y < yb; y++) {
+    for (let x = xa; x < xb; x++) {
+      const idx = (y * width + x) * 4 + 3;
+      if (idx >= data.length) break;
+      total++;
+      if (data[idx] < 128) n++;
+    }
   }
   return total > 0 ? n / total : 0;
 }
@@ -985,17 +1007,36 @@ export default function Step1ImageUpload({
        * approve bridges/detail before placement. Fallback is the usual
        * luminance pipeline, so opaque uploads and JPEGs are unaffected.
        */
-      const alphaFrac = transparentPixelFraction(hiData.data);
+      const alphaFrac = transparentPixelFractionInRect(
+        hiData.data,
+        LUM_SAMPLE_PX,
+        offsetXHi,
+        offsetYHi,
+        drawWHi,
+        drawHHi,
+      );
       if (alphaFrac > 0.1) {
         setAlphaBusy(true);
         setAlphaError(null);
         void (async () => {
           try {
             const alphaLum = buildAlphaMaskFloat32(hiData, LUM_SAMPLE_PX);
+            // Opaque-background guard: if the alpha foreground is basically
+            // the entire drawn image, alpha carries no shape information —
+            // tracing it would outline the image frame. Use luminance.
+            const drawnFrac =
+              (drawWHi * drawHHi) / (LUM_SAMPLE_PX * LUM_SAMPLE_PX);
+            let fg = 0;
+            for (let i = 0; i < alphaLum.length; i++) fg += alphaLum[i];
+            if (fg / alphaLum.length > drawnFrac * 0.92) {
+              const e = new Error("alpha mask covers the whole image");
+              e.name = "AlphaUninformativeError";
+              throw e;
+            }
             const { labels, entries } = buildPhotoComponents(alphaLum, 0.5);
             if (entries.length === 0) throw new Error("no foreground");
             const filled = new Uint8Array(BOX_SIZE * BOX_SIZE);
-            fillLineMaskPrimaryPlusEnclosedHoles(
+            fillLineMaskSignificantComponents(
               labels,
               entries,
               0,
@@ -1029,9 +1070,13 @@ export default function Step1ImageUpload({
               "[Step1] alpha fast-path failed; falling back to threshold",
               err,
             );
-            setAlphaError(
-              "Couldn't trace the image automatically. Use the Detail slider and brush below to clean it up.",
-            );
+            // Opaque-background images landing on the luminance path is the
+            // intended route, not a failure — no error banner for that case.
+            if (!(err instanceof Error && err.name === "AlphaUninformativeError")) {
+              setAlphaError(
+                "Couldn't trace the image automatically. Use the Detail slider and brush below to clean it up.",
+              );
+            }
           } finally {
             if (uploadSeqRef.current === uploadedImage.seq) {
               setAlphaBusy(false);
@@ -1099,7 +1144,7 @@ export default function Step1ImageUpload({
     if (nComp === 0) {
       lineMask.fill(0);
     } else {
-      fillLineMaskPrimaryPlusEnclosedHoles(
+      fillLineMaskSignificantComponents(
         labels,
         entries,
         0,
@@ -1159,7 +1204,7 @@ export default function Step1ImageUpload({
     if (entries.length === 0) {
       lineMask.fill(0);
     } else {
-      fillLineMaskPrimaryPlusEnclosedHoles(
+      fillLineMaskSignificantComponents(
         labels,
         entries,
         0,

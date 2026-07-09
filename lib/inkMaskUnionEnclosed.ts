@@ -125,3 +125,55 @@ export function fillLineMaskPrimaryPlusEnclosedHoles(
     lineMask[i] = keep.has(labels[i]) ? 255 : 0;
   }
 }
+
+/** Secondary blob must be at least this fraction of the primary to survive. */
+const SIGNIFICANT_FRACTION_OF_PRIMARY = 0.03;
+/** ...and at least this many pixels (speckle floor). */
+const SIGNIFICANT_MIN_PX = 30;
+/** Hard cap so a noisy photo can't explode into confetti. */
+const MAX_KEPT_COMPONENTS = 12;
+
+/**
+ * Like fillLineMaskPrimaryPlusEnclosedHoles, but ALSO keeps significant
+ * standalone components — a logo lockup (swoosh + wordmark letters) is many
+ * disconnected blobs, and keeping only the primary reduced it to a single
+ * surviving fragment. Downstream ring stitching already joins multiple
+ * pieces into one runnable line with visible connectors, so the mask layer
+ * is the only place multi-part art was being lost.
+ *
+ * Guards for noisy photos: a secondary must be >= 3% of the primary AND
+ * >= 30 px, and at most the 12 largest components survive.
+ */
+export function fillLineMaskSignificantComponents(
+  labels: Int32Array,
+  entries: { label: number; count: number }[],
+  primaryIdx: number,
+  lineMask: Uint8Array,
+  w: number,
+  h: number,
+): void {
+  fillLineMaskPrimaryPlusEnclosedHoles(labels, entries, primaryIdx, lineMask, w, h);
+  if (entries.length <= 1) return;
+
+  const safeIdx = Math.min(primaryIdx, Math.max(0, entries.length - 1));
+  const primary = entries[safeIdx]!;
+  const minCount = Math.max(
+    SIGNIFICANT_MIN_PX,
+    Math.round(primary.count * SIGNIFICANT_FRACTION_OF_PRIMARY),
+  );
+
+  const keep = new Set<number>();
+  let kept = 1; // the primary
+  for (const e of entries) {
+    if (e.label === primary.label) continue;
+    if (e.count < minCount) continue;
+    keep.add(e.label);
+    kept++;
+    if (kept >= MAX_KEPT_COMPONENTS) break;
+  }
+  if (keep.size === 0) return;
+
+  for (let i = 0; i < labels.length; i++) {
+    if (keep.has(labels[i])) lineMask[i] = 255;
+  }
+}

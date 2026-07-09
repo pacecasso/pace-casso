@@ -1,5 +1,8 @@
 import assert from "node:assert";
-import { fillLineMaskPrimaryPlusEnclosedHoles } from "./inkMaskUnionEnclosed";
+import {
+  fillLineMaskPrimaryPlusEnclosedHoles,
+  fillLineMaskSignificantComponents,
+} from "./inkMaskUnionEnclosed";
 
 /** Minimal 4-connectivity labeler inlined for test (same as Step1). */
 function label4(binary: Uint8Array, w: number, h: number): Int32Array {
@@ -77,5 +80,40 @@ for (let y = 10; y <= 13; y++) {
   }
 }
 assert(innerKept, "inner blob in hole should be merged into line mask");
+
+// --- multi-part lockup: primary + separate significant blob + speckle ---
+{
+  const W = 64;
+  const H = 64;
+  const bin = new Uint8Array(W * H);
+  // primary: 20x20 solid blob (swoosh stand-in)
+  for (let y = 4; y < 24; y++) {
+    for (let x = 4; x < 24; x++) bin[y * W + x] = 1;
+  }
+  // significant standalone blob: 8x8 = 64 px (wordmark letter stand-in)
+  for (let y = 44; y < 52; y++) {
+    for (let x = 44; x < 52; x++) bin[y * W + x] = 1;
+  }
+  // speckle: 3x3 = 9 px (noise)
+  for (let y = 30; y < 33; y++) {
+    for (let x = 58; x < 61; x++) bin[y * W + x] = 1;
+  }
+  const lab = label4(bin, W, H);
+  const ent = entriesFromLabels(lab);
+  assert.strictEqual(ent.length, 3, "expected 3 components");
+
+  const oldMask = new Uint8Array(W * H);
+  fillLineMaskPrimaryPlusEnclosedHoles(lab, ent, 0, oldMask, W, H);
+  assert(
+    oldMask[47 * W + 47] === 0,
+    "old behavior drops the standalone letter blob (regression guard)",
+  );
+
+  const mask = new Uint8Array(W * H);
+  fillLineMaskSignificantComponents(lab, ent, 0, mask, W, H);
+  assert(mask[10 * W + 10] > 200, "primary blob kept");
+  assert(mask[47 * W + 47] > 200, "significant standalone blob kept");
+  assert(mask[31 * W + 59] === 0, "9-px speckle still dropped");
+}
 
 console.log("inkMaskUnionEnclosed: ok");
