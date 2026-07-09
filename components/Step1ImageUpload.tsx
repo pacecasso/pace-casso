@@ -812,7 +812,7 @@ export default function Step1ImageUpload({
           ) as NormalizedPoint[] | null;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          setContourHint(`Contour preview failed: ${msg}`);
+          setContourHint(`Couldn't build your route line: ${msg}`);
         }
         if (id !== contourReqIdRef.current) return;
         setNormalizedContour(pts);
@@ -881,7 +881,7 @@ export default function Step1ImageUpload({
       }
       if (d.id !== contourReqIdRef.current) return;
       if (!d.ok) {
-        setContourHint(`Couldn’t build contour preview: ${d.error}`);
+        setContourHint(`Couldn’t build your route line: ${d.error}`);
         return;
       }
       setContourHint(d.healthHint);
@@ -1030,7 +1030,7 @@ export default function Step1ImageUpload({
               err,
             );
             setAlphaError(
-              "Couldn't extract from alpha channel. Use the threshold slider + brush to refine.",
+              "Couldn't trace the image automatically. Use the Detail slider and brush below to clean it up.",
             );
           } finally {
             if (uploadSeqRef.current === uploadedImage.seq) {
@@ -1539,7 +1539,7 @@ export default function Step1ImageUpload({
               />
               {contourHint || contourComputing ? (
                 <p className="mt-1 max-w-[min(100vw-1rem,280px)] text-center font-dm text-[11px] leading-snug text-pace-muted sm:text-[11px]">
-                  {contourComputing ? "Updating contour… " : null}
+                  {contourComputing ? "Updating your line… " : null}
                   {contourHint}
                 </p>
               ) : null}

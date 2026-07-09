@@ -46,15 +46,13 @@
   --pace-orange: var(--yellow);
   --pace-red: #dc2626;
 
-  /* Local-safe font tokens. These can be swapped for vendored font files later. */
-  --font-anton: Impact;
-  --font-bebas: "Arial Narrow";
-  --font-marker: "Segoe Print";
-  --font-dm-sans: system-ui;
-  --font-display: var(--font-anton), "Anton", Impact, sans-serif;
-  --font-label: var(--font-bebas), "Bebas Neue", sans-serif;
-  --font-accent: var(--font-marker), "Permanent Marker", cursive;
-  --font-body: var(--font-dm-sans), "DM Sans", system-ui, sans-serif;
+  /* Brand fonts are self-hosted via next/font in app/layout.tsx, which sets
+     --font-anton/--font-bebas/--font-marker/--font-dm-sans on <html>. The
+     var() fallbacks below cover non-React contexts (tests, storybook). */
+  --font-display: var(--font-anton, Impact), "Anton", Impact, sans-serif;
+  --font-label: var(--font-bebas, "Arial Narrow"), "Bebas Neue", sans-serif;
+  --font-accent: var(--font-marker, "Segoe Print"), "Permanent Marker", cursive;
+  --font-body: var(--font-dm-sans, system-ui), "DM Sans", system-ui, sans-serif;
 
   /* Create page: sticky header + step bar — map steps fill below. Tighter
      than marketing pages (smaller logo, less nav padding) so the map has

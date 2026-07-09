@@ -22,8 +22,8 @@
         --yellow: #ffb800;
         --blue: #1d6fd8;
         --line: #e8e3da;
-        --muted: #666666;
-        --muted-light: #888888;
+        --muted: #505050; /* matches app globals.css — WCAG AA at small sizes */
+        --muted-light: #6b6b6b;
         --panel-gallery: #fafaf8;
         --cta-dark: #0d0d0d;
         --dot-red: #ef4444;
@@ -396,6 +396,15 @@
 
       .hero__tagline .accent {
         color: var(--yellow);
+      }
+
+      .hero__sub {
+        font-family: var(--font-body);
+        font-size: clamp(0.98rem, 1.6vw, 1.08rem);
+        color: var(--muted);
+        margin: -1.1rem 0 2rem;
+        max-width: 30rem;
+        line-height: 1.6;
       }
 
       .hero__actions {
@@ -1092,6 +1101,11 @@
         <p class="hero__tagline reveal" style="--d: 0.36s">
           Where <span class="accent">miles make</span> masterpieces.
         </p>
+        <p class="hero__sub reveal" style="--d: 0.42s">
+          Upload a logo, a doodle, or any simple image. PaceCasso redraws it
+          as a real running route on city streets — then you export the GPX
+          and run the picture.
+        </p>
         <div class="hero__actions reveal" style="--d: 0.48s">
           <a class="btn btn--yellow" href="/create">Design Your First Run</a>
           <a class="btn btn--ghost" href="/gallery">See the Gallery</a>
@@ -1099,21 +1113,18 @@
         <div class="hero__divider reveal" style="--d: 0.54s" aria-hidden="true"></div>
         <div class="hero__stats reveal" style="--d: 0.6s">
           <div class="stat">
-            <div class="stat__num">12K+</div>
-            <div class="stat__label">Artworks</div>
-          </div>
-          <div class="stat">
-            <div class="stat__num">847</div>
+            <div class="stat__num">5</div>
             <div class="stat__label">Cities</div>
           </div>
           <div class="stat">
-            <div class="stat__num">2.1M</div>
-            <div class="stat__label">Miles</div>
+            <div class="stat__num">GPX</div>
+            <div class="stat__label">Watch-ready export</div>
+          </div>
+          <div class="stat">
+            <div class="stat__num">Free</div>
+            <div class="stat__label">No account needed</div>
           </div>
         </div>
-        <p class="hero__stats-note reveal" style="--d: 0.64s">
-          Illustrative numbers
-        </p>
       </div>
 
       <div class="hero__right">
@@ -1151,9 +1162,9 @@
           </div>
         </div>
         <div class="hero-card reveal" style="--d: 0.66s">
-          <p class="hero-card__title">Central Park Mandala — NYC</p>
+          <p class="hero-card__title">Lower East Side Heart — NYC</p>
           <p class="hero-card__meta">
-            by @RunnerMike · Strava verified
+            4.5 km · every block verified walkable
           </p>
         </div>
       </div>
@@ -1172,9 +1183,9 @@
             <div class="how-card__icon">01</div>
             <h3>Design Your Route</h3>
             <p>
-              Sketch on the map or trace a shape. We snap your line to real
-              streets so every mile is runnable. Export it to your watch and get
-              running!
+              Upload a logo or photo, pick a starter shape, or sketch right on
+              the map. We redraw your line on real streets so every mile is
+              runnable.
             </p>
           </article>
           <article class="how-card">

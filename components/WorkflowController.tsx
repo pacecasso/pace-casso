@@ -362,8 +362,13 @@ export default function WorkflowController() {
                 doesn't eat half the viewport. */}
             <BrandLogo className="h-[clamp(2.75rem,8vw,4rem)] w-auto object-contain object-left" />
           </Link>
+          {/* Map workspace steps are height-constrained; drop the marketing
+              links there so the map gets the row back. Logo + Start Over
+              keep the header branded and escapable. */}
           <nav
-            className="order-3 flex w-full flex-wrap items-center justify-center gap-x-[clamp(0.75rem,2.5vw,1.5rem)] gap-y-1 border-t border-pace-line pt-1.5 lg:order-1 lg:flex-1 lg:w-auto lg:border-t-0 lg:pt-0"
+            className={`${
+              isMapWorkspaceStep ? "hidden lg:flex" : "flex"
+            } order-3 w-full flex-wrap items-center justify-center gap-x-[clamp(0.75rem,2.5vw,1.5rem)] gap-y-1 border-t border-pace-line pt-1.5 lg:order-1 lg:flex-1 lg:w-auto lg:border-t-0 lg:pt-0`}
             aria-label="Main"
           >
             <Link
@@ -500,7 +505,7 @@ export default function WorkflowController() {
                   >
                     Help
                   </Link>{" "}
-                  covers exports, Mapbox issues, and draft storage.
+                  covers exporting to your watch and common questions.
                 </p>
               </div>
               <button

@@ -1,9 +1,39 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import {
+  Anton,
+  Bebas_Neue,
+  DM_Sans,
+  Permanent_Marker,
+} from "next/font/google";
 import PlausibleAnalytics from "../components/PlausibleAnalytics";
 import { getSiteUrl } from "../lib/siteUrl";
 import "./globals.css";
 import "leaflet/dist/leaflet.css";
+
+const anton = Anton({
+  weight: "400",
+  subsets: ["latin"],
+  variable: "--font-anton",
+  display: "swap",
+});
+const bebas = Bebas_Neue({
+  weight: "400",
+  subsets: ["latin"],
+  variable: "--font-bebas",
+  display: "swap",
+});
+const marker = Permanent_Marker({
+  weight: "400",
+  subsets: ["latin"],
+  variable: "--font-marker",
+  display: "swap",
+});
+const dmSans = DM_Sans({
+  subsets: ["latin"],
+  variable: "--font-dm-sans",
+  display: "swap",
+});
 
 const siteDescription =
   "Sketch a shape on the map or trace a photo, snap it to real streets, tune waypoints, and export GPX for your watch. Your city is your canvas.";
@@ -35,7 +65,10 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html
+      lang="en"
+      className={`${anton.variable} ${bebas.variable} ${marker.variable} ${dmSans.variable}`}
+    >
       <body className="min-h-screen bg-pace-warm text-pace-ink antialiased">
         <PlausibleAnalytics />
         {children}
