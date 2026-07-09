@@ -136,16 +136,10 @@ export default function Step2MapAnchor({
   const runAutoFind = useCallback(
     async (mode: "full" | "refine") => {
       setAutoBusy(true);
-      const modeLabel =
-        mode === "refine"
-          ? "Refining around your placement"
-          : imageBase64
-            ? "Designing map-first drafts, then searching placements"
-            : "Searching placements";
       setAutoHint(
-        imageBase64
-          ? `${modeLabel} — PaceCasso AI will rank the top 5…`
-          : `${modeLabel}…`,
+        mode === "refine"
+          ? "Polishing your placement…"
+          : "Finding the best spots in the city…",
       );
       setPicks([]);
       setSelectedPickIdx(null);
@@ -168,8 +162,8 @@ export default function Step2MapAnchor({
         if (r.picks.length === 0) {
           setAutoHint(
             r.snapFailures && r.snapFailures > 0
-              ? `Couldn't street-check ${r.snapFailures} placements (busy routing service) — wait a minute and try again.`
-              : "No viable placements found — try adjusting manually.",
+              ? "The map service is busy right now — give it a minute and try again."
+              : "We couldn't find a spot automatically — drag your shape where you'd like it and we'll fit it to the streets.",
           );
           window.setTimeout(() => setAutoHint(null), 7000);
           return;
@@ -185,15 +179,14 @@ export default function Step2MapAnchor({
         setSelectedPickIdx(0);
         setPreferredSnappedRoute(routeFromPick(first));
         setSelectedAnchorLatLngs(first.anchorLatLngs ?? null);
-        const modeNoun = mode === "refine" ? "refinements" : "options";
         const partialNote =
           r.snapFailures && r.snapFailures > 0
-            ? ` (${r.snapFailures} more couldn't be checked — retry in a minute for extra options)`
+            ? " Retry in a minute for even more."
             : "";
         setAutoHint(
-          r.visionUsed
-            ? `PaceCasso ranked ${r.picks.length} ${modeNoun} — tap any to try it.${partialNote}`
-            : `Showing ${r.picks.length} ${modeNoun} — tap any to try it.${partialNote}`,
+          r.relaxedQuality
+            ? `These are our best attempts so far — tap one and nudge it, or hit Refine to polish it.${partialNote}`
+            : `Here are ${r.picks.length} options — tap one to try it.${partialNote}`,
         );
       } catch (err) {
         console.warn("[Step2] autoFindTop5 failed:", err);

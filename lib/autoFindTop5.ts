@@ -113,6 +113,9 @@ export type AutoFindTop5Result = {
   /** Candidates that could not be street-checked (rate limit / network).
    *  When > 0 the results are partial and a retry may find better options. */
   snapFailures?: number;
+  /** True when no candidate cleared the quality gates and the picks are the
+   *  best-available routes instead. The UI should soften its messaging. */
+  relaxedQuality?: boolean;
 };
 
 export type AutoFindTop5Options = {
@@ -1490,6 +1493,12 @@ function passesRequiredVisualFeatureGate(
   requireVisibleReason = false,
 ): boolean {
   if (requiredVisualFeatures.length === 0) return true;
+  // Source-derived candidates ARE the user's own art placed directly on the
+  // map — a text-coverage gate on designIntent is meaningless for them (they
+  // carry no designIntent at all) and used to hard-drop every one of them
+  // whenever vision-design produced feature lists. Their fidelity is judged
+  // by the numeric shape/source-match floors instead.
+  if (isSourceDerivedCandidate(candidate.kind)) return true;
   if (isRouteNativeVisualMatch(candidate, requiredVisualFeatures)) return true;
   const combinedText = [candidate.designIntent, reason].filter(Boolean).join(" ");
   const text = requireVisibleReason ? reason ?? "" : combinedText;
@@ -3854,7 +3863,8 @@ function makePicks(
   allowBestEffort = false,
   structuralRequirement: StructuralRequirement | null = null,
   requiredVisualFeatures: string[] = [],
-): Top5Pick[] {
+): { picks: Top5Pick[]; relaxedQuality: boolean } {
+  let relaxedQuality = false;
   const semanticFallbackCandidates = () =>
     snapped
       .map((candidate, originalIndex) => ({ candidate, originalIndex }))
@@ -4059,7 +4069,24 @@ function makePicks(
       eligible = semanticFallback;
     }
   }
-  if (eligible.length === 0) return [];
+  if (eligible.length === 0 && snapped.length > 0) {
+    // Last resort — never dead-end. Every gate above is a *quality* filter,
+    // and in production the combination could reject 100% of successfully
+    // snapped candidates, which surfaced to the user as a hard "no placements
+    // found" error even though placement worked. Showing the best-available
+    // routes (honestly scored — the UI displays the match numbers and the
+    // READY-TO-RUN verdict still gates later) always beats showing nothing.
+    relaxedQuality = true;
+    console.warn(
+      "[autoFindTop5] all quality gates rejected every snapped candidate — falling back to best-available picks",
+      { snappedCount: snapped.length, requiredVisualFeatures },
+    );
+    eligible = snapped.map((candidate, originalIndex) => ({
+      candidate,
+      originalIndex,
+    }));
+  }
+  if (eligible.length === 0) return { picks: [], relaxedQuality };
 
   const indexByOriginal = new Map<number, number>();
   eligible.forEach(({ originalIndex }, displayIndex) => {
@@ -4152,7 +4179,7 @@ function makePicks(
       reason: displayReasons?.get(i),
     });
   }
-  return out;
+  return { picks: out, relaxedQuality };
 }
 
 // --- main orchestrator -------------------------------------------------------
@@ -4421,6 +4448,12 @@ export async function autoFindTop5(
       )
     : Math.max(
         sourceReserveBudget,
+        // Guaranteed floor: the synthetic subsets (street-design, vision-design,
+        // city variants) can consume the whole snap budget, which starved the
+        // faithful direct placements of the user's own art down to zero. Always
+        // street-check at least a handful of them — they're the fallback that
+        // keeps auto-find from returning nothing.
+        Math.min(validGeneric.length, 6),
         snapCount -
           streetWordmarkSubset.length -
           streetDesignSubset.length -
@@ -4454,17 +4487,19 @@ export async function autoFindTop5(
   }
 
   if (!parsedOrig) {
+    const made = makePicks(
+      snapped,
+      null,
+      null,
+      topK,
+      hint,
+      false,
+      structuralRequirement,
+      requiredVisualFeatures,
+    );
     return {
-      picks: makePicks(
-        snapped,
-        null,
-        null,
-        topK,
-        hint,
-        false,
-        structuralRequirement,
-        requiredVisualFeatures,
-      ),
+      picks: made.picks,
+      relaxedQuality: made.relaxedQuality,
       visionUsed: false,
       snapFailures,
       hint: hint ?? undefined,
@@ -4491,17 +4526,19 @@ export async function autoFindTop5(
     { tileSize: 224, cols: 5 },
   );
   if (!grid) {
+    const made = makePicks(
+      rankableSnapped,
+      null,
+      null,
+      topK,
+      hint,
+      true,
+      structuralRequirement,
+      requiredVisualFeatures,
+    );
     return {
-      picks: makePicks(
-        rankableSnapped,
-        null,
-        null,
-        topK,
-        hint,
-        true,
-        structuralRequirement,
-        requiredVisualFeatures,
-      ),
+      picks: made.picks,
+      relaxedQuality: made.relaxedQuality,
       visionUsed: false,
       snapFailures,
       hint: hint ?? undefined,
@@ -4525,17 +4562,19 @@ export async function autoFindTop5(
   );
 
   if (!ranked || ranked.length === 0) {
+    const made = makePicks(
+      rankableSnapped,
+      null,
+      null,
+      topK,
+      hint,
+      true,
+      structuralRequirement,
+      requiredVisualFeatures,
+    );
     return {
-      picks: makePicks(
-        rankableSnapped,
-        null,
-        null,
-        topK,
-        hint,
-        true,
-        structuralRequirement,
-        requiredVisualFeatures,
-      ),
+      picks: made.picks,
+      relaxedQuality: made.relaxedQuality,
       visionUsed: false,
       snapFailures,
       hint: hint ?? undefined,
@@ -4552,17 +4591,19 @@ export async function autoFindTop5(
     reasons.set(idx, r.reason);
   }
 
+  const made = makePicks(
+    rankableSnapped,
+    order,
+    reasons,
+    topK,
+    hint,
+    true,
+    structuralRequirement,
+    requiredVisualFeatures,
+  );
   return {
-    picks: makePicks(
-      rankableSnapped,
-      order,
-      reasons,
-      topK,
-      hint,
-      true,
-      structuralRequirement,
-      requiredVisualFeatures,
-    ),
+    picks: made.picks,
+    relaxedQuality: made.relaxedQuality,
     visionUsed: true,
     snapFailures,
     hint: hint ?? undefined,
