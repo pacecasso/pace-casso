@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import MarketingNav from "../../components/MarketingNav";
 import { CURATED_MANHATTAN_RUNS } from "../../lib/curatedManhattanRuns";
@@ -79,14 +80,9 @@ export default function GalleryPage() {
             Gallery
           </h1>
           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-pace-muted">
-            Curated style references for GPS route art — bold shapes that tend
-            to snap cleanly to real streets. Distances are illustrative; your
-            exported route length comes from the map and the snap engine.
-          </p>
-
-          <p className="mt-2 max-w-2xl text-xs text-pace-muted">
-            Click any card to send the shape straight into the create flow —
-            pick a city and drop into placement without tracing a thing.
+            Real GPS-art routes drawn on the Manhattan grid — what the trace
+            actually looks like on the map — plus style references to kick
+            off your own design.
           </p>
 
           <h2 className="mt-10 font-pace-heading text-2xl uppercase tracking-wide text-pace-ink">
@@ -107,22 +103,14 @@ export default function GalleryPage() {
                 className="pace-card-editorial group flex flex-col overflow-hidden shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2"
                 title={`Download ${run.title} as GPX`}
               >
-                <div className="relative flex aspect-[4/3] w-full items-center justify-center overflow-hidden bg-white">
-                  <div
-                    className="absolute inset-0 opacity-[0.2]"
-                    style={{
-                      backgroundImage:
-                        "linear-gradient(var(--pace-line) 1px, transparent 1px), linear-gradient(90deg, var(--pace-line) 1px, transparent 1px)",
-                      backgroundSize: "24px 24px",
-                    }}
-                    aria-hidden
+                <div className="relative aspect-square w-full overflow-hidden bg-white">
+                  <Image
+                    src={`/curated/${run.id}.png`}
+                    alt={`${run.title} — the actual route drawn on the Manhattan street map`}
+                    fill
+                    sizes="(min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
+                    className="object-cover transition group-hover:scale-[1.03]"
                   />
-                  <span
-                    aria-hidden
-                    className="relative select-none text-[5rem] leading-none drop-shadow-sm transition group-hover:scale-110 sm:text-[5.5rem]"
-                  >
-                    {run.icon}
-                  </span>
                 </div>
                 <div className="border-t border-pace-line p-4">
                   <h3 className="font-bebas text-lg tracking-[0.08em] text-pace-ink">
@@ -142,9 +130,19 @@ export default function GalleryPage() {
             ))}
           </div>
 
+          <p className="mt-3 text-[10px] tracking-wide text-pace-muted">
+            Map imagery © OpenStreetMap contributors · © CARTO
+          </p>
+
           <h2 className="mt-12 font-pace-heading text-2xl uppercase tracking-wide text-pace-ink">
             Style references
           </h2>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-pace-muted">
+            Click any card to send the shape straight into the create flow —
+            pick a city and drop into placement without tracing a thing.
+            Distances are illustrative; your exported route length comes from
+            the map and the snap engine.
+          </p>
 
           <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {CURATED_ROUTES.map((item) => (
