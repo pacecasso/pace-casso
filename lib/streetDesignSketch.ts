@@ -12,6 +12,11 @@ export type StreetDesignReview = {
     height: number;
     totalLength: number;
     tinySegmentRatio: number;
+    /** Share of length in tiny segments that also turn sharply — noise,
+     *  as opposed to dense sampling of a large smooth curve. */
+    jitterRatio: number;
+    /** Significant direction changes (>30°) — a proxy for feature richness. */
+    directionChanges: number;
     connectorCount: number;
     selfIntersections: number;
     gridCellsTouched: number;
@@ -66,10 +71,9 @@ function segmentsIntersect(
   const o3 = orientation(c, d, a);
   const o4 = orientation(c, d, b);
 
-  if (Math.abs(o1) < 1e-9 && onSegment(a, c, b)) return true;
-  if (Math.abs(o2) < 1e-9 && onSegment(a, d, b)) return true;
-  if (Math.abs(o3) < 1e-9 && onSegment(c, a, d)) return true;
-  if (Math.abs(o4) < 1e-9 && onSegment(c, b, d)) return true;
+  // Collinear overlaps are deliberate retraces (out-and-back texture strokes,
+  // hidden travel on own ink) — not visual crossings. Only count transversal
+  // crossings.
   return (o1 > 0) !== (o2 > 0) && (o3 > 0) !== (o4 > 0);
 }
 
@@ -120,6 +124,8 @@ export function reviewStreetDesignSketch(
         height: 0,
         totalLength: 0,
         tinySegmentRatio: 0,
+        jitterRatio: 0,
+        directionChanges: 0,
         connectorCount: 0,
         selfIntersections: 0,
         gridCellsTouched: 0,
@@ -132,14 +138,37 @@ export function reviewStreetDesignSketch(
   const width = Math.max(...xs) - Math.min(...xs);
   const height = Math.max(...ys) - Math.min(...ys);
 
+  // Turn angle at each interior vertex, degrees.
+  const turnDeg: number[] = new Array(valid.length).fill(0);
+  for (let i = 1; i < valid.length - 1; i++) {
+    const a = valid[i - 1]!;
+    const b = valid[i]!;
+    const c = valid[i + 1]!;
+    const l1 = segmentLength(a, b);
+    const l2 = segmentLength(b, c);
+    if (l1 < 1e-9 || l2 < 1e-9) continue;
+    const cos =
+      ((b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y)) / (l1 * l2);
+    turnDeg[i] = (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI;
+  }
+  const directionChanges = turnDeg.filter((t) => t > 30).length;
+
   let totalLength = 0;
   let tinyLength = 0;
+  let jitterLength = 0;
   for (let i = 1; i < valid.length; i++) {
     const len = segmentLength(valid[i - 1]!, valid[i]!);
     totalLength += len;
-    if (len < 0.025) tinyLength += len;
+    if (len < 0.025) {
+      tinyLength += len;
+      // A tiny segment sandwiched between sharp turns is jitter; a tiny
+      // segment inside a gentle arc is dense curve sampling, which the
+      // lattice compiler renders beautifully.
+      if (turnDeg[i - 1] > 50 || turnDeg[i] > 50) jitterLength += len;
+    }
   }
   const tinySegmentRatio = totalLength > 0 ? tinyLength / totalLength : 1;
+  const jitterRatio = totalLength > 0 ? jitterLength / totalLength : 1;
   const analysis = analyzeOneLinePath(valid, {
     minConnectorLength: 0.24,
     medianMultiplier: 8,
@@ -153,8 +182,8 @@ export function reviewStreetDesignSketch(
     score -= 28;
     reasons.push("too few strokes to read as a subject");
   }
-  if (valid.length > 42) {
-    score -= Math.min(35, (valid.length - 42) * 1.8);
+  if (valid.length > 220) {
+    score -= Math.min(35, (valid.length - 220) * 1.8);
     reasons.push("too many points for street-scale art");
   }
   if (width < 0.18 || height < 0.18) {
@@ -165,16 +194,20 @@ export function reviewStreetDesignSketch(
     score -= 22;
     reasons.push("not enough visual spread");
   }
-  if (tinySegmentRatio > 0.28) {
-    score -= Math.min(28, tinySegmentRatio * 70);
-    reasons.push("too much tiny detail for city blocks");
+  if (directionChanges < 5) {
+    score -= 15;
+    reasons.push("too simplistic — add the subject's features and texture");
+  }
+  if (jitterRatio > 0.22) {
+    score -= Math.min(28, jitterRatio * 70);
+    reasons.push("too much jittery noise for city blocks");
   }
   if (analysis.connectorCount > 4) {
     score -= Math.min(24, (analysis.connectorCount - 4) * 6);
     reasons.push("too many long connector jumps");
   }
-  if (selfIntersections > 2) {
-    score -= Math.min(32, (selfIntersections - 2) * 7);
+  if (selfIntersections > 4) {
+    score -= Math.min(32, (selfIntersections - 4) * 7);
     reasons.push("line crosses itself too often");
   }
   if (totalLength < 0.65) {
@@ -200,6 +233,8 @@ export function reviewStreetDesignSketch(
       height,
       totalLength,
       tinySegmentRatio,
+      jitterRatio,
+      directionChanges,
       connectorCount: analysis.connectorCount,
       selfIntersections,
       gridCellsTouched,
