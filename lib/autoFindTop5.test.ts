@@ -380,15 +380,12 @@ const cleanedDrafts = cleanVisionDesignDrafts({
   drafts: [
     {
       label: "Overdrawn",
-      description: "usable but full of tiny jitter",
-      // Dense smooth curves are now rewarded (curve sampling for the lattice
-      // compiler); what must still rank below a clean icon is JITTER — tiny
-      // segments with sharp alternating turns.
-      points: Array.from({ length: 100 }, (_, i) => {
-        const t = i / 99;
+      description: "usable but too many small turns",
+      points: Array.from({ length: 45 }, (_, i) => {
+        const t = (Math.PI * 2 * i) / 44;
         return {
-          x: 0.1 + 0.8 * t + (i % 2 === 0 ? 0.006 : -0.006),
-          y: 0.2 + 0.6 * t + (i % 2 === 0 ? -0.008 : 0.008),
+          x: 0.5 + Math.cos(t) * 0.38,
+          y: 0.5 + Math.sin(t) * 0.32,
         };
       }),
     },
