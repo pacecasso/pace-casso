@@ -226,6 +226,98 @@ function scalesFromTargetDistance(
 }
 
 /**
+ * Legibility scale floor — the July 2026 "detail density needs scale" lesson.
+ *
+ * A detailed contour (dense traced outline, feature-rich AI sketch) only
+ * survives street-grid quantization when its sampled detail maps to at
+ * least about a city block on the ground. Below that, curves and features
+ * collapse into noise — the shrunken-scribble failure mode. The p25 segment
+ * length must land at ≥ ~55 m (the lattice compiler's pin spacing).
+ *
+ * Sparse icons return 0 (no floor): a 12-point heart is legible at any
+ * scale the hint proposes. metersPerUnit here mirrors placementFromContour:
+ * (2000 * scale) / maxDim.
+ */
+export function legibilityScaleFloor(contour: ContourPoint[]): number {
+  if (contour.length < 24) return 0;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of contour) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const maxDim = Math.max(maxX - minX, maxY - minY);
+  if (!(maxDim > 0)) return 0;
+
+  // Strokes = spans between significant direction changes (>35°). These are
+  // the drawing's FEATURES (a head arc, a hose loop, a leg) — the thing that
+  // must survive quantization — as opposed to raw sample segments, which
+  // just reflect how densely curves were sampled.
+  let perimeter = 0;
+  const strokes: number[] = [];
+  let strokeLen = 0;
+  for (let i = 1; i < contour.length; i++) {
+    const dx = contour[i]!.x - contour[i - 1]!.x;
+    const dy = contour[i]!.y - contour[i - 1]!.y;
+    const d = Math.hypot(dx, dy);
+    perimeter += d;
+    strokeLen += d;
+    if (i < contour.length - 1) {
+      const dx2 = contour[i + 1]!.x - contour[i]!.x;
+      const dy2 = contour[i + 1]!.y - contour[i]!.y;
+      const l2 = Math.hypot(dx2, dy2);
+      if (d > 1e-9 && l2 > 1e-9) {
+        const cos = Math.max(-1, Math.min(1, (dx * dx2 + dy * dy2) / (d * l2)));
+        const turnDeg = (Math.acos(cos) * 180) / Math.PI;
+        if (turnDeg > 35) {
+          if (strokeLen > 0.004) strokes.push(strokeLen);
+          strokeLen = 0;
+        }
+      }
+    }
+  }
+  if (strokeLen > 0.004) strokes.push(strokeLen);
+  if (strokes.length < 6 || !(perimeter > 0)) return 0;
+  strokes.sort((a, b) => a - b);
+  const p25 = strokes[Math.floor(strokes.length * 0.25)]!;
+  if (!(p25 > 0)) return 0;
+
+  // A feature needs ~2 city blocks (170 m) to read after snapping.
+  // metersPerUnit mirrors placementFromContour: (2000 * scale) / maxDim.
+  const featureFloor = (170 * maxDim) / (2000 * p25);
+  // But never push the route past what the pipeline can hold (35 km
+  // perimeter cap, with a little headroom).
+  const kmAtScale1 = (perimeter * 2) / maxDim; // (perimeter/maxDim)*2000m per unit
+  const kmCap = kmAtScale1 > 0 ? 33 / kmAtScale1 : Infinity;
+  const floor = Math.min(featureFloor, kmCap, 4.5);
+  // Below ~0.7 the hint scales already cover it — no floor needed.
+  return floor >= 0.7 ? floor : 0;
+}
+
+/**
+ * Drop sub-legible scale rungs and guarantee legible ones. Placements the
+ * city can't hold at these scales die in sanityFilter, exactly as before —
+ * this only stops us from spending the candidate budget on scales where a
+ * dense drawing is guaranteed mush.
+ */
+function applyLegibilityFloor(
+  scales: number[],
+  contour: ContourPoint[],
+): number[] {
+  const floor = legibilityScaleFloor(contour);
+  if (floor <= 0) return scales;
+  const out = scales.filter((s) => s >= floor);
+  out.push(Math.min(floor, 6), Math.min(floor * 1.2, 6));
+  return Array.from(new Set(out.map((s) => Number(s.toFixed(3))))).sort(
+    (a, b) => a - b,
+  );
+}
+
+/**
  * Pick a rotation array based on the hint — but always include BOTH
  * true-upright (0°) AND the city's grid bearings, because on a rotated grid
  * like Manhattan the cleanest street-snap for a letter happens at ~29°, not
@@ -303,10 +395,14 @@ function enumerateCandidates(
   const GRID = 5;
   // Target-distance scales take priority over hint-derived scales when both
   // are available — the user asked for a specific distance; respect it.
-  const scales =
+  // Either way, dense contours get a legibility floor: detail below block
+  // size quantizes into noise, so sub-legible rungs are wasted budget.
+  const scales = applyLegibilityFloor(
     (targetDistanceKm != null
       ? scalesFromTargetDistance(contour, preset, targetDistanceKm)
-      : null) ?? scalesFromHint(hint);
+      : null) ?? scalesFromHint(hint),
+    contour,
+  );
   const rotations = rotationsFromHint(contour, preset, hint);
 
   const out: PlacementTransform[] = [];
@@ -336,10 +432,12 @@ export function enumerateCityFirstHeartPlacements(
   if (preset.id !== "manhattan" || !isHeartLikeContour(contour)) return [];
 
   const gridRotations = [-29, 29, 0];
-  const scales =
+  const scales = applyLegibilityFloor(
     targetDistanceKm != null && Number.isFinite(targetDistanceKm)
       ? scalesFromTargetDistance(contour, preset, targetDistanceKm) ?? [1.2, 1.6, 2.1]
-      : [0.85, 1.15, 1.55, 2.05, 2.65, 3.35];
+      : [0.85, 1.15, 1.55, 2.05, 2.65, 3.35],
+    contour,
+  );
 
   const centers: [number, number][] = [
     // West Village / SoHo: tight grid, good for smaller iconic hearts.
@@ -408,10 +506,12 @@ export function enumerateCityFocusPlacements(
   hint: ShapeHint | null = null,
   targetDistanceKm?: number,
 ): PlacementTransform[] {
-  const scales =
+  const scales = applyLegibilityFloor(
     (targetDistanceKm != null
       ? scalesFromTargetDistance(contour, preset, targetDistanceKm)
-      : null) ?? scalesFromHint(hint);
+      : null) ?? scalesFromHint(hint),
+    contour,
+  );
   const rotations = rotationsFromHint(contour, preset, hint);
   const centers = cityFocusCenters(preset);
   const b = preset.searchBounds;
@@ -632,6 +732,14 @@ type ValidCandidate = {
   km: number;
   designIntent?: string;
   routeMode?: "direct-grid";
+  /**
+   * For lattice-compiled candidates: quality derived from compile fidelity
+   * (meanDev/detour/skipped pins). Retrace-heavy designs are CLEAN by
+   * construction — every point is a street junction on the intended path —
+   * but routeQualityScore reads their deliberate out-and-backs as
+   * backtracking mess and five separate gates then reject them.
+   */
+  compiledQuality?: number;
   kind?:
     | "generic"
     | "city-focus"
@@ -1177,8 +1285,10 @@ function finalRouteTruthFloors(
     return { minShape: 48, minSource: 26, minClean: 30, maxDistanceKm: 25 };
   }
   if (candidate.kind === "street-design" || candidate.kind === "vision-design") {
-    // Sketch-led routes: judge readability of the etch-a-sketch, not pixel trace.
-    return { minShape: 45, minSource: 0, minClean: 25, maxDistanceKm: 25 };
+    // Sketch-led routes: judge readability of the etch-a-sketch, not pixel
+    // trace. Detail-dense designs are only legible BIG (the July 2026
+    // lesson) — allow them the length that legibility costs.
+    return { minShape: 45, minSource: 0, minClean: 25, maxDistanceKm: 34 };
   }
   return { minShape: 48, minSource: 30, minClean: 28, maxDistanceKm: 30 };
 }
@@ -1941,7 +2051,13 @@ async function parallelSnap(
     const batch = candidates.slice(i, i + SNAP_BATCH_SIZE);
     const snapped = await Promise.all(
       batch.map(async (c) => {
-        const r = await snapOne(c.anchors, anchorSource);
+        const r = await snapOne(
+          c.anchors,
+          // Lattice-compiled chains are already street junctions; the image
+          // simplifier would delete their spur tips and Mapbox would then
+          // shortcut the design (snapped km collapses → false "destroyed").
+          c.routeMode === "direct-grid" ? "street-native" : anchorSource,
+        );
         if (r === "snap-error") {
           snapFailures++;
           return null;
@@ -1971,6 +2087,11 @@ async function parallelSnap(
                 : SNAP_RATIO_MAX;
         if (ratio < ratioMin || ratio > ratioMax) {
           rejectedByRatio++;
+          if (typeof process !== "undefined" && process.env?.AUTOFIND_DEBUG === "1") {
+            console.log(
+              `[autoFindTop5:debug] snap-destroyed kind=${c.kind} mode=${c.routeMode ?? "-"} km=${c.km.toFixed(1)} snappedKm=${r.snappedKm.toFixed(1)} ratio=${ratio.toFixed(2)} allowed=[${ratioMin},${ratioMax}]`,
+            );
+          }
           return null;
         }
 
@@ -2002,7 +2123,7 @@ async function parallelSnap(
           coords: cleanedCoords,
           route: cleaned,
           km: cleanedKm,
-          qualityScore: routeQualityScore(cleanedCoords),
+          qualityScore: c.compiledQuality ?? routeQualityScore(cleanedCoords),
           shapeMatchScore: shapeScores.shapeMatchScore,
           sourceMatchScore: shapeScores.sourceMatchScore,
         } as SnappedCandidate;
@@ -2035,6 +2156,98 @@ async function parallelSnap(
  * bad placements (over parks, off-grid, big forced detours) fail fidelity
  * gates and are simply not emitted.
  */
+/**
+ * The hero path for detail-dense drafts (July 2026): place each dense draft
+ * at its LEGIBILITY floor scale across the city's focus centers and compile
+ * it straight onto the street lattice, ranked by compile fidelity. This is
+ * exactly the flow that produced the street-verified GAS/apple/tiger routes
+ * — the Mapbox-snap path quantizes dense drawings into mush at the scales
+ * the km-target selects, so dense drafts get their own first-class family.
+ */
+async function latticeDesignDraftCandidates(
+  drafts: VisionDesignDraft[],
+  preset: CityPreset,
+  maxOut: number,
+): Promise<ValidCandidate[]> {
+  if (preset.id !== "manhattan" || drafts.length === 0 || maxOut <= 0) {
+    return [];
+  }
+  let graph;
+  try {
+    graph = await getManhattanLatticeGraph();
+  } catch {
+    return [];
+  }
+  const gridRotations = [0, ...(preset.dominantGridBearingsDeg ?? [])].slice(0, 3);
+  const centers = cityFocusCenters(preset);
+  const scored: { cand: ValidCandidate; score: number; key: string }[] = [];
+  for (const draft of drafts.slice(0, 6)) {
+    const floor = legibilityScaleFloor(draft.points);
+    if (floor <= 0) continue; // sparse drafts are fine on the normal path
+    for (const scale of [floor, Math.min(floor * 1.15, 4.5)]) {
+      for (const center of centers) {
+        for (const rotationDeg of gridRotations) {
+          const placement = { center, rotationDeg, scale };
+          const built = buildAnchorLatLngsFromContour(draft.points, placement);
+          if (!built.anchorLatLngs || built.anchorLatLngs.length < 8) continue;
+          const result = compileContourToLattice(built.anchorLatLngs, graph);
+          if (!result) continue;
+          const detour = result.km / Math.max(result.inputKm, 0.05);
+          if (result.meanDeviationMeters > 55 || detour > 1.7) continue;
+          if (result.km < MIN_PERIMETER_KM || result.km > 34) continue;
+          const j = result.junctions;
+          const key = `${draft.label}:${j.length}:${j[0]![0].toFixed(3)},${j[0]![1].toFixed(3)}`;
+          scored.push({
+            cand: {
+              placement,
+              anchors: j,
+              km: result.km,
+              kind: "vision-design",
+              routeMode: "direct-grid",
+              // The required-feature gate text-matches designIntent — carry
+              // the draft's features so faithful compiles aren't dropped as
+              // "feature-incomplete".
+              designIntent: `${draft.label} compiled corner-by-corner onto real intersections at legible scale. Features: ${(draft.visualFeatures ?? []).join(", ") || draft.description}`,
+              compiledQuality: Math.round(
+                Math.max(
+                  35,
+                  Math.min(
+                    92,
+                    92 -
+                      result.meanDeviationMeters * 0.6 -
+                      result.skippedPins * 3 -
+                      Math.max(0, detour - 1.2) * 40,
+                  ),
+                ),
+              ),
+            },
+            score:
+              result.meanDeviationMeters +
+              Math.max(0, detour - 1.3) * 40 +
+              result.skippedPins * 6,
+            key,
+          });
+        }
+      }
+    }
+  }
+  scored.sort((a, b) => a.score - b.score);
+  const seen = new Set<string>();
+  const out: ValidCandidate[] = [];
+  for (const s of scored) {
+    if (seen.has(s.key)) continue;
+    seen.add(s.key);
+    out.push(s.cand);
+    if (out.length >= maxOut) break;
+  }
+  if (out.length > 0) {
+    console.log(
+      `[autoFindTop5] lattice-compiled ${out.length} legible-scale draft candidates`,
+    );
+  }
+  return out;
+}
+
 async function buildLatticeCompiledCandidates(
   preset: CityPreset,
   sources: ValidCandidate[],
@@ -2052,12 +2265,25 @@ async function buildLatticeCompiledCandidates(
     return [];
   }
   const scored: { cand: ValidCandidate; score: number; key: string }[] = [];
+  const debug = typeof process !== "undefined" && process.env?.AUTOFIND_DEBUG === "1";
+  const rejects = { null: 0, dev: 0, detour: 0, km: 0 };
   for (const src of sources) {
     const result = compileContourToLattice(src.anchors, graph);
-    if (!result) continue;
+    if (!result) {
+      rejects.null++;
+      continue;
+    }
     const detour = result.km / Math.max(result.inputKm, 0.05);
-    if (result.meanDeviationMeters > 60 || detour > 1.8) continue;
+    if (result.meanDeviationMeters > 60) {
+      rejects.dev++;
+      continue;
+    }
+    if (detour > 1.8) {
+      rejects.detour++;
+      continue;
+    }
     if (result.km < MIN_PERIMETER_KM * 0.8 || result.km > MAX_PERIMETER_KM) {
+      rejects.km++;
       continue;
     }
     const j = result.junctions;
@@ -2069,8 +2295,21 @@ async function buildLatticeCompiledCandidates(
         km: result.km,
         kind: "street-design",
         routeMode: "direct-grid",
-        designIntent:
-          "Your drawing compiled corner-by-corner onto real street intersections",
+        designIntent: src.designIntent
+          ? `${src.designIntent} (compiled corner-by-corner onto real intersections)`
+          : "Your drawing compiled corner-by-corner onto real street intersections",
+        compiledQuality: Math.round(
+          Math.max(
+            35,
+            Math.min(
+              92,
+              92 -
+                result.meanDeviationMeters * 0.6 -
+                result.skippedPins * 3 -
+                Math.max(0, detour - 1.2) * 40,
+            ),
+          ),
+        ),
       },
       score:
         result.meanDeviationMeters +
@@ -2091,6 +2330,11 @@ async function buildLatticeCompiledCandidates(
   if (out.length > 0) {
     console.log(
       `[autoFindTop5] lattice-compiled ${out.length}/${sources.length} candidates onto real intersections`,
+    );
+  }
+  if (debug) {
+    console.log(
+      `[autoFindTop5:debug] lattice rejects: compileNull=${rejects.null} meanDev=${rejects.dev} detour=${rejects.detour} km=${rejects.km} of ${sources.length}`,
     );
   }
   return out;
@@ -4405,6 +4649,12 @@ export async function autoFindTop5(
       ? diverseSubsample(streetWordmarkRoutes, streetWordmarkBudget, preset)
       : [];
   const needsSweepDesign = requiresSweepStructure(requiredVisualFeatures);
+  // Never let recipe/template candidates starve the user's own drafts: when
+  // vision-design drafts exist, hold seats back for them. (July 2026: the
+  // gas-pump template flooded all 28 snap slots with near-identical ~10 km
+  // variants, every one failing the clean gate, while the draft-led and
+  // lattice candidates that could actually read got zero slots.)
+  const reservedForDrafts = validVisionDesign.length > 0 ? 12 : 0;
   const streetDesignBudget =
     streetDesignRoutes.length > 0
       ? Math.min(
@@ -4415,7 +4665,10 @@ export async function autoFindTop5(
               : needsSweepDesign
                 ? 24
                 : 12,
-          Math.max(0, snapCount - streetWordmarkSubset.length),
+          Math.max(
+            0,
+            snapCount - streetWordmarkSubset.length - reservedForDrafts,
+          ),
         )
       : 0;
   const streetDesignSubset =
@@ -4541,8 +4794,15 @@ export async function autoFindTop5(
   );
   // Lattice-compile the placed candidates onto real Manhattan intersections.
   // These go at the head of the snap queue; the tail (weakest generics) is
-  // trimmed so the total stays inside the Mapbox call budget.
-  const latticeSubset = await buildLatticeCompiledCandidates(
+  // trimmed so the total stays inside the Mapbox call budget. Detail-dense
+  // drafts additionally get first-class legible-scale lattice candidates —
+  // the proven path for dense designs (Mapbox-snap mushes them).
+  const latticeDraftSubset = await latticeDesignDraftCandidates(
+    visionDesignDrafts,
+    preset,
+    6,
+  );
+  const latticeGenericSubset = await buildLatticeCompiledCandidates(
     preset,
     [
       ...genericSubset,
@@ -4553,6 +4813,15 @@ export async function autoFindTop5(
     ],
     6,
   );
+  const latticeSeen = new Set(
+    latticeDraftSubset.map((c) => `${c.anchors.length}:${c.km.toFixed(1)}`),
+  );
+  const latticeSubset = [
+    ...latticeDraftSubset,
+    ...latticeGenericSubset.filter(
+      (c) => !latticeSeen.has(`${c.anchors.length}:${c.km.toFixed(1)}`),
+    ),
+  ].slice(0, 8);
   const subset = [
     ...latticeSubset,
     ...streetWordmarkSubset,
@@ -4566,6 +4835,16 @@ export async function autoFindTop5(
     0,
     Math.max(snapCount, latticeSubset.length + streetWordmarkSubset.length),
   );
+  if (typeof process !== "undefined" && process.env?.AUTOFIND_DEBUG === "1") {
+    console.log(
+      `[autoFindTop5:debug] snap subset: lattice=${latticeSubset.length} wordmark=${streetWordmarkSubset.length} streetDesign=${streetDesignSubset.length} visionDesign=${visionDesignSubset.length} designed=${designedSubset.length} cityFirst=${cityFirstSubset.length} cityFocus=${cityFocusSubset.length} generic=${genericSubset.length} -> ${subset.length}`,
+    );
+    for (const c of subset.slice(0, 30)) {
+      console.log(
+        `[autoFindTop5:debug]   cand kind=${c.kind} mode=${c.routeMode ?? "-"} km=${c.km.toFixed(1)} scale=${c.placement.scale.toFixed(2)} anchors=${c.anchors.length}`,
+      );
+    }
+  }
   const { snapped, snapFailures } = await parallelSnap(
     subset,
     options.anchorSource,

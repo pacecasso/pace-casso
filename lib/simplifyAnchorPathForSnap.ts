@@ -38,7 +38,17 @@ const SPARSE_VERTEX_CAP = 56;
  * - `freehand` / `default` keep the stricter tolerance so noisy touch input
  *   doesn't zig-zag across adjacent streets.
  */
-export type AnchorPathSource = "default" | "image" | "freehand";
+export type AnchorPathSource =
+  | "default"
+  | "image"
+  | "freehand"
+  /**
+   * Anchors that are ALREADY street junctions (lattice-compiled chains).
+   * Simplifying these deletes deliberate out-and-back spurs and dense
+   * corner sequences, which Mapbox then shortcuts — the route comes back
+   * shorter than designed and gets rejected as snap-destroyed. Keep them.
+   */
+  | "street-native";
 
 function dpSimplifyLatLng(
   work: [number, number][],
@@ -107,6 +117,13 @@ export function simplifyAnchorPathForSnap(
   }
 
   const sourceKind = opts?.sourceKind ?? "default";
+
+  // Street-native chains: every point is a real junction on the intended
+  // path. Only decimate under a generous cap; never DP-simplify (that
+  // deletes spur tips and lets Mapbox shortcut the design).
+  if (sourceKind === "street-native") {
+    return coords.length <= 220 ? coords : decimateToCap(coords, 220);
+  }
 
   // Image sources use a small dedupe (5 m vs 2.5 m) to kill pixel-staircase
   // jitter from the Moore boundary trace, but leave enough density for DP to

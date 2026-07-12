@@ -2,6 +2,11 @@ import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
 import { rateLimitAllow } from "../../../lib/mapboxRateLimit";
 import { shieldExpensiveRoute, trustedClientIp } from "../../../lib/apiShield";
+import {
+  buildInterpretationPrompt,
+  MAX_SKETCH_POINTS,
+} from "../../../lib/interpretationPrompt";
+import { reviewStreetDesignSketch } from "../../../lib/streetDesignSketch";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -21,7 +26,9 @@ const ALLOWED_MEDIA = new Set([
   "image/webp",
 ]);
 const MAX_B64 = 4_000_000;
-const MAX_POINTS = 48;
+// Detail-density grammar (July 2026): dense curve sampling and texture
+// strokes need real point budgets — 48 points forced minimal icons.
+const MAX_POINTS = MAX_SKETCH_POINTS;
 const MAX_DRAFTS = 8;
 
 type NormalizedPoint = { x: number; y: number };
@@ -33,59 +40,6 @@ type DesignDraft = {
 };
 
 
-function buildPrompt(cityLabel: string | null, draftCount: number): string {
-  const city = cityLabel || "a dense city";
-  const multiple = draftCount > 1;
-  return `Convert this image into ${multiple ? `${draftCount} different` : "a"} etch-a-sketch style one-line GPS-art design${multiple ? "s" : ""} for ${city}.
-
-This is NOT image tracing. You are designing route intents that will be placed and snapped onto real ${city} streets. The runner should recognize the subject from the route alone — like an Etch A Sketch drawing, not a faithful logo reproduction.
-
-Rules:
-- Ignore backgrounds, badges, circles, shadows, and decorative fills unless they are the subject.
-- Preserve only the 3-6 features that make the subject recognizable.
-- Name those features in "visualFeatures" using simple nouns a route generator can use, such as block, loop, handle, cable, head, body, legs, tail, letters, window, connector.
-- Redraw the subject as one continuous polyline, like a runner drawing it with GPS.
-- Design for streets first. Use rectangles, stair-steps, loops, diagonals, strong corners, and long strokes a runner could plausibly make on city blocks.
-- Exaggerate key readable features; drop tiny detail.
-- The line should be symbolic when needed. A person should recognize the subject when viewing only the route.
-- Prefer a neighborhood-scale runnable idea over a giant city mural. A strong 10-22 km simplification is better than a 35 km route that preserves more detail but looks messy. Up to ~25 km is fine when it clearly improves readability.
-- Prefer a bold etch-a-sketch icon over a faithful contour. For example: a gas-pump logo should become pump block + hose curve + simplified person/headphones, not every hand/nozzle pixel; a face can become face outline + connected glasses + one mouth instead of tiny eyes.
-- For internal features, use connected features that can share travel strokes. If literal disconnected details would require ugly connector jumps, replace them with a street-friendly symbol.
-- If the subject is a wordmark or letters (for example LOVE), preserve reading order and major letter strokes. Use simple block-letter strokes and purposeful bridges between letters; do not trace the outside blob of filled text.
-- If the subject is an animal or mascot (for example tiger/lion), preserve the big silhouette and 2-4 signature features such as head, back, tail, legs, mane/stripes. Do not chase fur, small facial marks, or texture.
-- If the subject is a logo/icon with multiple objects (for example a gas pump plus person), make several feature-subset drafts: one aggressive simple version, one balanced version, and one fuller version. It is acceptable to drop optional objects if the remaining route reads better and runs cleaner.
-- Avoid pretty fantasy curves that need empty space to work. Prefer the kind of blocky, slightly jagged route that would still read after snapping to ${city}'s streets.
-- Coordinates must be normalized to the image box: x and y from 0 to 1.
-- Use 8-40 points. Fewer, stronger points are better.
-- Avoid self-crossing unless it is needed to move between features.
-- Prefer an open route for complex scenes and icons; closed loops are fine for single silhouettes.
-- Make the drafts meaningfully different: change simplification, emphasis, and route order. Do not return tiny variations of the same line.
-- Favor designs that could survive being snapped to ${city} streets over designs that match the pixels exactly.
-- Include at least one draft that is outline-only, one that emphasizes the most distinctive internal feature, and one that uses an alternate connected symbol if the literal details are too small.
-- For logos with multiple objects, merge them into one readable route story. The runner should not draw every object separately; connectors should feel like part of the icon.
-- Make at least two drafts aggressively simple enough to still read after being forced onto a rectangular street grid.
-- The first draft should be your best map-realistic representation, not the closest trace.
-
-Return ONLY JSON with this exact shape:
-{
-  "label": "short name",
-  "description": "short explanation of what was preserved",
-  "visualFeatures": ["block", "loop", "head"],
-  "points": [{"x": 0.12, "y": 0.84}, ...],
-  "drafts": [
-    {
-      "label": "short name",
-      "description": "what this draft emphasizes",
-      "visualFeatures": ["block", "loop", "head"],
-      "points": [{"x": 0.12, "y": 0.84}, ...]
-    }
-  ]
-}
-
-For a single-sketch request, "points" should match the best draft. For a multi-draft request, "drafts" must contain exactly ${draftCount} usable drafts and "points" should match draft #1.
-
-No markdown. No extra keys.`;
-}
 
 function parseImageBase64(imageBase64: string, fallbackMediaType = "image/png"): {
   data: string;
@@ -234,10 +188,15 @@ export async function POST(req: Request) {
       ? Math.max(1, Math.min(MAX_DRAFTS, Math.floor(body.draftCount)))
       : 1;
 
-  try {
+  const generate = async (
+    extraGuidance: string,
+  ): Promise<
+    | { ok: true; fallbackDraft: DesignDraft; drafts: DesignDraft[] }
+    | { ok: false; error: string; raw?: string }
+  > => {
     const message = await client.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 3800,
+      max_tokens: 16000,
       messages: [
         {
           role: "user",
@@ -254,7 +213,12 @@ export async function POST(req: Request) {
                 data: parsed.data,
               },
             },
-            { type: "text", text: buildPrompt(cityLabel, draftCount) },
+            {
+              type: "text",
+              text:
+                buildInterpretationPrompt(cityLabel, draftCount) +
+                extraGuidance,
+            },
           ],
         },
       ],
@@ -266,36 +230,26 @@ export async function POST(req: Request) {
     const start = raw.indexOf("{");
     const end = raw.lastIndexOf("}");
     if (start < 0 || end <= start) {
-      return NextResponse.json(
-        { error: "No JSON object in response", raw },
-        { status: 502 },
-      );
+      return { ok: false, error: "No JSON object in response", raw };
     }
-
     let parsedJson: unknown;
     try {
       parsedJson = JSON.parse(raw.slice(start, end + 1));
     } catch {
-      return NextResponse.json(
-        { error: "Invalid JSON in response", raw },
-        { status: 502 },
-      );
+      return { ok: false, error: "Invalid JSON in response", raw };
     }
     if (!parsedJson || typeof parsedJson !== "object") {
-      return NextResponse.json(
-        { error: "Response is not an object", raw },
-        { status: 502 },
-      );
+      return { ok: false, error: "Response is not an object", raw };
     }
     const rec = parsedJson as Record<string, unknown>;
     const points = cleanPoints(rec.points);
     if (points.length < 2) {
-      return NextResponse.json(
-        { error: "Response did not contain enough valid points", raw },
-        { status: 502 },
-      );
+      return {
+        ok: false,
+        error: "Response did not contain enough valid points",
+        raw,
+      };
     }
-
     const fallbackDraft: DesignDraft = {
       label:
         typeof rec.label === "string" && rec.label.trim()
@@ -308,11 +262,45 @@ export async function POST(req: Request) {
       visualFeatures: cleanVisualFeatures(rec.visualFeatures),
       points,
     };
-    const drafts = cleanDrafts(rec, fallbackDraft);
+    return { ok: true, fallbackDraft, drafts: cleanDrafts(rec, fallbackDraft) };
+  };
 
+  const passCount = (drafts: DesignDraft[]) =>
+    drafts.filter((d) => reviewStreetDesignSketch(d.points).pass).length;
+
+  try {
+    const first = await generate("");
+    if (!first.ok) {
+      return NextResponse.json(
+        { error: first.error, raw: first.raw },
+        { status: 502 },
+      );
+    }
+    let best = first;
+    // Draft quality varies run to run; tangled generations are the top cause
+    // of unusable routes downstream. If too few drafts survive the sketch
+    // gate, retry once with targeted anti-tangle feedback and keep the
+    // better generation.
+    const wanted = Math.min(2, draftCount);
+    if (passCount(first.drafts) < wanted) {
+      const retry = await generate(
+        "\n\nIMPORTANT — your previous attempt produced tangled lines that failed review. This time: never overlap two circles (use the combined-dome rule); a coil is ONE loop only; keep every stroke's entry and exit tangents flowing in the direction of travel; do not cut across anything you already drew; prefer fewer, cleaner features over more, messier ones.",
+      );
+      if (retry.ok && passCount(retry.drafts) > passCount(first.drafts)) {
+        best = retry;
+      }
+    }
+
+    // Serve gate-passing drafts first so downstream budget goes to the
+    // usable ones.
+    const sorted = [...best.drafts].sort(
+      (a, b) =>
+        Number(reviewStreetDesignSketch(b.points).pass) -
+        Number(reviewStreetDesignSketch(a.points).pass),
+    );
     return NextResponse.json({
-      ...fallbackDraft,
-      drafts,
+      ...best.fallbackDraft,
+      drafts: sorted,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
