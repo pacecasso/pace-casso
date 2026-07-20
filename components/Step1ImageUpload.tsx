@@ -1423,6 +1423,16 @@ export default function Step1ImageUpload({
         Upload a photo or logo and we&apos;ll turn it into a simple one-line
         drawing you can run. Touch it up if you like, then keep going.
       </p>
+      {/* Without this, a logo lockup silently loses its slogan and the user
+          can't tell whether that's a bug. We draw the main shape on purpose:
+          letters are smaller than a city block, so tracing them produces an
+          unreadable tangle once the route follows real streets. */}
+      <p className="mb-1.5 max-w-xl text-center font-dm text-[11px] leading-snug text-pace-ink sm:mb-2">
+        We trace the <strong>main shape</strong> only. If your image has words
+        or small extra pieces, they&apos;re left out here — lettering is far
+        smaller than a city block, so tracing it turns into a scribble on real
+        streets.
+      </p>
 
       {svgBusy || alphaBusy || designerBusy ? (
         <div
