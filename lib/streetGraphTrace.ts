@@ -168,11 +168,19 @@ function corridorPath(
 // ---------------------------------------------------------------------------
 // Trace a placed contour
 // ---------------------------------------------------------------------------
+type TraceResult = {
+  chain: LatLng[];
+  /** Fraction of the target outline the streets actually drew (routed legs / all legs, by length). */
+  coverage: number;
+  /** Longest single dropped stretch, meters — a teleport in the route. */
+  maxGapM: number;
+};
+
 function traceContour(
   g: Graph,
   contour: LatLng[],
   opts: { anchorM: number; lambda: number; corridorM: number },
-): LatLng[] {
+): TraceResult {
   const dense: LatLng[] = [];
   for (let i = 1; i < contour.length; i++) {
     const a = contour[i - 1]!;
@@ -197,26 +205,50 @@ function traceContour(
   anchors.push(dense[0]!); // close the loop
 
   const chain: LatLng[] = [];
+  let coveredM = 0;
+  let droppedM = 0;
+  let maxGapM = 0;
   for (let i = 1; i < anchors.length; i++) {
+    const direct = meters(anchors[i - 1]!, anchors[i]!);
     const na = nearestNode(g, anchors[i - 1]!);
     const nb = nearestNode(g, anchors[i]!);
-    if (na < 0 || nb < 0 || na === nb) continue;
-    const direct = meters(anchors[i - 1]!, anchors[i]!);
+    if (na < 0 || nb < 0) {
+      droppedM += direct;
+      maxGapM = Math.max(maxGapM, direct);
+      continue;
+    }
+    if (na === nb) {
+      coveredM += direct;
+      continue;
+    }
     let p = corridorPath(g, na, nb, dense, opts.lambda, opts.corridorM);
     if (!p) p = corridorPath(g, na, nb, dense, opts.lambda, opts.corridorM * 3);
     if (!p) p = corridorPath(g, na, nb, dense, 0, 1e7);
-    if (!p) continue;
     let plen = 0;
-    for (let k = 1; k < p.length; k++) plen += meters(g.coord[p[k - 1]!]!, g.coord[p[k]!]!);
-    // a small gap beats a huge detour loop across the city
-    if (plen > direct * 2.2 + 250 || plen > 1400) continue;
+    if (p) {
+      for (let k = 1; k < p.length; k++) plen += meters(g.coord[p[k - 1]!]!, g.coord[p[k]!]!);
+    }
+    // a dropped leg beats a huge detour loop across the city — but every
+    // dropped leg is a TELEPORT in the final route, so it is counted and
+    // the caller rejects candidates whose streets couldn't draw the shape.
+    if (!p || plen > direct * 2.2 + 250 || plen > 1400) {
+      droppedM += direct;
+      maxGapM = Math.max(maxGapM, direct);
+      continue;
+    }
+    coveredM += direct;
     for (const id of p) chain.push(g.coord[id]!);
   }
   const out: LatLng[] = [];
   for (const p of chain) {
     if (!out.length || meters(out[out.length - 1]!, p) > 1) out.push(p);
   }
-  return trimNubs(out);
+  const total = coveredM + droppedM;
+  return {
+    chain: trimNubs(out),
+    coverage: total > 0 ? coveredM / total : 0,
+    maxGapM,
+  };
 }
 
 /** Splice out short out-and-back excursions (dead-end spurs) that read as errors. */
@@ -402,7 +434,11 @@ export async function traceShapeOnStreets(
         for (const rot of rots) {
           const outline = place(unit, [lat, lng], scale, rot);
           const { score, miss } = coarseScore(g, outline);
-          if (miss <= 8) cands.push({ center: [lat, lng], scale, rot, score });
+          // miss counts outline samples with no street within 130 m — i.e.
+          // rivers, parks, off-island. 8-of-72 allowed shapes to hang a full
+          // lobe over the water and still win ("floating above Manhattan,
+          // half in the river"). At most 2 stray samples now.
+          if (miss <= 2) cands.push({ center: [lat, lng], scale, rot, score });
         }
       }
     }
@@ -425,8 +461,16 @@ export async function traceShapeOnStreets(
   const traced: StreetTraceCandidate[] = [];
   for (const pk of picks) {
     const target = place(unit, pk.center, pk.scale, pk.rot);
-    const chain = traceContour(g, target, { anchorM: 200, lambda: 12, corridorM: 90 });
+    const {
+      chain,
+      coverage,
+      maxGapM,
+    } = traceContour(g, target, { anchorM: 200, lambda: 12, corridorM: 90 });
     if (chain.length < 8) continue;
+    // RUNNABILITY GATE: every dropped leg is a teleport. If the streets
+    // couldn't draw ≥95% of the shape connected, this placement is not a
+    // route — reject it instead of shipping a floating fragment.
+    if (coverage < 0.95 || maxGapM > 180) continue;
     let dev = 0;
     for (const p of chain) {
       let m = Infinity;
