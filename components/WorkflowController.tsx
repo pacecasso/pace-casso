@@ -88,22 +88,21 @@ export default function WorkflowController() {
   const [showCreateIntro, setShowCreateIntro] = useState(false);
   const stepTitleRef = useRef<HTMLHeadingElement>(null);
 
-  // Gallery → /create?shape=🗽 hand-off. Consumed once the user picks a city;
-  // we then auto-skip source-choice and jump them straight into placement with
-  // the emoji-derived contour. URL is left alone so the link is shareable.
   const searchParams = useSearchParams();
-  const [pendingShape, setPendingShape] = useState<string | null>(null);
-  useEffect(() => {
-    const raw = searchParams.get("shape");
-    if (!raw) return;
-    // Accept emoji up to ~8 chars (covers compound / skin-tone emoji)
-    const trimmed = raw.trim();
-    if (trimmed.length > 0 && trimmed.length <= 16 && !/\s/.test(trimmed)) {
-      setPendingShape(trimmed);
-    }
-  }, [searchParams]);
+  const galleryHandOffDone = useRef(false);
 
   useLayoutEffect(() => {
+    // "Start Creating" (?new=1) always begins fresh: drop any saved draft
+    // before hydrating, so nobody lands mid-flow in someone else's design.
+    if (
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("new") === "1"
+    ) {
+      clearCreateDraft();
+      window.history.replaceState(null, "", "/create");
+      setDraftHydrated(true);
+      return;
+    }
     const raw = loadCreateDraft();
     if (raw) {
       const d = reconcileDraft(raw);
@@ -150,24 +149,48 @@ export default function WorkflowController() {
     }
   }, []);
 
-  // Gallery hand-off: when user lands on source-choice with a pendingShape
-  // and no existing work, convert emoji → contour and jump straight to Step 2
-  // placement. If conversion fails (font missing, degenerate), silently drop
-  // the pending shape so the user sees the normal source-choice UI.
+  // Legacy /create?shape=<emoji> hand-off. Runs once after draft hydration
+  // and takes precedence over any in-progress design. Consumes the query
+  // params (via native history.replaceState) so a later reload doesn't
+  // clobber progress, then jumps straight to placement.
+  //
+  // The ?template=<id> variant was dropped along with the gallery's "style
+  // references" section — nothing links to it any more.
   useEffect(() => {
     if (!draftHydrated) return;
-    if (!pendingShape) return;
-    if (currentStep !== 1) return;
-    if (sourceKind !== null) return;
-    if (contourCoordinates !== null) return;
-    const contour = emojiToContour(pendingShape);
-    setPendingShape(null);
-    if (!contour || contour.length < 4) return;
+    if (galleryHandOffDone.current) return;
+    const shapeRaw = searchParams.get("shape")?.trim() ?? "";
+    if (!shapeRaw) return;
+    galleryHandOffDone.current = true;
+
+    let contour: NormalizedPoint[] | null = null;
+    if (shapeRaw.length <= 16 && !/\s/.test(shapeRaw)) {
+      const traced = emojiToContour(shapeRaw);
+      if (traced && traced.length >= 4) contour = traced as NormalizedPoint[];
+    }
+
+    // Native replaceState instead of router.replace: it's synchronous and
+    // can't be dropped while the app-router is still hydrating (a hard load
+    // of /create?shape=… ignores an early router.replace).
+    window.history.replaceState(null, "", "/create");
+    if (!contour) return;
+
+    const cityParam = searchParams.get("city");
+    if (cityParam && CITY_PRESETS[cityParam]) {
+      setSelectedCityId(cityParam);
+      setCityPreset(CITY_PRESETS[cityParam]);
+    }
+    setContourCoordinates(contour);
+    setUploadedImageBase64(null);
+    setUploadedImageName(null);
     setSourceKind("image");
-    setContourCoordinates(contour as NormalizedPoint[]);
     setSketchApproved(true);
+    setAnchorLocation(null);
+    setSnappedRoute(null);
+    setEditedRoute(null);
+    setFinalRoute(null);
     setCurrentStep(3);
-  }, [draftHydrated, pendingShape, currentStep, sourceKind, contourCoordinates]);
+  }, [draftHydrated, searchParams]);
 
   const dismissCreateIntro = useCallback(() => {
     try {
@@ -563,6 +586,10 @@ export default function WorkflowController() {
         {currentStep === 2 && sourceKind === "image" && (
           <Step1ImageUpload
             cityLabel={cityPreset.label}
+            // Restores the picture when the user comes BACK from sketch
+            // review, instead of dropping them on an empty file picker.
+            initialImageBase64={uploadedImageBase64}
+            initialImageName={uploadedImageName}
             onBack={goBackToSourcePicker}
             onComplete={(normalizedContour, imageBase64, sourceName) => {
               setContourCoordinates(normalizedContour);
@@ -617,6 +644,10 @@ export default function WorkflowController() {
           sourceKind === "image" &&
           sketchApproved && (
           <Step2MapAnchor
+            // Remount on city change: the component seeds its map center from
+            // defaultCenter once, so a gallery hand-off that switches city
+            // would otherwise place the shape over the previous city.
+            key={selectedCityId}
             contour={contourCoordinates}
             cityPreset={cityPreset}
             defaultCenter={cityPreset.defaultCenter}

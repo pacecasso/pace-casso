@@ -62,24 +62,30 @@ assert(
   !genericVariants.some((v) => v.id === "iconic-heart"),
   "generic open art should not be classified as hearts",
 );
+// The picker deliberately offers ONE good default (plus a heart when the
+// shape is one). "Detailed trace" and "grid sketch" were removed: a fussy
+// literal trace is exactly what becomes unreadable once the route follows
+// real streets, and five near-identical options made the screen confusing.
 assert(
-  genericVariants.some((v) => v.id === "grid"),
-  "generic art should still get a grid sketch interpretation",
+  genericVariants.every((v) => v.id !== "trace" && v.id !== "grid"),
+  "the fussy trace/grid options are no longer offered",
+);
+assert.equal(
+  genericVariants[0]?.id,
+  "bold",
+  "generic art leads with the simple-line interpretation",
 );
 
 const logoVariants = buildArtPathInterpretations(disconnectedLogoTrace);
 assert.equal(
   logoVariants[0]?.id,
   "bold",
-  "logo art should lead with the etch-a-sketch interpretation",
+  "logo art should lead with the simple-line interpretation",
 );
-assert(
-  logoVariants.some((v) => v.id === "bold"),
-  "disconnected logo art should get an etch-a-sketch interpretation",
-);
-assert(
-  !logoVariants.some((v) => v.id === "grid"),
-  "disconnected logo art should not auto-offer a connector-distorting grid sketch",
+assert.equal(
+  logoVariants.length,
+  1,
+  "logo art gets exactly one built-in option, not a wall of near-identical ones",
 );
 
 console.log("artPathInterpretation tests ok");

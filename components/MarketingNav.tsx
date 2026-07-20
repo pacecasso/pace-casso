@@ -50,8 +50,10 @@ export default function MarketingNav() {
             Help
           </Link>
         </nav>
+        {/* ?new=1 — "Start Creating" always begins a clean design, never
+            drops the user back into a half-finished draft. */}
         <Link
-          href="/create"
+          href="/create?new=1"
           className="pace-btn-primary order-2 shrink-0 rounded px-4 py-2 text-sm font-bold uppercase tracking-wide sm:px-6 sm:text-base lg:order-3"
         >
           Start Creating

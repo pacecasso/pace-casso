@@ -74,9 +74,17 @@ export function describeLineMaskHealth(
   const largestBlobShare = largest / ink;
 
   let hint: string;
-  if (inkBlobCount >= 4) {
+  if (inkBlobCount >= 5) {
+    // Lots of separate blobs almost always means lettering (a word is one
+    // blob per letter). Bridging them "works" and then produces an
+    // unreadable tangle once the route follows real streets — letter shapes
+    // are far smaller than a city block. Say so instead of sending the user
+    // through six more steps to find out.
     hint =
-      "Many disconnected strokes — erase gaps or connect islands so one path can follow your art.";
+      "Lots of separate pieces — this usually means words or fine detail, which don't survive being drawn on real streets. Keep one bold symbol and erase the rest for a route people can actually recognize.";
+  } else if (inkBlobCount === 4) {
+    hint =
+      "Several disconnected strokes — erase gaps or connect islands so one path can follow your art.";
   } else if (inkBlobCount === 2) {
     hint =
       "Two separate ink blobs — use draw to bridge them, or erase strays so the route follows one outline.";

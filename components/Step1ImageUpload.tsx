@@ -60,7 +60,30 @@ type Step1ImageUploadProps = {
   cityLabel?: string;
   /** Back to source picker (image vs freehand). */
   onBack?: () => void;
+  /**
+   * Previously uploaded image (data-URL) and its filename. Set when the user
+   * steps BACK into this screen from sketch review — without it they'd face
+   * an empty file picker and have to re-upload, which reads as "Back started
+   * me over".
+   */
+  initialImageBase64?: string | null;
+  initialImageName?: string | null;
 };
+
+/** data-URL -> File, so a restored upload re-enters the normal trace flow. */
+function dataUrlToFile(dataUrl: string, name: string): File | null {
+  try {
+    const comma = dataUrl.indexOf(",");
+    if (!dataUrl.startsWith("data:") || comma < 0) return null;
+    const mime = dataUrl.slice(5, dataUrl.indexOf(";")) || "image/png";
+    const bin = atob(dataUrl.slice(comma + 1));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new File([bytes], name, { type: mime });
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Decode the uploaded image and re-encode at a predictable size for the PaceCasso
@@ -513,6 +536,8 @@ export default function Step1ImageUpload({
   onComplete,
   cityLabel,
   onBack,
+  initialImageBase64,
+  initialImageName,
 }: Step1ImageUploadProps) {
   const traceFileInputId = useId();
   const [uploadedImage, setUploadedImage] = useState<UploadedImage | null>(
@@ -567,6 +592,23 @@ export default function Step1ImageUpload({
   const contourReqIdRef = useRef(0);
   const workerInFlightRef = useRef(0);
   const uploadSeqRef = useRef(0);
+  const restoredInitialRef = useRef(false);
+
+  /**
+   * Restore the previous upload when the user steps BACK into this screen,
+   * so they resume tracing their image instead of an empty file picker.
+   * Runs once; a fresh pick supersedes it through the normal seq bump.
+   */
+  useEffect(() => {
+    if (restoredInitialRef.current) return;
+    if (!initialImageBase64) return;
+    const file = dataUrlToFile(initialImageBase64, initialImageName || "upload.png");
+    if (!file) return;
+    restoredInitialRef.current = true;
+    const seq = ++uploadSeqRef.current;
+    setUploadedImage({ url: URL.createObjectURL(file), file, seq });
+  }, [initialImageBase64, initialImageName]);
+
   const applyContourRef = useRef<(pts: NormalizedPoint[] | null) => void>(() => {});
   const pendingFastTraceRef = useRef<{
     file: File;

@@ -261,41 +261,29 @@ export function buildArtPathInterpretations(
 
   const out: ArtPathInterpretation[] = [];
 
+  /**
+   * Deliberately few options. We used to offer five (etch-a-sketch, detailed
+   * trace, grid sketch, iconic heart, AI sketch) — including a "detailed
+   * trace" our own copy described as "usually too fussy for city streets".
+   * Offering a version we call bad just makes the screen confusing, and
+   * detailed traces are exactly what turns into unreadable scribble once the
+   * route follows real streets. One good default, plus the AI sketch the
+   * caller appends when it's available.
+   */
   const boldPoints = simplifyPath(trace, diag * 0.022, 34);
   pushUnique(out, {
     id: "bold",
-    label: "Etch-a-sketch",
-    description: "Bold one-line interpretation — best starting point for GPS art.",
+    label: "Simple line",
+    description: "Bold, clean version of your shape — reads best on real streets.",
     points: boldPoints,
   });
-
-  pushUnique(out, {
-    id: "trace",
-    label: "Detailed trace",
-    description: "Closer to the raw outline; usually too fussy for city streets.",
-    points: trace,
-  });
-
-  const analysis = analyzeOneLinePath(trace);
-  const likelyConnector = analysis.connectorCount > 0 || hasLargeConnectorJump(trace, diag);
-  if (pathIsClosed(trace) || !likelyConnector) {
-    const gridBase = pathIsClosed(trace)
-      ? radialBoldSilhouette(trace)
-      : simplifyPath(trace, diag * 0.03, 28);
-    pushUnique(out, {
-      id: "grid",
-      label: "Grid sketch",
-      description: "A street-grid interpretation with fewer, stronger bends.",
-      points: simplifyPath(snapPathToLocalGrid(gridBase, 8), diag * 0.012, 30),
-    });
-  }
 
   const heart = iconicHeart(trace);
   if (heart) {
     pushUnique(out, {
       id: "iconic-heart",
-      label: "Iconic heart",
-      description: "Draws the idea as a simple GPS-art heart, not a literal trace.",
+      label: "Classic heart",
+      description: "A clean heart shape instead of a literal trace.",
       points: heart,
     });
   }

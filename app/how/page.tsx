@@ -23,72 +23,30 @@ export default function HowPage() {
             </span>
           </h1>
           <p className="mt-4 max-w-2xl text-sm leading-relaxed text-pace-muted">
-            PaceCasso turns a drawing into a runnable route. Pick a shape (photo
-            or freehand), place it on a city map, snap it to real walkable
-            streets, fine-tune the path, export GPX. Here&apos;s what happens at
-            each step.
+            You bring a shape. We turn it into a route on real streets that you
+            can run and download. Four steps.
           </p>
 
           <ol className="mt-10 flex flex-col gap-5">
             <StepCard
               num="01"
               title="Pick your city"
-              body="Choose where your route will live. The system uses the city's street grid layout to align letters and shapes cleanly. Manhattan, Brooklyn, Chicago, San Francisco, and Washington DC are available — Manhattan's dense grid gives the strongest results today."
+              body="Manhattan, Brooklyn, Chicago, San Francisco, or Washington DC."
             />
             <StepCard
               num="02"
-              title="Pick a source — photo or freehand"
-              body="Trace an image (a letter, animal, logo — whatever you want to 'run'), or freehand-draw directly on the map. Both paths lead to the same place."
+              title="Give us a shape"
+              body="Upload a picture, or draw one yourself on the map. Bold, simple shapes work best — a heart, an animal, a symbol. Fine detail and lettering get lost once the route follows real streets."
             />
             <StepCard
-              num="03a"
-              title="Image path — trace a silhouette"
-              body="Upload a photo or image. We auto-threshold it into black-and-white line art. Use the draw/erase tools to clean up stray marks or to draw a bridge between disconnected pieces. When a single continuous outline is showing, click Next."
-              tip="Tip: shapes with an inner hole (like the eye of an R) are auto-connected to the outer boundary with a small bridge. But two totally separate shapes (e.g., two letters side by side) need a hand-drawn connector — use the draw tool for that."
-            />
-            <StepCard
-              num="03b"
-              title="Freehand path — sketch on the map"
-              body="Toggle to draw mode and sketch the shape directly on the city map. Pan and zoom for precision. Your strokes get flattened into a single path automatically."
+              num="03"
+              title="We put it on the map"
+              body="We find good spots around the city and fit your shape to walkable streets. Pick the version you like, then drag any part of the line to adjust it."
             />
             <StepCard
               num="04"
-              title="Place your shape on the map"
-              body={
-                <>
-                  Size, rotate, and drag the shape to where you want it. Two
-                  auto-tools here:
-                  <ul className="mt-2 ml-4 list-disc space-y-1">
-                    <li>
-                      <strong className="text-pace-ink">Auto-find placement</strong>
-                      — PaceCasso searches the whole city for the best 5
-                      placements and ranks them by how recognizable your shape
-                      will be once snapped to streets.
-                    </li>
-                    <li>
-                      <strong className="text-pace-ink">Refine around my placement</strong>
-                      — after you&apos;ve dragged the shape roughly where you
-                      want it, Refine searches tightly nearby (size ±30%,
-                      rotation ±20°, position ±2 km) to polish your choice.
-                    </li>
-                  </ul>
-                </>
-              }
-            />
-            <StepCard
-              num="05"
-              title="Snap to streets"
-              body="Mapbox routes your shape onto real walkable streets, turning your smooth outline into an etch-a-sketch version that follows avenues and blocks. You'll see a 'gestalt-style' match score — how recognizable the result still is after snapping."
-            />
-            <StepCard
-              num="06"
-              title="Fine-tune the route"
-              body="Drag individual waypoints to fix ugly spots. Toggle 'Full snap' to see the original auto-snapped route under your edits for comparison. Add or delete waypoints to take a different street where you want."
-            />
-            <StepCard
-              num="07"
-              title="Export for your watch"
-              body="Download GPX (for Garmin, Coros, Apple Watch, etc.), GeoJSON (for custom maps), or a plain-text cue list with turn-by-turn directions. Run it, share the art."
+              title="Download and run it"
+              body="Export to your watch (GPX) or take the turn-by-turn list with you. Run it, share the picture."
             />
           </ol>
 
