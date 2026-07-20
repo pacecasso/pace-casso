@@ -368,16 +368,6 @@ export default function Step2MapAnchor({
             </label>
           </div>
 
-          {oneLineAnalysis.connectorCount > 0 ? (
-            <div
-              className="mt-4 rounded-md border border-pace-yellow bg-pace-yellow/10 px-2.5 py-2 text-[11px] leading-snug text-pace-ink"
-              role="status"
-            >
-              <span className="font-semibold">Yellow</span> shows where the
-              route travels between separate pieces of your art.
-            </div>
-          ) : null}
-
           <div className="mt-4 flex flex-col gap-2">
             <div
               className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 transition ${

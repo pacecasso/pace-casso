@@ -274,13 +274,6 @@ export default function Step3StreetSnap({
           </div>
 
           <div className="mt-4 space-y-3 border-t border-pace-line pt-4 font-dm text-xs text-pace-ink">
-            {routeSource === "image" && originalConnectorSegments.length > 0 ? (
-              <p className="rounded-md border border-pace-yellow bg-pace-yellow/10 px-2.5 py-2 text-[11px] leading-snug text-pace-ink">
-                Yellow dashed segments are connector strokes from the one-line
-                artwork. They are part of the intended drawing, not a snapping
-                error.
-              </p>
-            ) : null}
             {snapping ? (
               <p className="text-[11px] font-medium text-pace-blue">
                 Snapping your route to walkable streets—usually a few seconds.
