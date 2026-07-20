@@ -1,5 +1,7 @@
 import type { CityPreset } from "./cityPresets";
 import type { ContourPoint, PlacementTransform } from "./placementFromContour";
+import { analyzeOneLinePath } from "./oneLinePathAnalysis";
+import { simplifyCartesian, type Point2D } from "./douglasPeucker";
 
 const MARGIN = 0.012;
 const MIN_ROUTE_KM = 3;
@@ -691,13 +693,53 @@ const BLOCK_LETTER_STROKES: Record<string, [number, number][]> = {
   Z: [[0,0],[2.4,0],[2.4,2],[0,2],[0,4],[2.4,4]],
 };
 
+/**
+ * Force a glyph stroke to begin AND end on the baseline (y=4 in author
+ * space) by retracing its own ink. The inter-letter travel slides along the
+ * baseline and then rises vertically to the glyph's first point — for any
+ * glyph that starts mid-air that vertical is NEW ink welded onto the
+ * letterform (it turned S into a "9" and T into a gate). Retraced segments
+ * overlap the glyph exactly, so they cost a little distance and zero
+ * legibility.
+ */
+function baselineNormalizedGlyph(glyph: ContourPoint[]): ContourPoint[] {
+  const atBase = (p: ContourPoint) => Math.abs(p.y - 4) < 0.01;
+  if (glyph.length < 2) return glyph;
+  let pts = glyph;
+  if (!atBase(pts[0]!) && atBase(pts[pts.length - 1]!)) {
+    pts = [...pts].reverse();
+  }
+  if (!pts.some(atBase)) return pts;
+  if (!atBase(pts[pts.length - 1]!)) {
+    const backtrack: ContourPoint[] = [];
+    for (let i = pts.length - 2; i >= 0; i--) {
+      backtrack.push(pts[i]!);
+      if (atBase(pts[i]!)) break;
+    }
+    pts = [...pts, ...backtrack];
+  }
+  if (!atBase(pts[0]!)) {
+    const lead: ContourPoint[] = [];
+    for (let i = 1; i < pts.length; i++) {
+      lead.push(pts[i]!);
+      if (atBase(pts[i]!)) break;
+    }
+    pts = [...lead.reverse(), ...pts];
+  }
+  return pts;
+}
+
 function blockLetterStroke(letter: string): ContourPoint[] {
   const glyph = BLOCK_LETTER_STROKES[letter.toUpperCase()];
-  if (glyph) return glyph.map(([x, y]) => ({ x, y }));
-  return gridLetterStroke(letter).map((p) => ({
-    x: p.x * 1.2,
-    y: (p.y / 3) * 4,
-  }));
+  if (glyph) {
+    return baselineNormalizedGlyph(glyph.map(([x, y]) => ({ x, y })));
+  }
+  return baselineNormalizedGlyph(
+    gridLetterStroke(letter).map((p) => ({
+      x: p.x * 1.2,
+      y: (p.y / 3) * 4,
+    })),
+  );
 }
 
 function blockWordmarkRawStrokePoints(word: string): ContourPoint[] {
@@ -1598,7 +1640,12 @@ function streetWordmarkAnchors(
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
   const xAxis = bearingUnitVector(xBearingDeg);
-  const yAxis = bearingUnitVector(xBearingDeg + 90);
+  // +y must point NORTH of the +x reading direction, or every wordmark draws
+  // upside-down on the map. For the crosstown bearings this module uses
+  // (~101-118°, reading west→east), that is bearing MINUS 90 (≈11-28°, NNE).
+  // bearing+90 pointed SSW, which flipped glyph tops southward — the letters
+  // were composed correctly but rendered inverted on every candidate.
+  const yAxis = bearingUnitVector(xBearingDeg - 90);
 
   return raw.map((p) => {
     const localX = (p.x - cx) * xStepMeters;
@@ -2256,14 +2303,76 @@ export function streetWordmarkCandidates(
  * `symbol` is the traced contour in normalized 0..1 space (y down, as the
  * trace screen produces it).
  */
+/**
+ * Keep only the dominant traced component (largest ink bounding box). The
+ * tracer keeps every component of an upload on purpose — that is its job —
+ * but the lockup RE-SETS the words as block letters, so only the symbol may
+ * ride in from the trace. Without this cut the slogan appears twice: once as
+ * unreadable traced scribble glued to the symbol, once as the set type below.
+ */
+function dominantTracedComponent(symbol: ContourPoint[]): ContourPoint[] {
+  const { connectorSegmentIndices } = analyzeOneLinePath(symbol);
+  if (!connectorSegmentIndices.length) return symbol;
+  const cuts = new Set(connectorSegmentIndices);
+  const components: ContourPoint[][] = [];
+  let current: ContourPoint[] = [symbol[0]!];
+  for (let i = 1; i < symbol.length; i++) {
+    if (cuts.has(i - 1)) {
+      if (current.length >= 3) components.push(current);
+      current = [];
+    }
+    current.push(symbol[i]!);
+  }
+  if (current.length >= 3) components.push(current);
+  if (!components.length) return symbol;
+  let best = components[0]!;
+  let bestArea = -1;
+  for (const c of components) {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of c) {
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+    }
+    const area = (maxX - minX) * (maxY - minY);
+    if (area > bestArea) {
+      bestArea = area;
+      best = c;
+    }
+  }
+  return best;
+}
+
+/**
+ * A raw trace carries hundreds of points; grid-walking them at lockup scale
+ * turns the symbol into dense blocky rectangles. Simplify until the symbol
+ * is a handful of bold strokes, so the walker produces the big readable
+ * staircase of the reference sheet instead.
+ */
+function simplifiedSymbol(symbol: ContourPoint[]): ContourPoint[] {
+  let tolerance = 0.012;
+  let pts: Point2D[] = symbol.map((p) => [p.x, p.y]);
+  for (let i = 0; i < 6 && pts.length > 28; i++) {
+    pts = simplifyCartesian(pts, tolerance);
+    tolerance *= 1.6;
+  }
+  return pts.map(([x, y]) => ({ x, y }));
+}
+
 export function buildLockupStrokePoints(
-  symbol: ContourPoint[],
+  rawSymbol: ContourPoint[],
   word: string,
 ): ContourPoint[] {
   // Glyphs are already orthogonal; running the grid walker over them only
   // re-corners strokes and destroys the letterforms.
   const wordPoints = blockWordmarkRawStrokePoints(word);
   if (wordPoints.length < 2) return [];
+  if (rawSymbol.length < 3) return wordPoints;
+  const symbol = simplifiedSymbol(dominantTracedComponent(rawSymbol));
   if (symbol.length < 3) return wordPoints;
 
   let wMinX = Infinity;
@@ -2292,10 +2401,11 @@ export function buildLockupStrokePoints(
   const sw = Math.max(1e-6, sMaxX - sMinX);
   const sh = Math.max(1e-6, sMaxY - sMinY);
 
-  // Symbol spans the wordmark's width and about 1.4x its height, so it reads
-  // as the dominant mark rather than a decoration.
+  // Symbol spans the wordmark's width and up to ~2.4x its height, so it
+  // reads as the dominant mark (the reference sheet's swoosh dwarfs its
+  // slogan) rather than a decoration.
   const targetW = wordWidth;
-  const targetH = wordHeight * 1.4;
+  const targetH = wordHeight * 2.4;
   const scale = Math.min(targetW / sw, targetH / sh);
   const gap = wordHeight * 0.55;
 
@@ -2318,10 +2428,34 @@ export function buildLockupStrokePoints(
     { x: wordStart.x, y: wordStart.y },
   ];
 
+  // Resample the symbol's segments to ~1.4 glyph units before grid-walking:
+  // the walker emits ONE elbow per segment, so a long diagonal kept whole
+  // becomes a single giant L that destroys the silhouette, while the same
+  // diagonal in short pieces becomes the multi-step staircase that made the
+  // reference sheet's swoosh read.
+  const resampled: ContourPoint[] = [];
+  const STEP = 1.4;
+  for (let i = 0; i < placed.length; i++) {
+    const b = placed[i]!;
+    if (i === 0) {
+      resampled.push(b);
+      continue;
+    }
+    const a = placed[i - 1]!;
+    const d = Math.hypot(b.x - a.x, b.y - a.y);
+    const steps = Math.max(1, Math.round(d / STEP));
+    for (let s = 1; s <= steps; s++) {
+      resampled.push({
+        x: a.x + ((b.x - a.x) * s) / steps,
+        y: a.y + ((b.y - a.y) * s) / steps,
+      });
+    }
+  }
+
   // Grid-walk ONLY the symbol and connector. wordPoints are already walked,
   // and running the walker over them a second time collapses the glyph
   // strokes into illegible stubs.
-  return [...gridWalkWordmarkPoints([...placed, ...connector]), ...wordPoints];
+  return [...gridWalkWordmarkPoints([...resampled, ...connector]), ...wordPoints];
 }
 
 export function streetLockupCandidates(

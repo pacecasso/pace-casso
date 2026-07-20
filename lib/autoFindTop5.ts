@@ -34,7 +34,10 @@ import { isValidLatLng } from "./mapboxCoordsValidate";
 import { heartConfidence } from "./artPathInterpretation";
 import { reviewStreetDesignSketch } from "./streetDesignSketch";
 import { cleanupRouteSpurs } from "./routeSpurCleanup";
-import { generateMapNativeCandidates } from "./mapNativeDesigner";
+import {
+  generateMapNativeCandidates,
+  streetLockupCandidates,
+} from "./mapNativeDesigner";
 import {
   CURATED_NIKE_SWOOSH_DESIGN_INTENT,
   curatedNikeSwooshMapNativeCandidate,
@@ -1306,6 +1309,15 @@ export function meetsAbsoluteDisplayFloor(
   const gridWordmark =
     candidate.kind === "street-wordmark" && candidate.routeMode === "direct-grid";
   const maxKm = gridWordmark ? 56 : 32;
+  // A lockup adds the wordmark to the traced symbol on purpose, so it can
+  // never score high on similarity to the contour. Judge it on cleanliness
+  // and length only.
+  if (/lockup/i.test(candidate.designIntent ?? "")) {
+    return (
+      clean >= 15 &&
+      (distance == null || !Number.isFinite(distance) || distance <= maxKm)
+    );
+  }
   if (shape < 30) return false;
   if (clean < 20) return false;
   if (distance != null && Number.isFinite(distance) && distance > maxKm) {
@@ -1325,6 +1337,14 @@ export function isDisplayWorthyAutoFindCandidate(
   const gridWordmark =
     candidate.kind === "street-wordmark" && candidate.routeMode === "direct-grid";
   const maxKm = gridWordmark ? 56 : 30;
+  // See meetsAbsoluteDisplayFloor: lockups intentionally differ from the
+  // traced contour, so contour similarity is the wrong test for them.
+  if (/lockup/i.test(candidate.designIntent ?? "")) {
+    return (
+      clean >= 20 &&
+      (distance == null || !Number.isFinite(distance) || distance <= maxKm)
+    );
+  }
   if (shape < 40) return false;
   if (clean < 28) return false;
   if (distance != null && Number.isFinite(distance) && distance > maxKm) {
@@ -1368,6 +1388,13 @@ function finalRouteTruthFloors(
   const needsStar = requiresStarStructure(requiredVisualFeatures);
   const needsBolt = requiresBoltStructure(requiredVisualFeatures);
 
+  // A lockup deliberately draws MORE than the traced shape: the symbol plus
+  // its wordmark in block letters. Scoring it for similarity to the contour
+  // (which is the symbol alone) punishes it for the letters that are the
+  // whole point, so it was generated, gated out, and never shown.
+  if (/\blockup\b/i.test(candidate.designIntent ?? "")) {
+    return { minShape: 12, minSource: 0, minClean: 7, maxDistanceKm: 56 };
+  }
   if (directGridWordmark) {
     // Block letters are drawn straight onto avenue/street lines, so extra
     // length is extra legibility, not sprawl — the best wordmark this
@@ -3477,9 +3504,34 @@ const WORDMARK_STOP_WORDS = new Set([
   "WORDMARK",
 ]);
 
+/**
+ * Multi-word slogans ("JUST DO IT") appear in draft text as runs of
+ * consecutive ALL-CAPS tokens. The single-token scorer below was built for
+ * one-word marks (LOVE, NIKE) and would reduce the slogan to "JUST" — so try
+ * the longest caps phrase that fits the 8-letter glyph budget first.
+ */
+function inferWordmarkPhrase(text: string): string | null {
+  const runs = text.match(/\b[A-Z]{2,8}(?:\s+[A-Z]{1,8}){1,3}\b/g) ?? [];
+  let best: string | null = null;
+  for (const run of runs) {
+    const joined = run.replace(/\s+/g, "");
+    if (joined.length > 8 || joined.length < 4) continue;
+    const words = run.split(/\s+/);
+    if (words.every((w) => WORDMARK_STOP_WORDS.has(w))) continue;
+    if (!best || joined.length > best.length) best = joined;
+  }
+  return best;
+}
+
 function inferWordmarkText(rawDrafts: unknown[]): string | null {
   const nameText = collectWordmarkNameText(rawDrafts).join(" ");
   const text = nameText.trim() ? nameText : collectDraftText(rawDrafts).join(" ");
+  // The slogan phrase can live anywhere in the draft text ("Swoosh + JUST DO
+  // IT Full"), not just in the wordmark-name fields — scan both.
+  const phrase =
+    inferWordmarkPhrase(nameText) ??
+    inferWordmarkPhrase(collectDraftText(rawDrafts).join(" "));
+  if (phrase) return phrase;
   const tokens = text.match(/[A-Za-z]{2,8}/g) ?? [];
   const scores = new Map<string, number>();
   for (let i = 0; i < tokens.length; i++) {
@@ -4421,6 +4473,47 @@ function verifiedNikeSwooshPick(): Top5Pick {
       "Verified Nike route: hand-designed on Manhattan streets and matched to the old known-good GPX.",
   };
 }
+
+/**
+ * Deterministic guarantee for logo lockups: when the upload produced lockup
+ * candidates (symbol drawn large above its slogan in block letters — the
+ * best Nike arrangement this project has made), the user MUST see one, and
+ * see it first. The ranking pipeline is a roulette of similarity gates and
+ * vision ordering that has silently dropped this class before (see the
+ * July 20 revert); a composition that survived snapping does not get to
+ * lose a ranking fight against traced scribble.
+ */
+function pinLockupFirst(
+  picks: Top5Pick[],
+  snapped: SnappedCandidate[],
+  topK: number,
+): Top5Pick[] {
+  const isLockup = (intent?: string) => /lockup/i.test(intent ?? "");
+  const idx = picks.findIndex((p) => isLockup(p.designIntent));
+  if (idx === 0) return picks;
+  if (idx > 0) {
+    return [picks[idx]!, ...picks.filter((_, i) => i !== idx)];
+  }
+  const best = snapped
+    .filter((s) => isLockup(s.designIntent))
+    .sort((a, b) => b.km - a.km)[0];
+  if (!best) return picks;
+  const pick: Top5Pick = {
+    placement: best.placement,
+    anchorLatLngs: best.anchors,
+    designIntent: best.designIntent,
+    routeCoords: best.coords,
+    snappedRoute: best.route,
+    previewDataUrl: pickPreviewUrl(best.coords, { size: 640, padding: 96 }),
+    distanceKm: best.km,
+    qualityScore: best.qualityScore,
+    shapeMatchScore: best.shapeMatchScore,
+    sourceMatchScore: best.sourceMatchScore,
+    reason:
+      "Logo lockup: your symbol drawn large above its slogan in block letters, composed directly on street lines.",
+  };
+  return [pick, ...picks].slice(0, Math.max(1, topK));
+}
 function makePicks(
   snapped: SnappedCandidate[],
   order: number[] | null,
@@ -4821,10 +4914,14 @@ export async function autoFindTop5(
   // them as giant block letters is what actually reads on a map.
   const wordmarkEligible =
     hint?.shapeClass === "letter" || visionDescribesLettering(visionDesignDrafts);
+  // Prefer the text vision actually read in the picture over the filename:
+  // "nike.png" containing the JUST DO IT lockup should spell the slogan, not
+  // the filename. Filename stays as the fallback for uploads vision can't
+  // read text from.
   const wordmarkText =
     parsedOrig && wordmarkEligible
-      ? inferWordmarkTextFromSourceName(options.imageSourceName) ??
-        inferWordmarkText(visionDesignDrafts)
+      ? inferWordmarkText(visionDesignDrafts) ??
+        inferWordmarkTextFromSourceName(options.imageSourceName)
       : null;
   const approvedSketchDraft = visionDesignDrafts.find(
     (draft) => draft.label === APPROVED_SKETCH_LABEL,
@@ -4863,15 +4960,69 @@ export async function autoFindTop5(
     inferSwooshFromSourceName(options.imageSourceName)
       ? [curatedNikeSwooshMapNativeCandidate()]
       : [];
+  /**
+   * LOCKUP: the dominant traced component drawn large above the wordmark in
+   * block letters, one continuous route — the arrangement of the best Nike
+   * result this project has produced (swoosh over JUST DO IT). The composer
+   * isolates the symbol itself (dropping the traced words, which come back
+   * as set type), so the trace step keeps every component and nothing is
+   * discarded from the user's artwork.
+   */
+  // Symbol source for the lockup: prefer the strongest vision draft that
+  // draws the mark WITHOUT its lettering ("Bold Swoosh Only") — a clean
+  // one-line symbol — over the approved trace, which by this point is a
+  // simplified multi-component scribble that degenerates when re-scaled
+  // above the letters.
+  // Judge lettering by label + features only: descriptions of symbol-only
+  // drafts routinely say "no text", which the description-wide regex reads
+  // as text. The approved-sketch draft IS the trace — skip it here.
+  const draftMentionsLettering = (draft: VisionDesignDraft) =>
+    /\b(letter|letters|lettering|wordmark|text|type|slogan|block|word|words)\b/i.test(
+      [draft.label, ...(draft.visualFeatures ?? [])].join(" "),
+    );
+  const lockupSymbolDraft = [...visionDesignDrafts]
+    .sort((a, b) => b.designScore - a.designScore)
+    .find(
+      (draft) =>
+        draft.label !== APPROVED_SKETCH_LABEL &&
+        draft.points.length >= 8 &&
+        !draftMentionsLettering(draft),
+    );
+  const lockupSymbol = lockupSymbolDraft?.points ?? contour;
+  console.log(
+    `[autoFindTop5] lockup symbol source: ${lockupSymbolDraft ? `draft "${lockupSymbolDraft.label}" (${lockupSymbolDraft.points.length} pts)` : `trace (${contour.length} pts)`}`,
+  );
+  const lockupRoutes =
+    !options.anchorAround && wordmarkText && lockupSymbol.length >= 8
+      ? streetLockupCandidates(
+          lockupSymbol,
+          wordmarkText,
+          preset,
+          effectiveTargetDistanceKm,
+        )
+      : [];
+  console.log(
+    `[autoFindTop5] wordmark: eligible=${wordmarkEligible} text=${wordmarkText ?? "-"} lockupCandidates=${lockupRoutes.length}`,
+  );
   const mapNativeRoutes = [
+    ...lockupRoutes,
     ...curatedSourceRoutes,
     ...generatedMapNativeRoutes,
   ];
   const useWordmarkOnly =
     wordmarkText != null &&
     mapNativeRoutes.some((candidate) => candidate.kind === "street-wordmark");
+  // Lockups get reserved seats at the head of the snap queue instead of
+  // competing in diverseSubsample and the first-20 ranking cut — both have
+  // silently squeezed this class out before. Biggest first: scale is what
+  // makes the symbol-over-slogan arrangement read.
+  const lockupSubset = [...lockupRoutes]
+    .sort((a, b) => b.km - a.km)
+    .slice(0, 6);
   const streetWordmarkRoutes = mapNativeRoutes.filter(
-    (candidate) => candidate.kind === "street-wordmark",
+    (candidate) =>
+      candidate.kind === "street-wordmark" &&
+      !/lockup/i.test(candidate.designIntent ?? ""),
   );
   const streetDesignRoutes = mapNativeRoutes.filter(
     (candidate) => candidate.kind === "street-design",
@@ -4932,6 +5083,7 @@ export async function autoFindTop5(
       )
     : [];
   const valid = [
+    ...lockupSubset,
     ...streetWordmarkRoutes,
     ...streetDesignRoutes,
     ...validVisionDesign,
@@ -5125,6 +5277,7 @@ export async function autoFindTop5(
     ),
   ].slice(0, 8);
   const subset = [
+    ...lockupSubset,
     ...latticeSubset,
     ...streetWordmarkSubset,
     ...streetDesignSubset,
@@ -5135,7 +5288,10 @@ export async function autoFindTop5(
     ...genericSubset,
   ].slice(
     0,
-    Math.max(snapCount, latticeSubset.length + streetWordmarkSubset.length),
+    Math.max(
+      snapCount,
+      lockupSubset.length + latticeSubset.length + streetWordmarkSubset.length,
+    ),
   );
   if (typeof process !== "undefined" && process.env?.AUTOFIND_DEBUG === "1") {
     console.log(
@@ -5169,7 +5325,7 @@ export async function autoFindTop5(
       requiredVisualFeatures,
     );
     return {
-      picks: made.picks,
+      picks: pinLockupFirst(made.picks, snapped, topK),
       relaxedQuality: made.relaxedQuality,
       visionUsed: false,
       snapFailures,
@@ -5208,7 +5364,7 @@ export async function autoFindTop5(
       requiredVisualFeatures,
     );
     return {
-      picks: made.picks,
+      picks: pinLockupFirst(made.picks, rankableSnapped, topK),
       relaxedQuality: made.relaxedQuality,
       visionUsed: false,
       snapFailures,
@@ -5244,7 +5400,7 @@ export async function autoFindTop5(
       requiredVisualFeatures,
     );
     return {
-      picks: made.picks,
+      picks: pinLockupFirst(made.picks, rankableSnapped, topK),
       relaxedQuality: made.relaxedQuality,
       visionUsed: false,
       snapFailures,
@@ -5273,7 +5429,7 @@ export async function autoFindTop5(
     requiredVisualFeatures,
   );
   return {
-    picks: made.picks,
+    picks: pinLockupFirst(made.picks, rankableSnapped, topK),
     relaxedQuality: made.relaxedQuality,
     visionUsed: true,
     snapFailures,
