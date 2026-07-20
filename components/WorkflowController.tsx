@@ -28,6 +28,7 @@ import {
   DEFAULT_CITY_ID,
   type CityPreset,
 } from "../lib/cityPresets";
+import type { ArtistLoopRouteResult } from "../lib/artistLoopCore";
 import Step1ImageUpload, { NormalizedPoint } from "./Step1ImageUpload";
 import Step2MapAnchor from "./Step2MapAnchor";
 import Step3StreetSnap from "./Step3StreetSnap";
@@ -288,6 +289,38 @@ export default function WorkflowController() {
     const p = CITY_PRESETS[id];
     if (p) setCityPreset(p);
   }, []);
+
+  /**
+   * Server-side artist loop hand-off: the loop already designed the sketch,
+   * placed it at legible scale, compiled it onto real street junctions and
+   * blind-judged it — so placement (Step 2) and Mapbox snapping (Step 3) are
+   * both done. The compiled chain rides in as preferredSnappedRoute, which
+   * Step3StreetSnap adopts without calling Mapbox, and the placed sketch
+   * becomes the green "your art" reference line.
+   */
+  const handleArtistRoute = useCallback(
+    (result: ArtistLoopRouteResult, imageBase64: string | null) => {
+      setSourceKind("image");
+      setContourCoordinates(result.sketchPoints as NormalizedPoint[]);
+      setUploadedImageBase64(imageBase64);
+      setSketchApproved(true);
+      setSnappedRoute(null);
+      setEditedRoute(null);
+      setFinalRoute(null);
+      setAnchorLocation({
+        anchorLatLngs: result.sketchLatLngs,
+        center: result.center,
+        rotationDeg: 0,
+        scale: 1,
+        preferredSnappedRoute: {
+          coordinates: result.chain,
+          distanceMeters: result.distanceMeters,
+        },
+      });
+      setCurrentStep(4);
+    },
+    [],
+  );
 
   const goBackToSourcePicker = useCallback(() => {
     setContourCoordinates(null);
@@ -586,6 +619,8 @@ export default function WorkflowController() {
         {currentStep === 2 && sourceKind === "image" && (
           <Step1ImageUpload
             cityLabel={cityPreset.label}
+            artistLoopEnabled={selectedCityId === "manhattan"}
+            onArtistRoute={handleArtistRoute}
             // Restores the picture when the user comes BACK from sketch
             // review, instead of dropping them on an empty file picker.
             initialImageBase64={uploadedImageBase64}

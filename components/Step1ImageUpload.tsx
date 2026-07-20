@@ -25,6 +25,7 @@ import {
   svgFileToContourAndPreview,
 } from "../lib/svgToContour";
 import { reviewStreetDesignSketch } from "../lib/streetDesignSketch";
+import type { ArtistLoopRouteResult } from "../lib/artistLoopCore";
 
 export type NormalizedPoint = { x: number; y: number };
 
@@ -58,6 +59,17 @@ type Step1ImageUploadProps = {
   ) => void;
   /** Selected city name, used by the AI designer sketch prompt. */
   cityLabel?: string;
+  /**
+   * Server-side artist loop (interpret → compile onto real junctions →
+   * blind-judge → redraw). Manhattan-only for now — the lattice compiler and
+   * placement frame are Manhattan facts — so the controller enables it per
+   * city. On success the whole placement + snap flow is skipped.
+   */
+  artistLoopEnabled?: boolean;
+  onArtistRoute?: (
+    result: ArtistLoopRouteResult,
+    imageBase64: string | null,
+  ) => void;
   /** Back to source picker (image vs freehand). */
   onBack?: () => void;
   /**
@@ -535,6 +547,8 @@ function buildPhotoComponents(
 export default function Step1ImageUpload({
   onComplete,
   cityLabel,
+  artistLoopEnabled,
+  onArtistRoute,
   onBack,
   initialImageBase64,
   initialImageName,
@@ -558,6 +572,9 @@ export default function Step1ImageUpload({
     useState<ArtPathInterpretation | null>(null);
   const [designerBusy, setDesignerBusy] = useState(false);
   const [designerError, setDesignerError] = useState<string | null>(null);
+  const [artistBusy, setArtistBusy] = useState(false);
+  const [artistError, setArtistError] = useState<string | null>(null);
+  const [artistProgress, setArtistProgress] = useState<string | null>(null);
   const [undoCount, setUndoCount] = useState(0);
   /** Bumps when line mask bytes change so contour preview can refresh. */
   const [lineMaskVersion, setLineMaskVersion] = useState(0);
@@ -825,6 +842,99 @@ export default function Step1ImageUpload({
       setDesignerBusy(false);
     }
   }, [applyContourToCanvas, cityLabel, designerBusy, uploadedImage]);
+
+  const runArtistLoop = useCallback(async () => {
+    if (!uploadedImage || artistBusy || !onArtistRoute) return;
+    setArtistBusy(true);
+    setArtistError(null);
+    setArtistProgress("Sending your image to the artist…");
+    try {
+      const imageBase64 = await imageFileToSizedDataUrl(uploadedImage.file);
+      const res = await fetch("/api/artist-loop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageBase64,
+          cityId: "manhattan",
+          cityLabel,
+          sourceName: uploadedImage.file.name,
+        }),
+      });
+      if (!res.ok || !res.body) {
+        const parsed = jsonObjectFromText(await res.text()) as {
+          error?: string;
+        } | null;
+        throw new Error(
+          parsed?.error ?? `Artist route failed (${res.status})`,
+        );
+      }
+      // NDJSON stream: progress lines while the loop designs / compiles /
+      // judges, then one result or error line.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffered = "";
+      // Object holder (not closed-over lets): TS narrowing doesn't see
+      // assignments made inside consumeLine otherwise.
+      const outcome: {
+        result: ArtistLoopRouteResult | null;
+        error: string | null;
+      } = { result: null, error: null };
+      const consumeLine = (line: string) => {
+        if (!line.trim()) return;
+        const evt = jsonObjectFromText(line) as
+          | {
+              type?: string;
+              detail?: string;
+              result?: ArtistLoopRouteResult;
+              message?: string;
+            }
+          | null;
+        if (!evt) return;
+        if (evt.type === "progress" && typeof evt.detail === "string") {
+          setArtistProgress(evt.detail);
+        } else if (evt.type === "result" && evt.result) {
+          outcome.result = evt.result;
+        } else if (evt.type === "error") {
+          outcome.error = evt.message ?? "The artist loop failed.";
+        }
+      };
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+        let nl = buffered.indexOf("\n");
+        while (nl >= 0) {
+          consumeLine(buffered.slice(0, nl));
+          buffered = buffered.slice(nl + 1);
+          nl = buffered.indexOf("\n");
+        }
+      }
+      consumeLine(buffered);
+      if (outcome.error) throw new Error(outcome.error);
+      const r = outcome.result;
+      if (
+        !r ||
+        !Array.isArray(r.chain) ||
+        r.chain.length < 2 ||
+        !Array.isArray(r.sketchLatLngs) ||
+        r.sketchLatLngs.length < 2 ||
+        !Array.isArray(r.sketchPoints) ||
+        r.sketchPoints.length < 2
+      ) {
+        throw new Error("The artist loop didn't return a usable route.");
+      }
+      setArtistProgress(null);
+      onArtistRoute(r, imageBase64);
+    } catch (err) {
+      console.warn("[Step1] artist loop failed:", err);
+      setArtistError(
+        err instanceof Error ? err.message : "Couldn’t create the artist route.",
+      );
+      setArtistProgress(null);
+    } finally {
+      setArtistBusy(false);
+    }
+  }, [artistBusy, cityLabel, onArtistRoute, uploadedImage]);
 
   // NOTE: the AI designer sketch is intentionally NOT auto-fired on upload.
   // Each generation is a paid vision call; the user triggers it with the
@@ -1694,6 +1804,38 @@ export default function Step1ImageUpload({
                   {selectedInterpretation ? (
                     <span className="font-dm text-[10px] leading-snug text-pace-muted">
                       {selectedInterpretation.description}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+              {artistLoopEnabled && onArtistRoute && uploadedImage ? (
+                <div className="mt-2 flex w-full max-w-[min(100vw-1rem,280px)] flex-col gap-1.5 rounded border border-pace-yellow/60 bg-pace-yellow/10 px-2 py-2 text-left">
+                  <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
+                    Or let the artist take over
+                  </span>
+                  <button
+                    type="button"
+                    onClick={runArtistLoop}
+                    disabled={artistBusy}
+                    className="rounded border border-pace-yellow bg-pace-white px-2 py-1.5 text-left font-dm text-[10px] leading-tight text-pace-ink transition hover:bg-pace-yellow/20 disabled:opacity-50"
+                  >
+                    {artistBusy
+                      ? "Artist at work — designing, compiling, judging…"
+                      : "Artist route: design, place & street-check it for me"}
+                  </button>
+                  {artistBusy && artistProgress ? (
+                    <span
+                      className="font-dm text-[10px] leading-snug text-pace-blue"
+                      role="status"
+                      aria-live="polite"
+                    >
+                      {artistProgress} This takes a few minutes — the artist
+                      redraws until blind judges recognize the route.
+                    </span>
+                  ) : null}
+                  {artistError && !artistBusy ? (
+                    <span className="font-dm text-[10px] leading-snug text-red-600">
+                      {artistError}
                     </span>
                   ) : null}
                 </div>
