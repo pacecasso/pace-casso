@@ -3478,6 +3478,29 @@ function inferWordmarkText(rawDrafts: unknown[]): string | null {
   return best?.[0] ?? null;
 }
 
+/**
+ * True when the vision drafts describe the upload as containing lettering.
+ *
+ * The block-letter route (each letter drawn several blocks wide across
+ * dozens of streets) is the ONLY treatment that has ever made a text logo
+ * readable on a map — see the "JUST DO IT" run across 14th-54th St. It used
+ * to be reachable only when the shape hint came back as `letter`, which a
+ * mixed lockup (symbol + text, like the Nike one) never does, so those
+ * uploads fell through to tracing and produced unreadable scribble.
+ */
+export function visionDescribesLettering(drafts: unknown[]): boolean {
+  const text = [
+    ...collectWordmarkNameText(drafts),
+    ...collectDraftText(drafts),
+  ]
+    .join(" ")
+    .toLowerCase();
+  if (!text.trim()) return false;
+  return /\b(letter|letters|lettering|wordmark|word mark|text|type|typography|slogan|block letters|reads?)\b/.test(
+    text,
+  );
+}
+
 export function inferWordmarkTextFromSourceName(
   sourceName: string | undefined,
 ): string | null {
@@ -4771,8 +4794,14 @@ export async function autoFindTop5(
     parsedOrig ? hint : null,
     options.targetDistanceKm,
   );
+  // Fire the block-letter path for anything with lettering in it — a pure
+  // wordmark (hint "letter") OR a lockup whose drafts describe text, like a
+  // symbol sitting above a slogan. Tracing those produces scribble; setting
+  // them as giant block letters is what actually reads on a map.
+  const wordmarkEligible =
+    hint?.shapeClass === "letter" || visionDescribesLettering(visionDesignDrafts);
   const wordmarkText =
-    parsedOrig && hint?.shapeClass === "letter"
+    parsedOrig && wordmarkEligible
       ? inferWordmarkTextFromSourceName(options.imageSourceName) ??
         inferWordmarkText(visionDesignDrafts)
       : null;
@@ -4799,6 +4828,14 @@ export async function autoFindTop5(
         wordmarkText,
       })
     : [];
+  /**
+   * The curated-swoosh short-circuit used to fire on ANY upload whose
+   * filename contained "nike"/"swoosh", return one hardcoded ~5 km outline,
+   * and skip every other path — including the block-letter wordmark route
+   * that produced the best Nike result this project has ever made ("JUST DO
+   * IT" typeset across 14th-54th St). A filename must not veto the design
+   * search. The curated route stays available as one candidate among many.
+   */
   const curatedSourceRoutes =
     !options.anchorAround &&
     preset.id === "manhattan" &&
@@ -4873,28 +4910,17 @@ export async function autoFindTop5(
         effectiveTargetDistanceKm,
       )
     : [];
-  const hasCuratedSourceRoute = curatedSourceRoutes.length > 0;
-  const valid = hasCuratedSourceRoute
-    ? [...curatedSourceRoutes]
-    : [
-        ...streetWordmarkRoutes,
-        ...streetDesignRoutes,
-        ...validVisionDesign,
-        ...designedCityRoutes,
-        ...validCityFirst,
-        ...validCityFocus,
-        ...validGeneric,
-      ];
+  const valid = [
+    ...streetWordmarkRoutes,
+    ...streetDesignRoutes,
+    ...validVisionDesign,
+    ...designedCityRoutes,
+    ...validCityFirst,
+    ...validCityFocus,
+    ...validGeneric,
+  ];
   if (valid.length === 0) {
     return { picks: [], visionUsed: false, hint: hint ?? undefined };
-  }
-  if (hasCuratedSourceRoute) {
-    return {
-      picks: [verifiedNikeSwooshPick()],
-      visionUsed: false,
-      snapFailures: 0,
-      hint: hint ?? undefined,
-    };
   }
 
   const streetWordmarkBudget =

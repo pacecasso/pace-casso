@@ -17,6 +17,7 @@ import {
   inferSwooshFromSourceName,
   isDisplayWorthyAutoFindCandidate,
   meetsAbsoluteDisplayFloor,
+  visionDescribesLettering,
   isSketchLedPlacementSearch,
   mergeVisionDesignDrafts,
   recoverLooseVisionDesignDrafts,
@@ -298,6 +299,32 @@ assert.equal(
   isDisplayWorthyAutoFindCandidate(badVisionFavorite[1]!),
   true,
   "clean medium-distance candidates should remain displayable",
+);
+
+// --- lettering uploads must reach the block-letter route ------------------
+// The best Nike result this project has produced was "JUST DO IT" typeset as
+// giant block letters across 14th-54th St. It became unreachable because the
+// wordmark path only fired when the shape hint was exactly "letter" (a
+// symbol-plus-slogan lockup never is), so those uploads fell through to
+// tracing and produced scribble.
+assert.equal(
+  visionDescribesLettering([
+    { label: "Swoosh + slogan", description: "a checkmark above block letters reading JUST DO IT" },
+  ]),
+  true,
+  "a lockup described as having block letters is wordmark-eligible",
+);
+assert.equal(
+  visionDescribesLettering([
+    { label: "Tiger", description: "a big cat with dense stripe texture and a curved tail" },
+  ]),
+  false,
+  "an ordinary picture is not mistaken for a wordmark",
+);
+assert.equal(
+  visionDescribesLettering([]),
+  false,
+  "no drafts means no lettering claim",
 );
 
 // --- absolute display floor: the "never show a scribble" rule -------------
