@@ -34,10 +34,7 @@ import { isValidLatLng } from "./mapboxCoordsValidate";
 import { heartConfidence } from "./artPathInterpretation";
 import { reviewStreetDesignSketch } from "./streetDesignSketch";
 import { cleanupRouteSpurs } from "./routeSpurCleanup";
-import {
-  generateMapNativeCandidates,
-  streetLockupCandidates,
-} from "./mapNativeDesigner";
+import { generateMapNativeCandidates } from "./mapNativeDesigner";
 import {
   CURATED_NIKE_SWOOSH_DESIGN_INTENT,
   curatedNikeSwooshMapNativeCandidate,
@@ -1309,16 +1306,6 @@ export function meetsAbsoluteDisplayFloor(
   const gridWordmark =
     candidate.kind === "street-wordmark" && candidate.routeMode === "direct-grid";
   const maxKm = gridWordmark ? 56 : 32;
-  // A lockup adds the wordmark to the traced symbol on purpose, so it can
-  // never score high on similarity to the contour. Judge it on cleanliness
-  // and length only.
-  const isLockup = /lockup/i.test(candidate.designIntent ?? "");
-  if (isLockup) {
-    return (
-      clean >= 15 &&
-      (distance == null || !Number.isFinite(distance) || distance <= maxKm)
-    );
-  }
   if (shape < 30) return false;
   if (clean < 20) return false;
   if (distance != null && Number.isFinite(distance) && distance > maxKm) {
@@ -1338,14 +1325,6 @@ export function isDisplayWorthyAutoFindCandidate(
   const gridWordmark =
     candidate.kind === "street-wordmark" && candidate.routeMode === "direct-grid";
   const maxKm = gridWordmark ? 56 : 30;
-  // See meetsAbsoluteDisplayFloor: lockups intentionally differ from the
-  // traced contour, so contour similarity is the wrong test for them.
-  if (/lockup/i.test(candidate.designIntent ?? "")) {
-    return (
-      clean >= 20 &&
-      (distance == null || !Number.isFinite(distance) || distance <= maxKm)
-    );
-  }
   if (shape < 40) return false;
   if (clean < 28) return false;
   if (distance != null && Number.isFinite(distance) && distance > maxKm) {
@@ -1389,14 +1368,6 @@ function finalRouteTruthFloors(
   const needsStar = requiresStarStructure(requiredVisualFeatures);
   const needsBolt = requiresBoltStructure(requiredVisualFeatures);
 
-  // A lockup deliberately draws MORE than the traced shape: the symbol plus
-  // its wordmark in block letters. Scoring it for similarity to the contour
-  // (which is the symbol alone) punishes it for the letters that are the
-  // whole point, so it was generated, gated out, and never shown.
-  const isLockup = /\blockup\b/i.test(candidate.designIntent ?? "");
-  if (isLockup) {
-    return { minShape: 12, minSource: 0, minClean: 7, maxDistanceKm: 56 };
-  }
   if (directGridWordmark) {
     // Block letters are drawn straight onto avenue/street lines, so extra
     // length is extra legibility, not sprawl — the best wordmark this
@@ -4850,14 +4821,10 @@ export async function autoFindTop5(
   // them as giant block letters is what actually reads on a map.
   const wordmarkEligible =
     hint?.shapeClass === "letter" || visionDescribesLettering(visionDesignDrafts);
-  // Prefer the text vision actually read in the picture over the filename:
-  // "nike.png" containing the JUST DO IT lockup should spell the slogan, not
-  // the filename. Filename stays as the fallback for uploads vision can't
-  // read text from.
   const wordmarkText =
     parsedOrig && wordmarkEligible
-      ? inferWordmarkText(visionDesignDrafts) ??
-        inferWordmarkTextFromSourceName(options.imageSourceName)
+      ? inferWordmarkTextFromSourceName(options.imageSourceName) ??
+        inferWordmarkText(visionDesignDrafts)
       : null;
   const approvedSketchDraft = visionDesignDrafts.find(
     (draft) => draft.label === APPROVED_SKETCH_LABEL,
@@ -4883,23 +4850,6 @@ export async function autoFindTop5(
       })
     : [];
   /**
-   * LOCKUP: the traced symbol drawn large above its wordmark in block
-   * letters, as one route — the arrangement of the best Nike result this
-   * project has produced. Without this, an uploaded logo loses its slogan
-   * entirely: the tracer keeps only the dominant shape (words are smaller
-   * than a city block and become scribble if traced), so the text has to
-   * come back as set letters or not at all.
-   */
-  const lockupRoutes =
-    !options.anchorAround && wordmarkText && contour.length >= 8
-      ? streetLockupCandidates(
-          contour,
-          wordmarkText,
-          preset,
-          effectiveTargetDistanceKm,
-        )
-      : [];
-  /**
    * The curated-swoosh short-circuit used to fire on ANY upload whose
    * filename contained "nike"/"swoosh", return one hardcoded ~5 km outline,
    * and skip every other path — including the block-letter wordmark route
@@ -4914,7 +4864,6 @@ export async function autoFindTop5(
       ? [curatedNikeSwooshMapNativeCandidate()]
       : [];
   const mapNativeRoutes = [
-    ...lockupRoutes,
     ...curatedSourceRoutes,
     ...generatedMapNativeRoutes,
   ];

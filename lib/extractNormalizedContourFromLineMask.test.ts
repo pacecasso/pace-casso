@@ -22,13 +22,10 @@ function separatedLetterLikeStrokes(): Uint8Array {
     H,
   );
   assert(contour && contour.length >= 4, "multi-component art should produce a path");
-  // The path now covers the dominant piece rather than reaching across every
-  // fragment: joining them yields a route that is mostly travel between
-  // shapes, which is unreadable once drawn on real streets.
   const xs = contour.map((p) => p.x);
   assert(
-    Math.max(...xs) - Math.min(...xs) <= 0.45,
-    "path stays on the main shape instead of spanning separated components",
+    Math.max(...xs) - Math.min(...xs) > 0.45,
+    "path should span both separated components",
   );
 }
 
