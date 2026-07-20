@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import {
   enumerateCityFocusPlacements,
+  anchorSourceForAutoFindCandidate,
+  buildApprovedSketchDraft,
   enumerateCityFirstHeartPlacements,
   addRepresentativeDesignDrafts,
   cleanVisionDesignDrafts,
@@ -11,7 +13,10 @@ import {
   inferWordmarkTextFromSourceName,
   inferGasLogoFromSourceName,
   injectGasRepresentativeDrafts,
+  injectSwooshRepresentativeDrafts,
+  inferSwooshFromSourceName,
   isDisplayWorthyAutoFindCandidate,
+  meetsAbsoluteDisplayFloor,
   isSketchLedPlacementSearch,
   mergeVisionDesignDrafts,
   recoverLooseVisionDesignDrafts,
@@ -34,6 +39,24 @@ import {
   streetMonogramCandidates,
   streetWordmarkCandidates,
 } from "./mapNativeDesigner";
+
+assert.equal(
+  anchorSourceForAutoFindCandidate("direct-grid", "image"),
+  "street-native",
+  "direct-grid candidates should preserve street-native anchors through snapping",
+);
+
+assert.equal(
+  anchorSourceForAutoFindCandidate("direct-grid", undefined),
+  "street-native",
+  "direct-grid candidates should still use street-native snapping without an upload anchor source",
+);
+
+assert.equal(
+  anchorSourceForAutoFindCandidate(undefined, "image"),
+  "image",
+  "regular image candidates should keep the requested image simplification path",
+);
 
 assert(
   scoreAutoPlacementCandidate(70, 90) > scoreAutoPlacementCandidate(90, 70),
@@ -275,6 +298,53 @@ assert.equal(
   isDisplayWorthyAutoFindCandidate(badVisionFavorite[1]!),
   true,
   "clean medium-distance candidates should remain displayable",
+);
+
+// --- absolute display floor: the "never show a scribble" rule -------------
+assert.equal(
+  meetsAbsoluteDisplayFloor(badVisionFavorite[1]!),
+  true,
+  "a clean, well-matched route clears the absolute floor",
+);
+assert.equal(
+  meetsAbsoluteDisplayFloor({
+    placement: { center: [40.75, -73.98], scale: 1, rotationDeg: 0 },
+    qualityScore: 40,
+    shapeMatchScore: 12,
+    distanceKm: 9,
+  }),
+  false,
+  "a route that no longer resembles the artwork is never shown, even as a fallback",
+);
+assert.equal(
+  meetsAbsoluteDisplayFloor({
+    placement: { center: [40.75, -73.98], scale: 1, rotationDeg: 0 },
+    qualityScore: 8,
+    shapeMatchScore: 65,
+    distanceKm: 9,
+  }),
+  false,
+  "a retraced/jittery tangle is never shown, even as a fallback",
+);
+assert.equal(
+  meetsAbsoluteDisplayFloor({
+    placement: { center: [40.75, -73.98], scale: 1, rotationDeg: 0 },
+    qualityScore: 60,
+    shapeMatchScore: 60,
+    distanceKm: 41,
+  }),
+  false,
+  "an unrunnable sprawl is never shown, even as a fallback",
+);
+assert.equal(
+  meetsAbsoluteDisplayFloor({
+    placement: { center: [40.75, -73.98], scale: 1, rotationDeg: 0 },
+    qualityScore: 30,
+    shapeMatchScore: 42,
+    distanceKm: 12,
+  }),
+  true,
+  "the floor stays well below the normal bar — imperfect but readable routes still show",
 );
 
 assert.equal(
@@ -929,10 +999,10 @@ assert(
   "swoosh candidates should preserve their route intent instead of becoming generic icons",
 );
 assert(
-  !swooshStreetNative.some((candidate) =>
+  swooshStreetNative.some((candidate) =>
     candidate.designIntent.includes("Human-grade Manhattan open sweep"),
   ),
-  "tapered swoosh representatives should not offer skinny open-line sweeps",
+  "tapered swoosh representatives should include simple open-sweep routes for street readability",
 );
 assert(
   swooshStreetNative.some((candidate) =>
@@ -1419,4 +1489,33 @@ assert(
   "gas representative drafts should be recognized as gas logo art",
 );
 
+assert.equal(inferSwooshFromSourceName("nike.png"), true);
+assert.equal(inferSwooshFromSourceName("pace-logo.png"), false);
+const swooshDrafts = injectSwooshRepresentativeDrafts([], "nike.png");
+assert(
+  swooshDrafts.some((d) => d.label === "Representative swoosh mark"),
+  "nike uploads should inject the dedicated swoosh template",
+);
+const swooshFeatures = deriveRequiredVisualFeatures(swooshDrafts);
+assert(
+  swooshFeatures.some((feature) => /swoosh/.test(feature)),
+  "swoosh source-name fallback should require swoosh visual features",
+);
+const sourceOnlySwooshSketch = buildApprovedSketchDraft(
+  approvedSketchContour,
+  swooshDrafts,
+);
+assert(
+  sourceOnlySwooshSketch?.visualFeatures?.some((feature) => /swoosh/.test(feature)),
+  "approved sketch should inherit source-name swoosh features when vision is unavailable",
+);
+const swooshNative = generateMapNativeCandidates({
+  drafts: swooshDrafts,
+  preset: MANHATTAN_PRESET,
+  targetDistanceKm: 8,
+});
+assert(
+  swooshNative.some((c) => /swoosh|checkmark|rising tail/i.test(c.designIntent)),
+  "swoosh drafts should produce Manhattan sweep/check candidates",
+);
 console.log("autoFindTop5 tests ok");

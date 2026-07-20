@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import type { LatLngExpression } from "leaflet";
 import L from "leaflet";
@@ -47,16 +47,27 @@ const Marker = dynamic(
 );
 const FitBounds = dynamic(
   () => import("react-leaflet").then((m) => {
+    /**
+     * Fit the map to `line` — but ONLY when `nonce` changes (initial mount,
+     * auto-find result, tapping a pick). The line itself changes on every
+     * drag tick / rotate / scale, and refitting then yanks the map out from
+     * under the user's cursor mid-drag.
+     */
     function Step2FitBounds({
       line,
+      nonce,
     }: {
       line: [number, number][];
+      nonce: number;
     }) {
       const map = m.useMap();
+      const lineRef = useRef(line);
+      lineRef.current = line;
       useEffect(() => {
-        if (line.length < 2) return;
+        const l = lineRef.current;
+        if (l.length < 2) return;
         const bounds = L.latLngBounds(
-          line.map(([lat, lng]) => L.latLng(lat, lng)),
+          l.map(([lat, lng]) => L.latLng(lat, lng)),
         );
         if (!bounds.isValid()) return;
         map.fitBounds(bounds, {
@@ -64,7 +75,7 @@ const FitBounds = dynamic(
           maxZoom: 15,
           animate: false,
         });
-      }, [line, map]);
+      }, [nonce, map]);
       return null;
     }
     return Step2FitBounds;
@@ -121,6 +132,9 @@ export default function Step2MapAnchor({
   const [selectedAnchorLatLngs, setSelectedAnchorLatLngs] = useState<
     [number, number][] | null
   >(null);
+  // Bump to re-fit the map to the shape. Deliberately NOT tied to the shape
+  // itself — dragging/rotating/scaling must never move the camera.
+  const [fitNonce, setFitNonce] = useState(0);
   const [runnerProfile] = useRunnerProfile();
 
   const clearSelectedCandidateRoute = useCallback(() => {
@@ -160,12 +174,15 @@ export default function Step2MapAnchor({
               : undefined,
         });
         if (r.picks.length === 0) {
+          // We'd rather show nothing than a tangle that only looks like a
+          // route in a thumbnail. Say so plainly and point at what works:
+          // simpler artwork, or placing it by hand.
           setAutoHint(
             r.snapFailures && r.snapFailures > 0
               ? "The map service is busy right now — give it a minute and try again."
-              : "We couldn't find a spot automatically — drag your shape where you'd like it and we'll fit it to the streets.",
+              : "Nothing we found would read as your artwork on the streets, so we're not showing guesses. Bold, simple shapes work best — or drag it where you want it and we'll fit it to the streets.",
           );
-          window.setTimeout(() => setAutoHint(null), 7000);
+          window.setTimeout(() => setAutoHint(null), 9000);
           return;
         }
         setPicks(r.picks);
@@ -179,6 +196,7 @@ export default function Step2MapAnchor({
         setSelectedPickIdx(0);
         setPreferredSnappedRoute(routeFromPick(first));
         setSelectedAnchorLatLngs(first.anchorLatLngs ?? null);
+        setFitNonce((n) => n + 1);
         const partialNote =
           r.snapFailures && r.snapFailures > 0
             ? " Retry in a minute for even more."
@@ -216,6 +234,7 @@ export default function Step2MapAnchor({
     setSelectedPickIdx(idx);
     setPreferredSnappedRoute(routeFromPick(pick));
     setSelectedAnchorLatLngs(pick.anchorLatLngs ?? null);
+    setFitNonce((n) => n + 1);
   }, [routeFromPick]);
 
   const clearPicks = useCallback(() => {
@@ -230,12 +249,17 @@ export default function Step2MapAnchor({
   const centerHandleIcon = useMemo(() => {
     if (typeof window === "undefined") return null;
     const L = require("leaflet") as typeof import("leaflet");
+    // Generous hit target — grabbing a tiny dot on a touchscreen was the #1
+    // "moving the art doesn't work" complaint. Visual dot stays modest; the
+    // transparent padding is all grab area.
     return L.divIcon({
       className: "",
       html:
-        '<div style="width:16px;height:16px;border-radius:9999px;background:#ffb800;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.25);"></div>',
-      iconSize: [14, 14],
-      iconAnchor: [7, 7],
+        '<div style="width:44px;height:44px;display:flex;align-items:center;justify-content:center;cursor:grab;">' +
+        '<div style="width:22px;height:22px;border-radius:9999px;background:#ffb800;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.35);"></div>' +
+        "</div>",
+      iconSize: [44, 44],
+      iconAnchor: [22, 22],
     });
   }, []);
 
@@ -500,8 +524,10 @@ export default function Step2MapAnchor({
                 {picks.map((p, idx) => {
                   const selected = selectedPickIdx === idx;
                   const isTopPick = picksVisionUsed && idx === 0;
+                  const isVerifiedRoute = p.verifiedRoute === true;
                   const isRunnableStarter =
-                    p.qualityScore < 25 || p.sourceMatchScore < 45;
+                    !isVerifiedRoute &&
+                    (p.qualityScore < 25 || p.sourceMatchScore < 45);
                   return (
                     <button
                       key={idx}
@@ -559,42 +585,53 @@ export default function Step2MapAnchor({
                             )}
                           </span>
                         </span>
-                        <span
-                          className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
-                            p.shapeMatchScore >= 78
-                              ? "bg-sky-50 text-sky-700"
-                              : p.shapeMatchScore >= 55
-                                ? "bg-amber-50 text-amber-700"
-                                : "bg-red-50 text-red-700"
-                          }`}
-                          title="How closely the streets follow your shape."
-                        >
-                          Shape {p.shapeMatchScore}%
-                        </span>
-                        <span
-                          className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
-                            p.sourceMatchScore >= 72
-                              ? "bg-sky-50 text-sky-700"
-                              : p.sourceMatchScore >= 52
-                                ? "bg-amber-50 text-amber-700"
-                                : "bg-red-50 text-red-700"
-                          }`}
-                          title="How much the route resembles your art."
-                        >
-                          Looks like your art {p.sourceMatchScore}%
-                        </span>
-                        <span
-                          className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
-                            p.qualityScore >= 78
-                              ? "bg-emerald-50 text-emerald-700"
-                              : p.qualityScore >= 55
-                                ? "bg-amber-50 text-amber-700"
-                                : "bg-red-50 text-red-700"
-                          }`}
-                          title="Higher means less doubling back."
-                        >
-                          Clean route {p.qualityScore}%
-                        </span>
+                        {isVerifiedRoute ? (
+                          <span
+                            className="w-fit rounded-full bg-emerald-50 px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] text-emerald-700"
+                            title={p.verificationLabel ?? "Verified curated route"}
+                          >
+                            VERIFIED MAP-NATIVE
+                          </span>
+                        ) : (
+                          <>
+                            <span
+                              className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
+                                p.shapeMatchScore >= 78
+                                  ? "bg-sky-50 text-sky-700"
+                                  : p.shapeMatchScore >= 55
+                                    ? "bg-amber-50 text-amber-700"
+                                    : "bg-red-50 text-red-700"
+                              }`}
+                              title="How closely the streets follow your shape."
+                            >
+                              Shape {p.shapeMatchScore}%
+                            </span>
+                            <span
+                              className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
+                                p.sourceMatchScore >= 72
+                                  ? "bg-sky-50 text-sky-700"
+                                  : p.sourceMatchScore >= 52
+                                    ? "bg-amber-50 text-amber-700"
+                                    : "bg-red-50 text-red-700"
+                              }`}
+                              title="How much the route resembles your art."
+                            >
+                              Looks like your art {p.sourceMatchScore}%
+                            </span>
+                            <span
+                              className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
+                                p.qualityScore >= 78
+                                  ? "bg-emerald-50 text-emerald-700"
+                                  : p.qualityScore >= 55
+                                    ? "bg-amber-50 text-amber-700"
+                                    : "bg-red-50 text-red-700"
+                              }`}
+                              title="Higher means less doubling back."
+                            >
+                              Clean route {p.qualityScore}%
+                            </span>
+                          </>
+                        )}
                         {p.reason && (
                           <span className="text-[11px] leading-snug text-pace-ink/75">
                             {p.reason}
@@ -657,7 +694,7 @@ export default function Step2MapAnchor({
           >
             <LeafletInvalidateOnResize />
             <TileLayer attribution={OSM_TILE_ATTRIBUTION} url={OSM_TILE_URL} />
-            <FitBounds line={anchorLatLngs} />
+            <FitBounds line={anchorLatLngs} nonce={fitNonce} />
 
             {leafletPolyline.length > 0 && (
               <>

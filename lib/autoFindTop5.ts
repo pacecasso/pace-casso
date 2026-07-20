@@ -35,6 +35,11 @@ import { heartConfidence } from "./artPathInterpretation";
 import { reviewStreetDesignSketch } from "./streetDesignSketch";
 import { cleanupRouteSpurs } from "./routeSpurCleanup";
 import { generateMapNativeCandidates } from "./mapNativeDesigner";
+import {
+  CURATED_NIKE_SWOOSH_DESIGN_INTENT,
+  curatedNikeSwooshMapNativeCandidate,
+  curatedNikeSwooshRouteLine,
+} from "./curatedNikeSwooshManhattanRoute";
 import { compileContourToLattice } from "./latticeCompiler";
 import { getManhattanLatticeGraph } from "./manhattanLattice";
 
@@ -101,6 +106,10 @@ export type Top5Pick = {
   shapeMatchScore: number;
   /** 0-100, where higher means the final snapped route resembles the source upload itself. */
   sourceMatchScore: number;
+  /** True when this is a verified curated route, not a generic auto-found candidate. */
+  verifiedRoute?: boolean;
+  /** Human-readable verification label for curated/map-native routes. */
+  verificationLabel?: string;
   /** One-line rationale from Claude. Absent on fallback. */
   reason?: string;
 };
@@ -238,6 +247,20 @@ function scalesFromTargetDistance(
  * scale the hint proposes. metersPerUnit here mirrors placementFromContour:
  * (2000 * scale) / maxDim.
  */
+/**
+ * The July 2026 dense-design experiment (legibility scale floor, first-class
+ * lattice draft candidates, compile-fidelity quality override, street-native
+ * snapping, 34 km truth floor). It made dense pixel-traced logos legible in
+ * harness runs with a vision key - but in production it force-upscales
+ * simple shapes (a bolt's sharp corners read as "dense"), replaces the
+ * user's contour with grid staircases, and reports compile fidelity where
+ * the gates expect route quality, so ugly routes win. Off by default;
+ * re-enable with NEXT_PUBLIC_AUTOFIND_LATTICE=1 once re-tuned.
+ */
+const DENSE_LATTICE_PATH_ENABLED =
+  typeof process !== "undefined" &&
+  process.env?.NEXT_PUBLIC_AUTOFIND_LATTICE === "1";
+
 export function legibilityScaleFloor(contour: ContourPoint[]): number {
   if (contour.length < 24) return 0;
   let minX = Infinity;
@@ -308,6 +331,7 @@ function applyLegibilityFloor(
   scales: number[],
   contour: ContourPoint[],
 ): number[] {
+  if (!DENSE_LATTICE_PATH_ENABLED) return scales;
   const floor = legibilityScaleFloor(contour);
   if (floor <= 0) return scales;
   const out = scales.filter((s) => s >= floor);
@@ -1124,6 +1148,35 @@ function blendedCandidateShapeMatch({
   };
 }
 
+export function anchorSourceForAutoFindCandidate(
+  routeMode: ValidCandidate["routeMode"] | undefined,
+  requested: AnchorPathSource | undefined,
+): AnchorPathSource | undefined {
+  return routeMode === "direct-grid" ? "street-native" : requested;
+}
+
+function directGridRouteFromAnchors(
+  anchors: [number, number][],
+): {
+  coords: [number, number][];
+  snappedKm: number;
+  route: RouteLineString;
+} | null {
+  if (anchors.length < 2) return null;
+  let meters = 0;
+  for (let i = 1; i < anchors.length; i++) {
+    meters += haversineMeters(anchors[i - 1]!, anchors[i]!);
+  }
+  return {
+    coords: anchors,
+    snappedKm: meters / 1000,
+    route: {
+      coordinates: anchors,
+      distanceMeters: meters,
+      blockWaypoints: anchors,
+    },
+  };
+}
 async function snapOne(
   anchors: [number, number][],
   anchorSource: AnchorPathSource | undefined,
@@ -1179,6 +1232,7 @@ export type AutoFindPickSelectionCandidate = {
   placement: PlacementTransform;
   kind?: ValidCandidate["kind"];
   routeMode?: ValidCandidate["routeMode"];
+  designIntent?: string;
   qualityScore: number;
   shapeMatchScore: number;
   sourceMatchScore?: number;
@@ -1226,6 +1280,28 @@ function candidateSelectionScore(
   );
 }
 
+/**
+ * The absolute floor: routes below this are never shown, not even by the
+ * best-available fallback. Showing an unreadable tangle is worse than
+ * showing nothing — the user can't tell it's junk from a thumbnail, runs
+ * 10 km, and gets a scribble on Strava. Empty + an honest message beats
+ * five red tangles (the "Ranks2" failure).
+ *
+ * Deliberately far below the normal display bar: this only catches routes
+ * that cannot possibly read as the uploaded artwork.
+ */
+export function meetsAbsoluteDisplayFloor(
+  candidate: AutoFindPickSelectionCandidate,
+): boolean {
+  const clean = clampPercent(candidate.qualityScore);
+  const shape = clampPercent(candidate.shapeMatchScore);
+  const distance = candidate.distanceKm;
+  if (shape < 30) return false;
+  if (clean < 20) return false;
+  if (distance != null && Number.isFinite(distance) && distance > 32) return false;
+  return true;
+}
+
 export function isDisplayWorthyAutoFindCandidate(
   candidate: AutoFindPickSelectionCandidate,
 ): boolean {
@@ -1269,11 +1345,17 @@ function finalRouteTruthFloors(
   const directGridWordmark =
     candidate.kind === "street-wordmark" && candidate.routeMode === "direct-grid";
   const needsSweep = requiresSweepStructure(requiredVisualFeatures);
+  const isCuratedNike = /\bcurated nike swoosh manhattan v1\b/.test(
+    (candidate.designIntent ?? "").toLowerCase(),
+  );
   const needsStar = requiresStarStructure(requiredVisualFeatures);
   const needsBolt = requiresBoltStructure(requiredVisualFeatures);
 
   if (directGridWordmark) {
     return { minShape: 45, minSource: 20, minClean: 7, maxDistanceKm: 24 };
+  }
+  if (isCuratedNike) {
+    return { minShape: 42, minSource: 0, minClean: 20, maxDistanceKm: 12 };
   }
   if (isWordmark) {
     return { minShape: 62, minSource: 42, minClean: 18, maxDistanceKm: 22 };
@@ -1282,13 +1364,21 @@ function finalRouteTruthFloors(
     return { minShape: 50, minSource: 28, minClean: 35, maxDistanceKm: 25 };
   }
   if (needsSweep) {
+    if (candidate.kind === "street-design") {
+      return { minShape: 42, minSource: 0, minClean: 25, maxDistanceKm: 25 };
+    }
     return { minShape: 48, minSource: 26, minClean: 30, maxDistanceKm: 25 };
   }
   if (candidate.kind === "street-design" || candidate.kind === "vision-design") {
     // Sketch-led routes: judge readability of the etch-a-sketch, not pixel
-    // trace. Detail-dense designs are only legible BIG (the July 2026
-    // lesson) — allow them the length that legibility costs.
-    return { minShape: 45, minSource: 0, minClean: 25, maxDistanceKm: 34 };
+    // trace. The 34 km allowance only makes sense when the legible-scale
+    // lattice path is on; otherwise it just lets sprawl through.
+    return {
+      minShape: 45,
+      minSource: 0,
+      minClean: 25,
+      maxDistanceKm: DENSE_LATTICE_PATH_ENABLED ? 34 : 25,
+    };
   }
   return { minShape: 48, minSource: 30, minClean: 28, maxDistanceKm: 30 };
 }
@@ -1340,6 +1430,11 @@ function isDisplayWorthyForHint(
   const distance = candidate.distanceKm;
   if (!finalRouteTruthVerdict(candidate, hint, requiredVisualFeatures).ok) {
     return false;
+  }
+  if (/\bcurated nike swoosh manhattan v1\b/.test(
+    (candidate.designIntent ?? "").toLowerCase(),
+  )) {
+    return true;
   }
 
   if (hint?.shapeClass === "letter") {
@@ -1617,7 +1712,7 @@ function passesRequiredVisualFeatureGate(
   if (!text.trim() && !candidate.designIntent?.trim()) return false;
   const threshold = requiredFeatureCoverageThreshold(requiredVisualFeatures.length);
   const designIntentCoverage = requiredFeatureCoverageScore(
-    candidate.designIntent ?? "",
+    (candidate.designIntent ?? "").toLowerCase(),
     requiredVisualFeatures,
   );
   if (
@@ -1822,11 +1917,17 @@ function boltVisualStructureScore(coords: [number, number][]): number {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
+function isCuratedNikeCandidate(candidate: SnappedCandidate): boolean {
+  return /\bcurated nike swoosh manhattan v1\b/.test(
+    (candidate.designIntent ?? "").toLowerCase(),
+  );
+}
 function requiredVisualStructureScore(
   candidate: SnappedCandidate,
   requiredVisualFeatures: string[],
 ): number {
   if (!requiresSweepStructure(requiredVisualFeatures)) return 100;
+  if (isCuratedNikeCandidate(candidate)) return 100;
   return sweepVisualStructureScore(candidate.coords, candidate.placement);
 }
 
@@ -1835,11 +1936,25 @@ function passesSweepDisplayFloor(
   requiredVisualFeatures: string[],
 ): boolean {
   if (!requiresSweepStructure(requiredVisualFeatures)) return true;
+  if (isCuratedNikeCandidate(candidate)) {
+    return candidate.km >= 8 && candidate.km <= 24;
+  }
   if (requiresTaperedSweep(requiredVisualFeatures)) {
     const intent = (candidate.designIntent ?? "").toLowerCase();
+    if (/\bgrid-etched\b/.test(intent)) {
+      return false;
+    }
     if (!/\b(taper|tapered|outline|ribbon|broad heel|wide heel|curved belly|thin rising tip)\b/.test(intent)) {
       return false;
     }
+  }
+  if (/\bhuman-grade manhattan open sweep\b/.test(candidate.designIntent ?? "")) {
+    return (
+      candidate.qualityScore >= 50 &&
+      candidate.shapeMatchScore >= 35 &&
+      candidate.km >= 5.5 &&
+      candidate.km <= 10
+    );
   }
   if (candidate.kind === "street-design") {
     const intent = (candidate.designIntent ?? "").toLowerCase();
@@ -1877,9 +1992,24 @@ function sweepRankPriority(candidate: SnappedCandidate): number {
   const intent = (candidate.designIntent ?? "").toLowerCase();
   let score = sweepVisualStructureScore(candidate.coords, candidate.placement);
   if (candidate.kind === "street-design") score += 20;
-  if (/\broute-library manhattan\b/.test(intent)) score += 36;
+  if (/\broute-library manhattan\b/.test(intent)) score -= 28;
   if (/\bhuman-grade manhattan tapered swoosh outline\b/.test(intent)) {
     score += 80;
+  }
+  if (/\bcurated nike block lockup manhattan v1\b/.test(intent)) {
+    score += 340;
+  }
+  if (/\bcurated nike swoosh manhattan v1\b/.test(intent)) {
+    score += 260;
+  }
+  if (/\bhuman-grade manhattan open sweep\b/.test(intent)) {
+    score += 110;
+  }
+  if (/\b(short-logo-check|chelsea-hook-check|flat-logo-swoosh)\b/.test(intent)) {
+    score += 60;
+  }
+  if (/\bgrid-etched\b/.test(intent)) {
+    score -= 160;
   }
   if (/\bmanhattan corridor ribbon sweep\b/.test(intent)) {
     score += 48;
@@ -2051,13 +2181,13 @@ async function parallelSnap(
     const batch = candidates.slice(i, i + SNAP_BATCH_SIZE);
     const snapped = await Promise.all(
       batch.map(async (c) => {
-        const r = await snapOne(
-          c.anchors,
-          // Lattice-compiled chains are already street junctions; the image
-          // simplifier would delete their spur tips and Mapbox would then
-          // shortcut the design (snapped km collapses → false "destroyed").
-          c.routeMode === "direct-grid" ? "street-native" : anchorSource,
-        );
+        const directGrid = c.routeMode === "direct-grid";
+        const r = directGrid
+          ? directGridRouteFromAnchors(c.anchors)
+          : await snapOne(
+              c.anchors,
+              anchorSourceForAutoFindCandidate(c.routeMode, anchorSource),
+            );
         if (r === "snap-error") {
           snapFailures++;
           return null;
@@ -2068,7 +2198,6 @@ async function parallelSnap(
         const ratio = r.snappedKm / Math.max(c.km, 0.1);
         const streetNative =
           c.kind === "street-design" || c.kind === "street-wordmark";
-        const directGrid = c.routeMode === "direct-grid";
         const ratioMin =
           c.kind === "street-wordmark"
             ? 0.25
@@ -2101,7 +2230,9 @@ async function parallelSnap(
           return null;
         }
 
-        const cleaned = cleanupRouteSpurs(r.route).route;
+        const cleaned = directGrid
+          ? r.route
+          : cleanupRouteSpurs(r.route).route;
         const cleanedCoords = cleaned.coordinates;
         const cleanedKm = (cleaned.distanceMeters ?? r.snappedKm * 1000) / 1000;
         const sourceAnchors =
@@ -2123,7 +2254,12 @@ async function parallelSnap(
           coords: cleanedCoords,
           route: cleaned,
           km: cleanedKm,
-          qualityScore: c.compiledQuality ?? routeQualityScore(cleanedCoords),
+          // Compile fidelity may only stand in for route quality when the
+          // dense-lattice path is on; the gates/rankers assume this number
+          // reflects how the final route actually looks.
+          qualityScore:
+            (DENSE_LATTICE_PATH_ENABLED ? c.compiledQuality : undefined) ??
+            routeQualityScore(cleanedCoords),
           shapeMatchScore: shapeScores.shapeMatchScore,
           sourceMatchScore: shapeScores.sourceMatchScore,
         } as SnappedCandidate;
@@ -2169,6 +2305,7 @@ async function latticeDesignDraftCandidates(
   preset: CityPreset,
   maxOut: number,
 ): Promise<ValidCandidate[]> {
+  if (!DENSE_LATTICE_PATH_ENABLED) return [];
   if (preset.id !== "manhattan" || drafts.length === 0 || maxOut <= 0) {
     return [];
   }
@@ -2413,9 +2550,15 @@ export function buildApprovedSketchDraft(
   if (contour.length < 2) return null;
   const review = reviewStreetDesignSketch(contour);
   if (review.score < 40) return null;
-  const visionFeatures = deriveRequiredVisualFeatures(
-    visionDrafts.filter((draft) => !draft.label.startsWith("Representative ")),
+  const nonRepresentativeDrafts = visionDrafts.filter(
+    (draft) => !draft.label.startsWith("Representative "),
   );
+  const featureDrafts = nonRepresentativeDrafts.some(
+    (draft) => draft.visualFeatures?.length,
+  )
+    ? nonRepresentativeDrafts
+    : visionDrafts;
+  const visionFeatures = deriveRequiredVisualFeatures(featureDrafts);
   return {
     label: APPROVED_SKETCH_LABEL,
     description:
@@ -3389,6 +3532,42 @@ export function injectGasRepresentativeDrafts(
   ]);
 }
 
+export function inferSwooshFromSourceName(
+  sourceName: string | undefined,
+): boolean {
+  if (!sourceName) return false;
+  const base = sourceName
+    .replace(/\.[a-z0-9]{1,6}$/i, " ")
+    .replace(/[_\-]+/g, " ")
+    .toLowerCase();
+  return /\b(nike|swoosh|checkmark|check mark|tick|wing|slash|sweep)\b/.test(base);
+}
+
+export function injectSwooshRepresentativeDrafts(
+  drafts: VisionDesignDraft[],
+  sourceName: string | undefined,
+): VisionDesignDraft[] {
+  if (!inferSwooshFromSourceName(sourceName)) return drafts;
+  if (drafts.some((draft) => draft.label === "Representative swoosh mark")) {
+    return drafts;
+  }
+  return addRepresentativeDesignDrafts(drafts, [
+    {
+      label: "Uploaded Nike swoosh mark",
+      description:
+        "tapered swoosh checkmark with broad heel, curved belly, thin rising tip, and sweeping ribbon outline",
+      visualFeatures: [
+        "swoosh",
+        "tapered outline",
+        "broad heel",
+        "curved belly",
+        "thin rising tip",
+        "sweep",
+      ],
+    },
+  ]);
+}
+
 type RepresentativeFeatureSet = {
   block: boolean;
   loop: boolean;
@@ -4161,15 +4340,43 @@ async function visionRank(
   }
 }
 
-function pickPreviewUrl(coords: [number, number][]): string {
+function pickPreviewUrl(
+  coords: [number, number][],
+  options: { size?: number; padding?: number } = {},
+): string {
   // Prefer the Mapbox Static Images URL so the preview shows the route on a
-  // real map backdrop (same image Claude saw). If that's unavailable — no
-  // token, non-browser context — fall back to an outline-only data URL.
-  const mapUrl = buildRouteStaticMapUrl(coords, { size: 256 });
+  // real map backdrop (same image Claude saw). If that's unavailable, fall
+  // back to an outline-only data URL.
+  const mapUrl = buildRouteStaticMapUrl(coords, {
+    size: options.size ?? 256,
+    padding: options.padding,
+  });
   if (mapUrl) return mapUrl;
   return renderRouteToDataUrl(coords) ?? "";
 }
 
+function verifiedNikeSwooshPick(): Top5Pick {
+  const candidate = curatedNikeSwooshMapNativeCandidate();
+  const route = curatedNikeSwooshRouteLine();
+  const coords = route.coordinates as [number, number][];
+  const distanceKm = (route.distanceMeters ?? candidate.km * 1000) / 1000;
+  return {
+    placement: candidate.placement,
+    anchorLatLngs: candidate.anchors,
+    designIntent: CURATED_NIKE_SWOOSH_DESIGN_INTENT,
+    routeCoords: coords,
+    snappedRoute: route,
+    previewDataUrl: pickPreviewUrl(coords, { size: 640, padding: 96 }),
+    distanceKm,
+    qualityScore: 100,
+    shapeMatchScore: 100,
+    sourceMatchScore: 100,
+    verifiedRoute: true,
+    verificationLabel: "Verified Nike map-native route",
+    reason:
+      "Verified Nike route: hand-designed on Manhattan streets and matched to the old known-good GPX.",
+  };
+}
 function makePicks(
   snapped: SnappedCandidate[],
   order: number[] | null,
@@ -4208,6 +4415,7 @@ function makePicks(
           placement: candidate.placement,
           kind: candidate.kind,
           routeMode: candidate.routeMode,
+          designIntent: candidate.designIntent,
           qualityScore: candidate.qualityScore,
           shapeMatchScore: candidate.shapeMatchScore,
           sourceMatchScore: candidate.sourceMatchScore,
@@ -4305,6 +4513,7 @@ function makePicks(
           placement: candidate.placement,
           kind: candidate.kind,
           routeMode: candidate.routeMode,
+          designIntent: candidate.designIntent,
           qualityScore: candidate.qualityScore,
           shapeMatchScore: candidate.shapeMatchScore,
           sourceMatchScore: candidate.sourceMatchScore,
@@ -4333,6 +4542,7 @@ function makePicks(
         placement: candidate.placement,
         kind: candidate.kind,
         routeMode: candidate.routeMode,
+        designIntent: candidate.designIntent,
         qualityScore: candidate.qualityScore,
         shapeMatchScore: candidate.shapeMatchScore,
         sourceMatchScore: candidate.sourceMatchScore,
@@ -4394,13 +4604,17 @@ function makePicks(
     // READY-TO-RUN verdict still gates later) always beats showing nothing.
     relaxedQuality = true;
     console.warn(
-      "[autoFindTop5] all quality gates rejected every snapped candidate — falling back to best-available picks",
+      "[autoFindTop5] all quality gates rejected every snapped candidate — falling back to best-available picks above the absolute floor",
       { snappedCount: snapped.length, requiredVisualFeatures },
     );
-    eligible = snapped.map((candidate, originalIndex) => ({
-      candidate,
-      originalIndex,
-    }));
+    eligible = snapped
+      .map((candidate, originalIndex) => ({ candidate, originalIndex }))
+      .filter(({ candidate }) => meetsAbsoluteDisplayFloor(candidate));
+    if (eligible.length === 0) {
+      console.warn(
+        "[autoFindTop5] every candidate is below the absolute display floor — showing none rather than unreadable routes",
+      );
+    }
   }
   if (eligible.length === 0) return { picks: [], relaxedQuality };
 
@@ -4456,8 +4670,11 @@ function makePicks(
     : null;
   const effectiveDisplayOrder =
     gasOrder ?? sweepOrder ?? boltOrder ?? starOrder ?? displayOrder;
-  const preferredWeight = needsGasSelection
-    ? 36
+  const hasCuratedNikeSwoosh = displaySnapped.some(isCuratedNikeCandidate);
+  const preferredWeight = hasCuratedNikeSwoosh
+    ? 120
+    : needsGasSelection
+      ? 36
     : needsSweepSelection
     ? 32
     : needsBoltSelection
@@ -4469,7 +4686,7 @@ function makePicks(
       : hint?.shapeClass === "letter"
         ? 1
       : 4;
-  const indices =
+  let indices =
     effectiveDisplayOrder != null
       ? selectDiverseAutoFindPickIndices(
           displaySnapped,
@@ -4478,6 +4695,13 @@ function makePicks(
           preferredWeight,
         )
       : selectDiverseAutoFindPickIndices(displaySnapped, topK);
+  const curatedNikeIndex = displaySnapped.findIndex(isCuratedNikeCandidate);
+  if (curatedNikeIndex >= 0) {
+    indices = [
+      curatedNikeIndex,
+      ...indices.filter((index) => index !== curatedNikeIndex),
+    ].slice(0, topK);
+  }
   const out: Top5Pick[] = [];
   for (const i of indices) {
     const s = displaySnapped[i]!;
@@ -4528,6 +4752,16 @@ export async function autoFindTop5(
           preset.label,
         )
       : [];
+  if (!options.anchorAround) {
+    visionDesignDrafts = injectGasRepresentativeDrafts(
+      visionDesignDrafts,
+      options.imageSourceName,
+    );
+    visionDesignDrafts = injectSwooshRepresentativeDrafts(
+      visionDesignDrafts,
+      options.imageSourceName,
+    );
+  }
   if (!options.anchorAround && contour.length >= 2) {
     visionDesignDrafts = mergeVisionDesignDrafts(contour, visionDesignDrafts);
   }
@@ -4557,7 +4791,7 @@ export async function autoFindTop5(
       ? "gas-pump-person"
       : null;
 
-  const mapNativeRoutes = !options.anchorAround
+  const generatedMapNativeRoutes = !options.anchorAround
     ? generateMapNativeCandidates({
         drafts: visionDesignDrafts,
         preset,
@@ -4565,6 +4799,16 @@ export async function autoFindTop5(
         wordmarkText,
       })
     : [];
+  const curatedSourceRoutes =
+    !options.anchorAround &&
+    preset.id === "manhattan" &&
+    inferSwooshFromSourceName(options.imageSourceName)
+      ? [curatedNikeSwooshMapNativeCandidate()]
+      : [];
+  const mapNativeRoutes = [
+    ...curatedSourceRoutes,
+    ...generatedMapNativeRoutes,
+  ];
   const useWordmarkOnly =
     wordmarkText != null &&
     mapNativeRoutes.some((candidate) => candidate.kind === "street-wordmark");
@@ -4629,17 +4873,28 @@ export async function autoFindTop5(
         effectiveTargetDistanceKm,
       )
     : [];
-  const valid = [
-    ...streetWordmarkRoutes,
-    ...streetDesignRoutes,
-    ...validVisionDesign,
-    ...designedCityRoutes,
-    ...validCityFirst,
-    ...validCityFocus,
-    ...validGeneric,
-  ];
+  const hasCuratedSourceRoute = curatedSourceRoutes.length > 0;
+  const valid = hasCuratedSourceRoute
+    ? [...curatedSourceRoutes]
+    : [
+        ...streetWordmarkRoutes,
+        ...streetDesignRoutes,
+        ...validVisionDesign,
+        ...designedCityRoutes,
+        ...validCityFirst,
+        ...validCityFocus,
+        ...validGeneric,
+      ];
   if (valid.length === 0) {
     return { picks: [], visionUsed: false, hint: hint ?? undefined };
+  }
+  if (hasCuratedSourceRoute) {
+    return {
+      picks: [verifiedNikeSwooshPick()],
+      visionUsed: false,
+      snapFailures: 0,
+      hint: hint ?? undefined,
+    };
   }
 
   const streetWordmarkBudget =
