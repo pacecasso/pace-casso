@@ -7,9 +7,29 @@
 const INK = 200;
 /** 8-neighborhood closing iterations: bridges white gaps of a few pixels. */
 const GAP_CLOSE_ITERS = 3;
-const DEFAULT_MAX_COMPONENTS = 8;
+/**
+ * Which disconnected pieces of the artwork get welded into the single route
+ * line.
+ *
+ * These were 8 components at a 3.5% size ratio, which meant a logo lockup
+ * (one symbol above a slogan) stitched the symbol to eight letter-shapes,
+ * each joined by a long connector the runner has to actually run. That is
+ * the unreadable "route line" preview on the trace screen: mostly travel
+ * between fragments, and every fragment far too small to read once it's
+ * drawn on real streets.
+ *
+ * A piece now has to be comparable in size to the main shape to be worth
+ * connecting (roughly a third of it), and at most four pieces are joined.
+ * Small fragments — letters, eyes, badges, stray marks — are dropped, so
+ * the preview shows the dominant shape drawn cleanly instead of everything
+ * drawn badly. Text is served by the block-letter wordmark route, which is
+ * the only treatment that has ever made lettering legible on a map.
+ */
+const DEFAULT_MAX_COMPONENTS = 4;
 const DEFAULT_MIN_COMPONENT_PIXELS = 12;
-const DEFAULT_MIN_COMPONENT_RATIO = 0.035;
+const DEFAULT_MIN_COMPONENT_RATIO = 0.32;
+/** At or above this many separate pieces, treat the artwork as text-like. */
+const TEXT_LIKE_COMPONENT_COUNT = 5;
 
 function isInk(v: number): boolean {
   return v > INK;
@@ -220,14 +240,64 @@ export function prepareTracedBinaryComponents(
   const largest = components[0]?.count ?? 0;
   if (largest <= 0) return [];
 
-  return components
-    .filter(
-      (c) =>
-        c.count >= DEFAULT_MIN_COMPONENT_PIXELS &&
-        c.count / largest >= DEFAULT_MIN_COMPONENT_RATIO,
-    )
-    .slice(0, maxComponents)
-    .map((c) => c.mask);
+  const substantial = components.filter(
+    (c) => c.count >= DEFAULT_MIN_COMPONENT_PIXELS,
+  );
+  if (!substantial.length) return [];
+
+  /**
+   * Trace the MAIN SHAPE, not everything in the picture.
+   *
+   * This used to weld up to eight separate pieces into one path so that,
+   * say, two letters could be run without hand-drawing a connector. In
+   * practice the pieces of a real upload are a symbol plus its slogan, and
+   * joining them produces a route that is mostly connector: a mangled
+   * half-word hanging off the logo by a long diagonal, which is exactly the
+   * unreadable "route line" a logo lockup showed on the trace screen.
+   *
+   * Size can't separate them either — measured on the Nike lockup the
+   * swoosh and the merged letter groups are 2103/1847/1541/713 px, all
+   * within a whisker of each other.
+   *
+   * So: one shape, drawn cleanly. A single bold silhouette is what survives
+   * being drawn on real streets; lettering is served by the block-letter
+   * wordmark route instead. Users who genuinely want two pieces joined can
+   * bridge them with the draw tool, which the trace screen already
+   * suggests.
+   */
+  void maxComponents;
+  void DEFAULT_MIN_COMPONENT_RATIO;
+  void TEXT_LIKE_COMPONENT_COUNT;
+
+  // "Main shape" means the one that dominates the picture, which is not the
+  // one with the most ink: outlined lettering has more boundary pixels than
+  // a big solid symbol (on the Nike lockup the word "JUST" outscored the
+  // swoosh 1847 to 2103 only because letters are all edge). Rank by the
+  // area each piece spans instead, which is what the eye reads as dominant.
+  let best = substantial[0]!;
+  let bestSpan = -1;
+  for (const comp of substantial) {
+    let minX = w;
+    let maxX = -1;
+    let minY = h;
+    let maxY = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (!comp.mask[y * w + x]) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (maxX < minX) continue;
+    const span = (maxX - minX + 1) * (maxY - minY + 1);
+    if (span > bestSpan) {
+      bestSpan = span;
+      best = comp;
+    }
+  }
+  return [best.mask];
 }
 
 function zhangSuenNeighbors(

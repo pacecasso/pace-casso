@@ -40,11 +40,24 @@ function twoSeparatedBars(): Uint8Array {
 }
 
 {
+  // We trace the MAIN shape only. Welding separate pieces into one route
+  // makes it mostly connector — on a logo lockup that produced a mangled
+  // half-word hanging off the symbol by a long diagonal. Lettering is
+  // served by the block-letter wordmark route instead, and users can bridge
+  // pieces deliberately with the draw tool.
   const mask = twoSeparatedBars();
   const components = prepareTracedBinaryComponents(mask, W, H);
-  assert.equal(components.length, 2, "two meaningful components should survive");
+  assert.equal(
+    components.length,
+    1,
+    "only the dominant component is traced, not every piece in the picture",
+  );
   const paths = centerlinePolylinesFromLineMask(mask, W, H);
-  assert.equal(paths.length, 2, "both components should skeletonize");
+  assert.equal(
+    paths.length,
+    1,
+    "skeletonization follows the traced components, so it yields the main shape",
+  );
 }
 
 console.log("centerlineFromMask tests ok");
