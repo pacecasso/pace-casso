@@ -3538,10 +3538,14 @@ function inferWordmarkText(rawDrafts: unknown[]): string | null {
     const token = tokens[i]!;
     const upper = token.toUpperCase();
     if (WORDMARK_STOP_WORDS.has(upper)) continue;
+    // Only words the drafts WROTE in caps count — vision quotes lettering it
+    // actually read that way ("LOVE", "JUST DO IT"), while descriptive prose
+    // is lowercase. Scoring lowercase words invented text that was never in
+    // the image: the gas logo's "gas pump" description became a giant PUMP
+    // wordmark on the map.
+    if (token !== upper) continue;
 
-    let score = Math.max(0, 12 - i);
-    if (token === upper) score += 18;
-    if (/^[A-Z][a-z]+$/.test(token)) score += 5;
+    let score = Math.max(0, 12 - i) + 18;
     if (upper === "LOVE") score += 10;
     if (upper.length >= 4) score += 2;
 
@@ -3569,7 +3573,11 @@ export function visionDescribesLettering(drafts: unknown[]): boolean {
     .join(" ")
     .toLowerCase();
   if (!text.trim()) return false;
-  return /\b(letter|letters|lettering|wordmark|word mark|text|type|typography|slogan|block letters|reads?)\b/.test(
+  // Tightened July 21: the old pattern also matched bare "text" ("no text"),
+  // "type", and "reads?" ("reads as a swoosh") — which flagged practically
+  // every upload as lettered and let the wordmark path invent words that
+  // were never in the image (the gas logo grew a giant "PUMP").
+  return /\b(letters?|lettering|wordmark|word mark|typography|slogan|block letters|text logo)\b/.test(
     text,
   );
 }
