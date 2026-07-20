@@ -766,6 +766,17 @@ export async function runArtistLoop(
       a.placement.compiled.meanDeviationMeters - b.placement.compiled.meanDeviationMeters,
   );
   const win = rounds[0]!;
+  // HONESTY GATE: the project's standing bar is "show only squint-test
+  // winners". A route the blind judges couldn't recognize must never be
+  // handed to the user with a straight face — that's how a mangled swoosh
+  // shipped on July 20. Fail loudly instead; the client shows this message.
+  if (win.judge.recognizedCount < 2) {
+    throw new Error(
+      "The artist tried, but blind judges couldn't recognize the street version " +
+        `(best guesses: ${[...new Set(win.judge.samples.map((s) => s.guess))].join(", ")}). ` +
+        "No route was delivered. Bold single shapes work best; thin marks and text don't survive street blocks yet.",
+    );
+  }
   const c = win.placement.compiled;
   const sketchLatLngs = win.local.map((p) => toLatLngFrom(win.placement.origin, p));
   const lats = c.chain.map((p) => p[0]);
