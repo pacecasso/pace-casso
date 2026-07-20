@@ -1309,6 +1309,16 @@ export function meetsAbsoluteDisplayFloor(
   const gridWordmark =
     candidate.kind === "street-wordmark" && candidate.routeMode === "direct-grid";
   const maxKm = gridWordmark ? 56 : 32;
+  // A lockup adds the wordmark to the traced symbol on purpose, so it can
+  // never score high on similarity to the contour. Judge it on cleanliness
+  // and length only.
+  const isLockup = /lockup/i.test(candidate.designIntent ?? "");
+  if (isLockup) {
+    return (
+      clean >= 15 &&
+      (distance == null || !Number.isFinite(distance) || distance <= maxKm)
+    );
+  }
   if (shape < 30) return false;
   if (clean < 20) return false;
   if (distance != null && Number.isFinite(distance) && distance > maxKm) {
@@ -1328,6 +1338,14 @@ export function isDisplayWorthyAutoFindCandidate(
   const gridWordmark =
     candidate.kind === "street-wordmark" && candidate.routeMode === "direct-grid";
   const maxKm = gridWordmark ? 56 : 30;
+  // See meetsAbsoluteDisplayFloor: lockups intentionally differ from the
+  // traced contour, so contour similarity is the wrong test for them.
+  if (/lockup/i.test(candidate.designIntent ?? "")) {
+    return (
+      clean >= 20 &&
+      (distance == null || !Number.isFinite(distance) || distance <= maxKm)
+    );
+  }
   if (shape < 40) return false;
   if (clean < 28) return false;
   if (distance != null && Number.isFinite(distance) && distance > maxKm) {
@@ -1371,6 +1389,14 @@ function finalRouteTruthFloors(
   const needsStar = requiresStarStructure(requiredVisualFeatures);
   const needsBolt = requiresBoltStructure(requiredVisualFeatures);
 
+  // A lockup deliberately draws MORE than the traced shape: the symbol plus
+  // its wordmark in block letters. Scoring it for similarity to the contour
+  // (which is the symbol alone) punishes it for the letters that are the
+  // whole point, so it was generated, gated out, and never shown.
+  const isLockup = /\blockup\b/i.test(candidate.designIntent ?? "");
+  if (isLockup) {
+    return { minShape: 12, minSource: 0, minClean: 7, maxDistanceKm: 56 };
+  }
   if (directGridWordmark) {
     // Block letters are drawn straight onto avenue/street lines, so extra
     // length is extra legibility, not sprawl — the best wordmark this
