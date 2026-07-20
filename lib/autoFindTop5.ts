@@ -45,6 +45,8 @@ import {
 } from "./curatedNikeSwooshManhattanRoute";
 import { compileContourToLattice } from "./latticeCompiler";
 import { getManhattanLatticeGraph } from "./manhattanLattice";
+import { splitSketchComponents } from "./sketchReview";
+import { simplifyLatLng } from "./douglasPeucker";
 
 const MARGIN = 0.012;
 const MIN_PERIMETER_KM = 3;
@@ -575,6 +577,74 @@ function routeLengthKm(coords: [number, number][]): number {
     meters += haversineMeters(coords[i - 1]!, coords[i]!);
   }
   return meters / 1000;
+}
+
+/**
+ * Etch-a-sketch street tracing (server-side, no API spend): where do the
+ * city's REAL streets best draw this shape, at hero scale? The dense road
+ * graph draws smooth organic curves the junction lattice can't — a circle
+ * spanning Midtown traces round. Single-component bold shapes only; a
+ * multi-piece logo's outline is not one traceable curve.
+ */
+async function requestStreetTraceCandidates(
+  contour: ContourPoint[],
+  preset: CityPreset,
+  targetDistanceKm: number | undefined,
+  requiredVisualFeatures: string[],
+): Promise<ValidCandidate[]> {
+  if (preset.id !== "manhattan") return [];
+  if (contour.length < 8) return [];
+  if (splitSketchComponents(contour).length !== 1) return [];
+  try {
+    const res = await fetch("/api/street-trace", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contour,
+        cityId: preset.id,
+        targetDistanceKm,
+      }),
+    });
+    if (!res.ok) {
+      console.warn("[autoFindTop5] street-trace http", res.status);
+      return [];
+    }
+    const json = (await res.json()) as {
+      candidates?: {
+        chain?: [number, number][];
+        km?: number;
+        meanDeviationM?: number;
+        rotDeg?: number;
+      }[];
+    };
+    const out: ValidCandidate[] = [];
+    for (const c of json.candidates ?? []) {
+      if (!Array.isArray(c.chain) || c.chain.length < 8) continue;
+      if (!c.chain.every((p) => isValidLatLng(p))) continue;
+      // Editing-friendly anchor count; 10 m tolerance keeps the geometry.
+      const anchors = simplifyLatLng(c.chain, 10) as [number, number][];
+      if (anchors.length < 8) continue;
+      const featureText = requiredVisualFeatures.length
+        ? ` Features: ${requiredVisualFeatures.join(", ")}.`
+        : "";
+      out.push({
+        placement: placementFromAnchors(anchors, c.rotDeg ?? 0, 1),
+        anchors,
+        km: typeof c.km === "number" ? c.km : routeLengthKm(anchors),
+        kind: "street-design",
+        routeMode: "direct-grid",
+        designIntent:
+          `Street-traced organic route: Manhattan's real streets draw the uploaded shape at hero scale ` +
+          `(etch-a-sketch corridor trace, mean deviation ${c.meanDeviationM ?? "?"} m — the route hugs the artwork's own outline).` +
+          featureText,
+      });
+    }
+    console.log(`[autoFindTop5] street-trace returned ${out.length} organic candidates`);
+    return out;
+  } catch (err) {
+    console.warn("[autoFindTop5] street-trace unavailable", err);
+    return [];
+  }
 }
 
 function placementFromAnchors(
@@ -5012,6 +5082,16 @@ export async function autoFindTop5(
   console.log(
     `[autoFindTop5] wordmark: eligible=${wordmarkEligible} text=${wordmarkText ?? "-"} lockupCandidates=${lockupRoutes.length}`,
   );
+  // Organic street tracing: the city's own streets draw single-component
+  // shapes at hero scale. Server CPU only — no paid API behind it.
+  const streetTracedRoutes = !options.anchorAround
+    ? await requestStreetTraceCandidates(
+        contour,
+        preset,
+        effectiveTargetDistanceKm,
+        requiredVisualFeatures,
+      )
+    : [];
   const mapNativeRoutes = [
     ...lockupRoutes,
     ...curatedSourceRoutes,
@@ -5090,8 +5170,10 @@ export async function autoFindTop5(
         effectiveTargetDistanceKm,
       )
     : [];
+  const streetTracedSubset = streetTracedRoutes.slice(0, 3);
   const valid = [
     ...lockupSubset,
+    ...streetTracedSubset,
     ...streetWordmarkRoutes,
     ...streetDesignRoutes,
     ...validVisionDesign,
@@ -5286,6 +5368,7 @@ export async function autoFindTop5(
   ].slice(0, 8);
   const subset = [
     ...lockupSubset,
+    ...streetTracedSubset,
     ...latticeSubset,
     ...streetWordmarkSubset,
     ...streetDesignSubset,
@@ -5298,7 +5381,10 @@ export async function autoFindTop5(
     0,
     Math.max(
       snapCount,
-      lockupSubset.length + latticeSubset.length + streetWordmarkSubset.length,
+      lockupSubset.length +
+        streetTracedSubset.length +
+        latticeSubset.length +
+        streetWordmarkSubset.length,
     ),
   );
   if (typeof process !== "undefined" && process.env?.AUTOFIND_DEBUG === "1") {
