@@ -1,3 +1,5 @@
+import { analyzeOneLinePath } from "./oneLinePathAnalysis";
+
 export type NormalizedSketchPoint = { x: number; y: number };
 
 export type SketchReviewOption = {
@@ -106,16 +108,91 @@ export function simplifySketchToMaxPoints(
   return best;
 }
 
+/** Split a traced path into its components at pen-jump connectors. */
+export function splitSketchComponents(
+  points: NormalizedSketchPoint[],
+): NormalizedSketchPoint[][] {
+  const { connectorSegmentIndices } = analyzeOneLinePath(points);
+  if (!connectorSegmentIndices.length) return points.length ? [points] : [];
+  const cuts = new Set(connectorSegmentIndices);
+  const components: NormalizedSketchPoint[][] = [];
+  let current: NormalizedSketchPoint[] = points.length ? [points[0]!] : [];
+  for (let i = 1; i < points.length; i++) {
+    if (cuts.has(i - 1)) {
+      if (current.length >= 2) components.push(current);
+      current = [];
+    }
+    current.push(points[i]!);
+  }
+  if (current.length >= 2) components.push(current);
+  return components.length ? components : [points];
+}
+
+function componentPerimeter(points: NormalizedSketchPoint[]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += pointDistance(points[i - 1]!, points[i]!);
+  }
+  return total;
+}
+
+/**
+ * Component-aware simplification: a logo lockup (symbol + letters) traces as
+ * many separate pieces joined by pen-jump connectors. Running one global
+ * point budget across all of them collapses ten recognizable shapes into
+ * crisscross soup — a 30-point budget is right for one heart and fatal for
+ * "swoosh + JUST DO IT". Split at the connectors, give each component a
+ * share of the budget proportional to its ink (never fewer than 6 points),
+ * simplify each piece by itself, and rejoin in the original order.
+ */
+export function simplifySketchPreservingComponents(
+  points: NormalizedSketchPoint[],
+  maxPoints: number,
+): NormalizedSketchPoint[] {
+  const components = splitSketchComponents(points);
+  if (components.length <= 1) {
+    return simplifySketchToMaxPoints(points, maxPoints);
+  }
+  const perims = components.map(componentPerimeter);
+  const totalPerim = perims.reduce((s, v) => s + v, 0) || 1;
+  const out: NormalizedSketchPoint[] = [];
+  for (let i = 0; i < components.length; i++) {
+    const share = Math.max(
+      6,
+      Math.round((perims[i]! / totalPerim) * maxPoints),
+    );
+    out.push(...simplifySketchToMaxPoints(components[i]!, share));
+  }
+  return out;
+}
+
 export function buildSketchReviewOptions(
   points: NormalizedSketchPoint[],
 ): SketchReviewOption[] {
   const clean = cleanSketchPoints(points);
   if (clean.length < 2) return [];
 
-  const readable = simplifySketchToMaxPoints(clean, 72);
-  const routeSketch = simplifySketchToMaxPoints(smoothSketchPath(clean, 1), 42);
-  const bigTurns = simplifySketchToMaxPoints(smoothSketchPath(clean, 2), 26);
-  const minimal = simplifySketchToMaxPoints(smoothSketchPath(clean, 2), 16);
+  // Multi-component art needs a budget that scales with how many separate
+  // pieces the drawing has, or the variants destroy it (see
+  // simplifySketchPreservingComponents).
+  const componentCount = splitSketchComponents(clean).length;
+  const scale = Math.max(1, componentCount);
+  const readable = simplifySketchPreservingComponents(
+    clean,
+    Math.min(300, Math.max(72, scale * 34)),
+  );
+  const routeSketch = simplifySketchPreservingComponents(
+    smoothSketchPath(clean, 1),
+    Math.min(160, Math.max(42, scale * 15)),
+  );
+  const bigTurns = simplifySketchPreservingComponents(
+    smoothSketchPath(clean, 2),
+    Math.min(110, Math.max(26, scale * 10)),
+  );
+  const minimal = simplifySketchPreservingComponents(
+    smoothSketchPath(clean, 2),
+    Math.min(80, Math.max(16, scale * 7)),
+  );
 
   return [
     { id: "readable", label: "Readable", points: readable },

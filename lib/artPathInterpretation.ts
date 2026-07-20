@@ -1,5 +1,9 @@
 import { simplifyCartesian } from "./douglasPeucker";
 import { analyzeOneLinePath } from "./oneLinePathAnalysis";
+import {
+  simplifySketchPreservingComponents,
+  splitSketchComponents,
+} from "./sketchReview";
 
 export type NormalizedPathPoint = { x: number; y: number };
 
@@ -270,7 +274,19 @@ export function buildArtPathInterpretations(
    * route follows real streets. One good default, plus the AI sketch the
    * caller appends when it's available.
    */
-  const boldPoints = simplifyPath(trace, diag * 0.022, 34);
+  // One global 34-point budget is right for a single closed shape and fatal
+  // for multi-component art (a logo's symbol + letters trace as many pieces
+  // joined by pen jumps — collapsing them together produced the unreadable
+  // "route line" soup for logo uploads). Scale the budget with the number of
+  // components and simplify each piece by itself.
+  const componentCount = splitSketchComponents(trace).length;
+  const boldPoints =
+    componentCount > 1
+      ? simplifySketchPreservingComponents(
+          trace,
+          Math.min(300, Math.max(34, componentCount * 34)),
+        )
+      : simplifyPath(trace, diag * 0.022, 34);
   pushUnique(out, {
     id: "bold",
     label: "Simple line",

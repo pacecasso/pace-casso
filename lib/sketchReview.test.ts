@@ -5,8 +5,10 @@ import {
   deleteSketchPoint,
   insertSketchPoint,
   moveSketchPoint,
+  simplifySketchPreservingComponents,
   simplifySketchToMaxPoints,
   smoothSketchPath,
+  splitSketchComponents,
 } from "./sketchReview";
 
 const noisyLine = Array.from({ length: 80 }, (_, i) => ({
@@ -101,5 +103,51 @@ assert.deepEqual(
   ],
   "delete should remove the selected point without changing the remaining path",
 );
+
+// --- component-aware simplification (multi-component logo uploads) --------
+// Two dense circles far apart, joined by one long pen-jump connector — the
+// shape of a traced logo (symbol + letter). The old global budget collapsed
+// both into a few segments; component-aware simplification must keep BOTH
+// pieces recognizable and never spend one piece's budget on the other.
+{
+  const circle = (cx: number, cy: number, r: number): { x: number; y: number }[] =>
+    Array.from({ length: 48 }, (_, i) => {
+      const a = (i / 48) * 2 * Math.PI;
+      return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+    });
+  const twoShapes = [...circle(0.2, 0.2, 0.14), ...circle(0.75, 0.75, 0.14)];
+
+  const components = splitSketchComponents(twoShapes);
+  assert.equal(components.length, 2, "pen jump should split into 2 components");
+
+  const simplified = simplifySketchPreservingComponents(twoShapes, 40);
+  const simplifiedComponents = splitSketchComponents(simplified);
+  assert.equal(
+    simplifiedComponents.length,
+    2,
+    "simplification must preserve both components",
+  );
+  for (const comp of simplifiedComponents) {
+    assert.ok(
+      comp.length >= 6,
+      `each component keeps at least 6 points, got ${comp.length}`,
+    );
+  }
+
+  // A single shape must fall through to the plain simplifier unchanged.
+  const one = simplifySketchPreservingComponents(circle(0.5, 0.5, 0.3), 20);
+  assert.ok(one.length <= 20, "single component honors the global budget");
+
+  // Review options for multi-component art scale their budgets up: the
+  // "readable" variant must keep far more than the single-shape 72 cap
+  // would after collapsing (i.e. both circles survive).
+  const options = buildSketchReviewOptions(twoShapes);
+  const readable = options.find((o) => o.id === "readable")!;
+  assert.equal(
+    splitSketchComponents(readable.points).length,
+    2,
+    "readable variant keeps both components",
+  );
+}
 
 console.log("sketchReview tests ok");
