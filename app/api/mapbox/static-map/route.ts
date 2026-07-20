@@ -10,7 +10,7 @@ const ALLOWED_STYLES = new Set(["light-v11", "streets-v12", "outdoors-v12"]);
 const DEFAULT_STYLE = "light-v11";
 
 /**
- * GET /api/mapbox/static-map?encoded=<polyline>&size=<px>&style=<id>
+ * GET /api/mapbox/static-map?encoded=<polyline>&size=<px>&style=<id>&padding=<px>
  *
  * Returns a PNG of a map with the route drawn as a red path overlay, auto-fit
  * to the route's extent. Uses the server Mapbox token so the client never sees
@@ -34,6 +34,8 @@ export async function GET(req: Request) {
   const size = Math.max(64, Math.min(1024, parseInt(sizeRaw, 10) || 256));
   const styleRaw = url.searchParams.get("style") ?? DEFAULT_STYLE;
   const style = ALLOWED_STYLES.has(styleRaw) ? styleRaw : DEFAULT_STYLE;
+  const paddingRaw = url.searchParams.get("padding") ?? "48";
+  const padding = Math.max(0, Math.min(256, parseInt(paddingRaw, 10) || 48));
 
   if (!encoded) {
     return NextResponse.json(
@@ -51,7 +53,7 @@ export async function GET(req: Request) {
   // `path-{width}+{hexColor}(polyline)` — Mapbox escapes polyline chars itself;
   // we still need to URI-encode the whole overlay segment for URL safety.
   const path = `path-4+e60000(${encodeURIComponent(encoded)})`;
-  const mapboxUrl = `https://api.mapbox.com/styles/v1/mapbox/${style}/static/${path}/auto/${size}x${size}?padding=12&access_token=${token}`;
+  const mapboxUrl = `https://api.mapbox.com/styles/v1/mapbox/${style}/static/${path}/auto/${size}x${size}?padding=${padding}&access_token=${token}`;
 
   try {
     const res = await fetch(mapboxUrl);

@@ -12,6 +12,7 @@ const DEFAULT_STYLE = "light-v11";
 
 type StaticMapOptions = {
   size?: number;
+  padding?: number;
   style?: "light-v11" | "streets-v12" | "outdoors-v12";
 };
 
@@ -22,6 +23,7 @@ export function buildRouteStaticMapUrl(
   if (route.length < 2) return null;
   const size = options.size ?? 256;
   const style = options.style ?? DEFAULT_STYLE;
+  const padding = options.padding ?? 48;
   const encoded = encodePolyline(route);
 
   if (mapboxUseProxy()) {
@@ -29,6 +31,7 @@ export function buildRouteStaticMapUrl(
       encoded,
       size: String(size),
       style,
+      padding: String(padding),
     });
     return `/api/mapbox/static-map?${params.toString()}`;
   }
@@ -36,7 +39,7 @@ export function buildRouteStaticMapUrl(
   const token = mapboxPublicToken();
   if (!token) return null;
   const path = `path-4+e60000(${encodeURIComponent(encoded)})`;
-  return `https://api.mapbox.com/styles/v1/mapbox/${style}/static/${path}/auto/${size}x${size}?padding=12&access_token=${token}`;
+  return `https://api.mapbox.com/styles/v1/mapbox/${style}/static/${path}/auto/${size}x${size}?padding=${padding}&access_token=${token}`;
 }
 
 /**
