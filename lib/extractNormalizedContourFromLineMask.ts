@@ -314,6 +314,77 @@ function binarySearchCumulative(arr: number[], target: number): number {
   return lo - 1 >= 0 ? lo - 1 : 0;
 }
 
+type PieceRing = {
+  ring: [number, number][];
+  cx: number;
+  cy: number;
+  height: number;
+};
+
+function pieceOf(ring: [number, number][]): PieceRing {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of ring) {
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  return {
+    ring,
+    cx: (minX + maxX) / 2,
+    cy: (minY + maxY) / 2,
+    height: Math.max(1, maxY - minY),
+  };
+}
+
+/**
+ * Order traced pieces the way a person reads the artwork: rows top to
+ * bottom, left to right within a row. The tracer's own component order
+ * follows ink size, which drew connectors criss-crossing the words.
+ */
+function sortPiecesInReadingOrder(pieces: PieceRing[]): void {
+  const medianHeight = [...pieces]
+    .map((p) => p.height)
+    .sort((a, b) => a - b)[Math.floor(pieces.length / 2)]!;
+  pieces.sort((a, b) => a.cy - b.cy);
+  const rows: PieceRing[][] = [];
+  for (const p of pieces) {
+    const row = rows[rows.length - 1];
+    if (row && Math.abs(p.cy - row[0]!.cy) < medianHeight * 0.6) {
+      row.push(p);
+    } else {
+      rows.push([p]);
+    }
+  }
+  pieces.length = 0;
+  for (const row of rows) {
+    row.sort((a, b) => a.cx - b.cx);
+    pieces.push(...row);
+  }
+}
+
+/** Rotate a closed ring so it starts at the vertex nearest `target`. */
+function rotateRingToNearest(
+  ring: [number, number][],
+  target: [number, number],
+): [number, number][] {
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < ring.length; i++) {
+    const d = Math.hypot(ring[i]![0] - target[0], ring[i]![1] - target[1]);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  const rotated = [...ring.slice(best), ...ring.slice(0, best)];
+  rotated.push(rotated[0]!);
+  return rotated;
+}
+
 export function extractNormalizedContourFromLineMask(
   mask: Uint8Array,
   level: number,
@@ -329,7 +400,44 @@ export function extractNormalizedContourFromLineMask(
     ? binaryPrepToLineMask(unionBinaryComponents(prepComponents, mask.length), mask.length)
     : null;
 
-  if (prepComponents.length) {
+  if (traceMask) {
+    // Multi-component art (a logo's symbol + letters): trace each RAW-INK
+    // component's outer ring — the crisp letterform the touch-up panel
+    // shows — instead of centerlines, whose skeleton artifacts melt small
+    // letters. Ring detection runs on the undilated ink: the gap-closed
+    // prep components merge adjacent letters into blobs whose outer ring is
+    // just a box. Pieces join in reading order (rows top-to-bottom, then
+    // left-to-right), each ring rotated to start nearest the previous
+    // piece's end, so pen jumps are short hops between neighbors instead
+    // of diagonals slashed across the words.
+    const largest = mooreContourRingsFromLineMask(mask, w, h)?.[0] ?? null;
+    const siblings = mooreSiblingOuterRings(mask, w, h, 30, 0.015, 16);
+    const rawRings = [largest, ...siblings].filter(
+      (r): r is [number, number][] => !!r && r.length >= 4,
+    );
+    if (rawRings.length >= 2) {
+      const pieces = rawRings.map((r) => pieceOf(simplifyRingPx(r.slice(), true)));
+      sortPiecesInReadingOrder(pieces);
+      const joined: [number, number][] = [];
+      for (let i = 0; i < pieces.length; i++) {
+        const piece = pieces[i]!;
+        // A closed ring starts and ends at the same vertex, so the FIRST
+        // piece is rotated toward the next piece — otherwise its exit
+        // connector runs from wherever the tracer happened to start (the
+        // swoosh's far tail tip) diagonally across the drawing.
+        const target: [number, number] = joined.length
+          ? joined[joined.length - 1]!
+          : pieces.length > 1
+            ? [pieces[1]!.cx, pieces[1]!.cy]
+            : piece.ring[0]!;
+        joined.push(...rotateRingToNearest(piece.ring, target));
+      }
+      ring = joined;
+      usedCenterline = true;
+    }
+  }
+
+  if (!ring && prepComponents.length) {
     const centerlines = prepComponents
       .map((comp) => centerlinePolylineFromPreparedBinary(comp, w, h))
       .filter((path): path is [number, number][] => !!path && path.length >= 4);
