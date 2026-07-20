@@ -4,6 +4,16 @@ import type { ContourPoint, PlacementTransform } from "./placementFromContour";
 const MARGIN = 0.012;
 const MIN_ROUTE_KM = 3;
 const MAX_ROUTE_KM = 35;
+/**
+ * Block-letter wordmarks get their own, much larger ceiling. They're drawn
+ * directly on avenue/street lines (routeMode "direct-grid"), so length here
+ * buys legibility rather than snap-mush: the best Nike result this project
+ * ever produced was "JUST DO IT" across 14th-54th Street at 50 km. Capping
+ * these at 35 km made that composition impossible to generate.
+ */
+const MAX_WORDMARK_ROUTE_KM = 56;
+/** ~0.003deg ≈ 250-330 m. See the call site in streetWordmarkCandidates. */
+const WORDMARK_BOUNDS_MARGIN = 0.003;
 
 export type MapNativeDesignDraft = {
   label: string;
@@ -1432,6 +1442,42 @@ function manhattanOpenSweepCandidates(
     scale: number;
   }> = [
     {
+      label: "short-logo-check",
+      anchors: [
+        [40.738, -74.003],
+        [40.732, -73.997],
+        [40.741, -73.988],
+        [40.755, -73.979],
+        [40.769, -73.972],
+      ],
+      rotation: 31,
+      scale: 1,
+    },
+    {
+      label: "chelsea-hook-check",
+      anchors: [
+        [40.745, -74.006],
+        [40.738, -73.999],
+        [40.736, -73.991],
+        [40.748, -73.981],
+        [40.768, -73.971],
+      ],
+      rotation: 31,
+      scale: 1,
+    },
+    {
+      label: "flat-logo-swoosh",
+      anchors: [
+        [40.732, -74.006],
+        [40.728, -73.999],
+        [40.734, -73.991],
+        [40.749, -73.981],
+        [40.771, -73.971],
+      ],
+      rotation: 31,
+      scale: 1,
+    },
+    {
       label: "compact-village-belly",
       anchors: [
         [40.733, -74.006],
@@ -1609,12 +1655,13 @@ function streetWordmarkAnchors(
 function candidateStaysInBounds(
   anchors: [number, number][],
   preset: CityPreset,
+  margin: number = MARGIN,
 ): boolean {
   const b = preset.searchBounds;
-  const innerS = b.south + MARGIN;
-  const innerN = b.north - MARGIN;
-  const innerW = b.west + MARGIN;
-  const innerE = b.east - MARGIN;
+  const innerS = b.south + margin;
+  const innerN = b.north - margin;
+  const innerW = b.west + margin;
+  const innerE = b.east - margin;
   return anchors.every(
     ([lat, lng]) =>
       lat >= innerS && lat <= innerN && lng >= innerW && lng <= innerE,
@@ -2173,9 +2220,13 @@ export function streetWordmarkCandidates(
       family.yStepMeters,
     );
     if (baseMeters <= 0) continue;
+    // Ceiling raised from 1.62: letters have to be several blocks thick to
+    // read from map altitude, and the multipliers below explore genuinely
+    // billboard-scale versions (the 14th-54th Street kind) alongside the
+    // modest ones, instead of only ever offering small.
     const distanceScale = Math.max(
       0.82,
-      Math.min(1.62, (targetKm * 1050) / baseMeters),
+      Math.min(2.9, (targetKm * 1050) / baseMeters),
     );
     for (const center of centers) {
       for (const bearing of bearings) {
@@ -2184,6 +2235,8 @@ export function streetWordmarkCandidates(
           distanceScale * 0.86,
           distanceScale * 1.08,
           distanceScale * 1.2,
+          distanceScale * 1.55,
+          distanceScale * 2.0,
         ]) {
           const anchors = streetWordmarkAnchors(
             family.points,
@@ -2192,15 +2245,28 @@ export function streetWordmarkCandidates(
             family.yStepMeters * m,
             bearing,
           );
-          if (anchors.length < 2 || !candidateStaysInBounds(anchors, preset)) {
+          // Tighter margin than the default 0.012deg (~1 km per side): on an
+          // island only ~5 km wide that buffer left a 3.2 km-wide canvas,
+          // which silently capped every wordmark at roughly half the size of
+          // the one that actually reads. These routes are drawn on real
+          // avenue/street lines, so they can't stray into the river the way
+          // a snapped silhouette can.
+          if (
+            anchors.length < 2 ||
+            !candidateStaysInBounds(anchors, preset, WORDMARK_BOUNDS_MARGIN)
+          ) {
             continue;
           }
           const km = routeLengthKm(anchors);
-          if (km < MIN_ROUTE_KM || km > MAX_ROUTE_KM) continue;
+          if (km < MIN_ROUTE_KM || km > MAX_WORDMARK_ROUTE_KM) continue;
+          // Only hold a wordmark to a requested distance when the user
+          // actually asked for one. Otherwise the band silently discarded
+          // every billboard-scale version in favour of small, cramped
+          // lettering — which is the version that doesn't read.
           if (
             targetDistanceKm != null &&
             Number.isFinite(targetDistanceKm) &&
-            (km < targetDistanceKm * 0.75 || km > targetDistanceKm * 1.75)
+            (km < targetDistanceKm * 0.6 || km > targetDistanceKm * 3.0)
           ) {
             continue;
           }
@@ -2218,8 +2284,8 @@ export function streetWordmarkCandidates(
   }
 
   return diverseSubsample(out, Math.min(24, out.length), preset);
-}
 
+}
 export function streetMonogramCandidates(
   word: string | null | undefined,
   preset: CityPreset,
@@ -2348,6 +2414,7 @@ export function cityGridSketchCandidates(
 
   const centers = cityFocusCenters(preset);
   const out: MapNativeCandidate[] = [];
+  const prioritySweepRoutes: MapNativeCandidate[] = [];
   const targetKm =
     targetDistanceKm != null && Number.isFinite(targetDistanceKm)
       ? targetDistanceKm
@@ -2355,17 +2422,17 @@ export function cityGridSketchCandidates(
 
   const variants = drafts.slice(0, 6).flatMap(streetDraftVariants);
   for (const draft of variants) {
-    if (isBoltDraft(draft)) {
+    if (isBoltDraft(draft) && !isSweepingCurveDraft(draft)) {
       out.push(...manhattanBoltCandidates(draft, preset, targetDistanceKm));
     }
     if (isSweepingCurveDraft(draft)) {
+      prioritySweepRoutes.push(
+        ...manhattanOpenSweepCandidates(draft, preset, targetDistanceKm),
+      );
       out.push(
         ...manhattanTaperedSwooshCandidates(draft, preset, targetDistanceKm),
         ...manhattanRibbonSweepCandidates(draft, preset, targetDistanceKm),
       );
-      if (!isTaperedOutlineDraft(draft)) {
-        out.push(...manhattanOpenSweepCandidates(draft, preset, targetDistanceKm));
-      }
     }
     const unitLength = localPolylineLength(draft.points);
     if (unitLength <= 0) continue;
@@ -2430,6 +2497,15 @@ export function cityGridSketchCandidates(
         }
       }
     }
+  }
+
+  if (prioritySweepRoutes.length > 0) {
+    const priority = prioritySweepRoutes.slice(0, Math.min(8, prioritySweepRoutes.length));
+    const restBudget = Math.max(0, 24 - priority.length);
+    return [
+      ...priority,
+      ...diverseSubsample(out, Math.min(restBudget, out.length), preset),
+    ];
   }
 
   return diverseSubsample(out, Math.min(24, out.length), preset);

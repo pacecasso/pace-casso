@@ -200,7 +200,10 @@ export function usableTargetDistanceKm(
     return explicitTargetDistanceKm;
   }
   if (!hint) return undefined;
-  if (hint.shapeClass === "letter") return 9;
+  // Lettering needs size above all else: a glyph stroke has to be several
+  // blocks thick to read from map altitude. 9 km produced cramped, illegible
+  // wordmarks; the best one this project has made is ~50 km.
+  if (hint.shapeClass === "letter") return 18;
   if (hint.shapeClass === "geometric") return 14;
   if (hint.shapeClass === "creature") {
     return hint.scaleHint === "sprawling" ? 18 : 14;
@@ -1296,9 +1299,18 @@ export function meetsAbsoluteDisplayFloor(
   const clean = clampPercent(candidate.qualityScore);
   const shape = clampPercent(candidate.shapeMatchScore);
   const distance = candidate.distanceKm;
+  // Block-letter wordmarks are drawn directly on avenue/street lines, where
+  // length is what makes the letters readable — the best one this project
+  // has made is 50 km. Judging them by the same distance rule as a snapped
+  // silhouette would throw away the good ones.
+  const gridWordmark =
+    candidate.kind === "street-wordmark" && candidate.routeMode === "direct-grid";
+  const maxKm = gridWordmark ? 56 : 32;
   if (shape < 30) return false;
   if (clean < 20) return false;
-  if (distance != null && Number.isFinite(distance) && distance > 32) return false;
+  if (distance != null && Number.isFinite(distance) && distance > maxKm) {
+    return false;
+  }
   return true;
 }
 
@@ -1308,9 +1320,14 @@ export function isDisplayWorthyAutoFindCandidate(
   const clean = Math.max(0, Math.min(100, candidate.qualityScore));
   const shape = Math.max(0, Math.min(100, candidate.shapeMatchScore));
   const distance = candidate.distanceKm;
+  // See meetsAbsoluteDisplayFloor: grid-drawn wordmarks earn a much larger
+  // distance budget, because scale is what makes block letters legible.
+  const gridWordmark =
+    candidate.kind === "street-wordmark" && candidate.routeMode === "direct-grid";
+  const maxKm = gridWordmark ? 56 : 30;
   if (shape < 40) return false;
   if (clean < 28) return false;
-  if (distance != null && Number.isFinite(distance) && distance > 30) {
+  if (distance != null && Number.isFinite(distance) && distance > maxKm) {
     return false;
   }
   return clean >= 28 || shape >= 58;
@@ -1352,13 +1369,17 @@ function finalRouteTruthFloors(
   const needsBolt = requiresBoltStructure(requiredVisualFeatures);
 
   if (directGridWordmark) {
-    return { minShape: 45, minSource: 20, minClean: 7, maxDistanceKm: 24 };
+    // Block letters are drawn straight onto avenue/street lines, so extra
+    // length is extra legibility, not sprawl — the best wordmark this
+    // project has produced ran 50 km across 14th-54th Street. A 24 km
+    // ceiling silently rejected exactly that class of route.
+    return { minShape: 45, minSource: 20, minClean: 7, maxDistanceKm: 56 };
   }
   if (isCuratedNike) {
     return { minShape: 42, minSource: 0, minClean: 20, maxDistanceKm: 12 };
   }
   if (isWordmark) {
-    return { minShape: 62, minSource: 42, minClean: 18, maxDistanceKm: 22 };
+    return { minShape: 62, minSource: 42, minClean: 18, maxDistanceKm: 42 };
   }
   if (hint?.shapeClass === "geometric" || needsStar || needsBolt) {
     return { minShape: 50, minSource: 28, minClean: 35, maxDistanceKm: 25 };

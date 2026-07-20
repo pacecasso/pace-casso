@@ -70,6 +70,10 @@ assert.equal(
   "scores should be clamped before blending",
 );
 
+// Lettering is the one class where scale IS legibility: a glyph stroke has
+// to be several blocks thick to read from map altitude. The 9 km default
+// produced cramped, unreadable wordmarks; the best one this project has
+// made ("JUST DO IT" across 14th-54th St) is roughly 50 km.
 assert.equal(
   usableTargetDistanceKm({
     shapeClass: "letter",
@@ -77,8 +81,8 @@ assert.equal(
     scaleHint: "sprawling",
     reason: "five letters",
   }),
-  9,
-  "uploaded wordmarks should default to a usable run distance, not a sprawling trace",
+  18,
+  "wordmarks aim big — block letters only read when they're drawn large",
 );
 
 assert.equal(
@@ -1305,11 +1309,19 @@ for (const word of ["ACME", "PACE", "NOVA", "LAUREN"]) {
   );
   assert(
     streetNativeWord.some((c) => c.km >= 5 && c.km <= 14),
-    "street-native wordmark candidates should start in a runnable distance band",
+    "street-native wordmark candidates should still offer a shorter, runnable option",
+  );
+  // The old ceiling here was 16 km, which is why uploaded wordmarks always
+  // came out cramped: block letters need to be several blocks thick to read
+  // from map altitude. The set now spans modest to billboard scale, and the
+  // hard cap lives in mapNativeDesigner (MAX_WORDMARK_ROUTE_KM).
+  assert(
+    streetNativeWord.every((c) => c.km <= 56),
+    "wordmark candidates stay inside the billboard-scale ceiling",
   );
   assert(
-    streetNativeWord.every((c) => c.km <= 16),
-    "street-native wordmark candidates should stay compact enough to inspect and run",
+    streetNativeWord.some((c) => c.km >= 20),
+    "wordmark candidates must include genuinely large versions, not only small ones",
   );
 }
 
