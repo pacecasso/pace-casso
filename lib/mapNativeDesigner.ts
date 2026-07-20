@@ -424,7 +424,11 @@ function wordmarkRawStrokePoints(word: string): ContourPoint[] {
     }
     for (const p of glyph) out.push({ x: ox + p.x, y: p.y });
   }
-  return out;
+  // Glyphs are authored with y=0 at the TOP, but the anchor transform sends
+  // larger y northward — so emitting them as-is drew every wordmark upside
+  // down on the map. Flip once here, where both the wordmark and lockup
+  // paths pick it up.
+  return out.map((p) => ({ x: p.x, y: 4 - p.y }));
 }
 
 function cleanLetterStroke(letter: string): ContourPoint[] {
@@ -530,7 +534,11 @@ function cleanWordmarkRawStrokePoints(word: string): ContourPoint[] {
     if (out.length > 0) out.push({ x: ox, y: 1 });
     for (const p of glyph) out.push({ x: ox + p.x, y: p.y });
   }
-  return out;
+  // Glyphs are authored with y=0 at the TOP, but the anchor transform sends
+  // larger y northward — so emitting them as-is drew every wordmark upside
+  // down on the map. Flip once here, where both the wordmark and lockup
+  // paths pick it up.
+  return out.map((p) => ({ x: p.x, y: 4 - p.y }));
 }
 
 function gridLetterStroke(letter: string): ContourPoint[] {
@@ -636,117 +644,60 @@ function gridWordmarkRawStrokePoints(word: string): ContourPoint[] {
     if (out.length > 0) out.push({ x: ox, y: 3 });
     for (const p of glyph) out.push({ x: ox + p.x, y: p.y });
   }
-  return out;
+  // Glyphs are authored with y=0 at the TOP, but the anchor transform sends
+  // larger y northward — so emitting them as-is drew every wordmark upside
+  // down on the map. Flip once here, where both the wordmark and lockup
+  // paths pick it up.
+  return out.map((p) => ({ x: p.x, y: 4 - p.y }));
 }
 
+/**
+ * Single-stroke block letterforms on a 2.4 x 4 box (x left->right, y 0 at
+ * the top). Each glyph is one continuous path; where a letterform needs a
+ * stroke twice (crossbars, stems) it retraces its own ink, which is exactly
+ * how these are run on the ground.
+ *
+ * Only nine letters used to be defined here — every other character fell
+ * through to a crude fallback, so "JUST DO IT" rendered as illegible stubs
+ * (about eight points per glyph). That is why the wordmark route could
+ * never reproduce the reference lockup, no matter how large it was drawn.
+ */
+const BLOCK_LETTER_STROKES: Record<string, [number, number][]> = {
+  A: [[0,4],[0,0],[2.4,0],[2.4,4],[2.4,2],[0,2]],
+  B: [[0,4],[0,0],[2,0],[2,2],[0,2],[2.4,2],[2.4,4],[0,4]],
+  C: [[2.4,0],[0,0],[0,4],[2.4,4]],
+  D: [[0,4],[0,0],[1.8,0],[2.4,1],[2.4,3],[1.8,4],[0,4]],
+  E: [[2.4,0],[0,0],[0,2],[1.8,2],[0,2],[0,4],[2.4,4]],
+  F: [[2.4,0],[0,0],[0,2],[1.8,2],[0,2],[0,4]],
+  G: [[2.4,0],[0,0],[0,4],[2.4,4],[2.4,2.4],[1.2,2.4]],
+  H: [[0,0],[0,4],[0,2],[2.4,2],[2.4,0],[2.4,4]],
+  I: [[0.4,0],[2,0],[1.2,0],[1.2,4],[0.4,4],[2,4]],
+  J: [[0.4,0],[2.4,0],[1.6,0],[1.6,4],[0,4],[0,2.8]],
+  K: [[0,0],[0,4],[0,2],[2.4,2],[2.4,0],[2.4,2],[2.4,4]],
+  L: [[0,0],[0,4],[2.4,4]],
+  M: [[0,4],[0,0],[1.2,0],[1.2,2],[1.2,0],[2.4,0],[2.4,4]],
+  N: [[0,4],[0,0],[1.2,0],[1.2,2],[2.4,2],[2.4,0],[2.4,4]],
+  O: [[0.6,0],[2.4,0],[2.4,4],[0,4],[0,0],[0.6,0]],
+  P: [[0,4],[0,0],[2.4,0],[2.4,2],[0,2]],
+  Q: [[0.6,0],[2.4,0],[2.4,4],[0,4],[0,0],[0.6,0],[1.4,2.6],[1.4,4],[2.4,4]],
+  R: [[0,4],[0,0],[2.4,0],[2.4,2],[0,2],[1.4,2],[1.4,4],[2.4,4]],
+  S: [[2.4,0],[0,0],[0,2],[2.4,2],[2.4,4],[0,4]],
+  T: [[0,0],[2.4,0],[1.2,0],[1.2,4]],
+  U: [[0,0],[0,4],[2.4,4],[2.4,0]],
+  V: [[0,0],[0.6,4],[1.8,4],[2.4,0]],
+  W: [[0,0],[0,4],[1.2,4],[1.2,1.6],[1.2,4],[2.4,4],[2.4,0]],
+  X: [[0,0],[0,1.4],[2.4,2.6],[2.4,4],[2.4,2.6],[0,2.6],[0,4]],
+  Y: [[0,0],[0,1.6],[1.2,1.6],[2.4,1.6],[2.4,0],[2.4,1.6],[1.2,1.6],[1.2,4]],
+  Z: [[0,0],[2.4,0],[2.4,2],[0,2],[0,4],[2.4,4]],
+};
+
 function blockLetterStroke(letter: string): ContourPoint[] {
-  switch (letter) {
-    case "A":
-      return [
-        { x: 0, y: 4 },
-        { x: 0, y: 0 },
-        { x: 2.4, y: 0 },
-        { x: 2.4, y: 4 },
-        { x: 2.4, y: 2 },
-        { x: 0, y: 2 },
-        { x: 0, y: 4 },
-      ];
-    case "E":
-      return [
-        { x: 0, y: 0 },
-        { x: 0, y: 4 },
-        { x: 2.4, y: 4 },
-        { x: 0, y: 4 },
-        { x: 0, y: 2 },
-        { x: 2, y: 2 },
-        { x: 0, y: 2 },
-        { x: 0, y: 0 },
-        { x: 2.4, y: 0 },
-        { x: 0, y: 0 },
-        { x: 0, y: 4 },
-        { x: 2.4, y: 4 },
-      ];
-    case "H":
-      return [
-        { x: 0, y: 0 },
-        { x: 0, y: 4 },
-        { x: 0, y: 2 },
-        { x: 2.4, y: 2 },
-        { x: 2.4, y: 0 },
-        { x: 2.4, y: 4 },
-      ];
-    case "L":
-      return [
-        { x: 0, y: 0 },
-        { x: 0, y: 4 },
-        { x: 2.4, y: 4 },
-      ];
-    case "N":
-      return [
-        { x: 0, y: 4 },
-        { x: 0, y: 0 },
-        { x: 0.6, y: 0 },
-        { x: 0.6, y: 1 },
-        { x: 1.2, y: 1 },
-        { x: 1.2, y: 2 },
-        { x: 1.8, y: 2 },
-        { x: 1.8, y: 3 },
-        { x: 2.4, y: 3 },
-        { x: 2.4, y: 0 },
-        { x: 2.4, y: 4 },
-      ];
-    case "M":
-      return [
-        { x: 0, y: 4 },
-        { x: 0, y: 0 },
-        { x: 0.6, y: 0 },
-        { x: 0.6, y: 1.6 },
-        { x: 1.2, y: 1.6 },
-        { x: 1.2, y: 0 },
-        { x: 1.8, y: 0 },
-        { x: 1.8, y: 1.6 },
-        { x: 2.4, y: 1.6 },
-        { x: 2.4, y: 0 },
-        { x: 2.4, y: 4 },
-      ];
-    case "P":
-      return [
-        { x: 0, y: 4 },
-        { x: 0, y: 0 },
-        { x: 2.4, y: 0 },
-        { x: 2.4, y: 2 },
-        { x: 0, y: 2 },
-        { x: 0, y: 4 },
-        { x: 2.4, y: 4 },
-      ];
-    case "R":
-      return [
-        { x: 0, y: 4 },
-        { x: 0, y: 0 },
-        { x: 2.4, y: 0 },
-        { x: 2.4, y: 2 },
-        { x: 0, y: 2 },
-        { x: 1.2, y: 2 },
-        { x: 1.2, y: 3 },
-        { x: 1.8, y: 3 },
-        { x: 1.8, y: 4 },
-        { x: 2.4, y: 4 },
-      ];
-    case "U":
-      return [
-        { x: 0, y: 0 },
-        { x: 0, y: 3.2 },
-        { x: 0.4, y: 4 },
-        { x: 2, y: 4 },
-        { x: 2.4, y: 3.2 },
-        { x: 2.4, y: 0 },
-      ];
-    default:
-      return gridLetterStroke(letter).map((p) => ({
-        x: p.x * 1.2,
-        y: (p.y / 3) * 4,
-      }));
-  }
+  const glyph = BLOCK_LETTER_STROKES[letter.toUpperCase()];
+  if (glyph) return glyph.map(([x, y]) => ({ x, y }));
+  return gridLetterStroke(letter).map((p) => ({
+    x: p.x * 1.2,
+    y: (p.y / 3) * 4,
+  }));
 }
 
 function blockWordmarkRawStrokePoints(word: string): ContourPoint[] {
@@ -759,19 +710,25 @@ function blockWordmarkRawStrokePoints(word: string): ContourPoint[] {
   const advance = 3.35;
   for (let i = 0; i < letters.length; i++) {
     const ox = i * advance;
-    const glyph = blockLetterStroke(letters[i]!).slice();
-    const first = glyph[0]!;
-    if (Math.hypot(first.x, first.y - 4) > 0.01) {
-      glyph.unshift({ x: 0, y: 4 });
+    const glyph = blockLetterStroke(letters[i]!);
+    if (!glyph.length) continue;
+    // Travel to the next letter along the baseline instead of forcing every
+    // glyph to begin bottom-left and end bottom-right. That forcing bolted
+    // an extra stroke onto both ends of every letter, which is what turned
+    // the wordmark into a row of bars with a continuous underline rather
+    // than readable characters.
+    if (out.length > 0) {
+      const prev = out[out.length - 1]!;
+      if (Math.abs(prev.y - 4) > 0.01) out.push({ x: prev.x, y: 4 });
+      out.push({ x: ox + glyph[0]!.x, y: 4 });
     }
-    const last = glyph[glyph.length - 1]!;
-    if (Math.hypot(last.x - 2.4, last.y - 4) > 0.15) {
-      glyph.push({ x: 2.4, y: 4 });
-    }
-    if (out.length > 0) out.push({ x: ox, y: 4 });
     for (const p of glyph) out.push({ x: ox + p.x, y: p.y });
   }
-  return out;
+  // Glyphs are authored with y=0 at the TOP, but the anchor transform sends
+  // larger y northward — so emitting them as-is drew every wordmark upside
+  // down on the map. Flip once here, where both the wordmark and lockup
+  // paths pick it up.
+  return out.map((p) => ({ x: p.x, y: 4 - p.y }));
 }
 
 function gridWalkWordmarkPoints(points: ContourPoint[]): ContourPoint[] {
@@ -2303,7 +2260,9 @@ export function buildLockupStrokePoints(
   symbol: ContourPoint[],
   word: string,
 ): ContourPoint[] {
-  const wordPoints = gridWalkWordmarkPoints(blockWordmarkRawStrokePoints(word));
+  // Glyphs are already orthogonal; running the grid walker over them only
+  // re-corners strokes and destroys the letterforms.
+  const wordPoints = blockWordmarkRawStrokePoints(word);
   if (wordPoints.length < 2) return [];
   if (symbol.length < 3) return wordPoints;
 
