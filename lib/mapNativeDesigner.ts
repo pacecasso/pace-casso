@@ -2286,6 +2286,155 @@ export function streetWordmarkCandidates(
   return diverseSubsample(out, Math.min(24, out.length), preset);
 
 }
+/**
+ * Compose a LOCKUP: the uploaded symbol drawn large above its wordmark in
+ * block letters, as one continuous route — the arrangement of the best Nike
+ * result this project has produced (swoosh over "JUST DO IT", 14th-54th St).
+ *
+ * Tracing a lockup as a single outline can't work: glyph strokes are far
+ * smaller than a city block, so the words dissolve. Drawing the symbol from
+ * the traced contour and *setting* the text as block letters keeps both
+ * legible, and joining them with one vertical connector keeps it runnable.
+ *
+ * `symbol` is the traced contour in normalized 0..1 space (y down, as the
+ * trace screen produces it).
+ */
+export function buildLockupStrokePoints(
+  symbol: ContourPoint[],
+  word: string,
+): ContourPoint[] {
+  const wordPoints = gridWalkWordmarkPoints(blockWordmarkRawStrokePoints(word));
+  if (wordPoints.length < 2) return [];
+  if (symbol.length < 3) return wordPoints;
+
+  let wMinX = Infinity;
+  let wMaxX = -Infinity;
+  let wMinY = Infinity;
+  let wMaxY = -Infinity;
+  for (const p of wordPoints) {
+    wMinX = Math.min(wMinX, p.x);
+    wMaxX = Math.max(wMaxX, p.x);
+    wMinY = Math.min(wMinY, p.y);
+    wMaxY = Math.max(wMaxY, p.y);
+  }
+  const wordWidth = Math.max(1e-6, wMaxX - wMinX);
+  const wordHeight = Math.max(1e-6, wMaxY - wMinY);
+
+  let sMinX = Infinity;
+  let sMaxX = -Infinity;
+  let sMinY = Infinity;
+  let sMaxY = -Infinity;
+  for (const p of symbol) {
+    sMinX = Math.min(sMinX, p.x);
+    sMaxX = Math.max(sMaxX, p.x);
+    sMinY = Math.min(sMinY, p.y);
+    sMaxY = Math.max(sMaxY, p.y);
+  }
+  const sw = Math.max(1e-6, sMaxX - sMinX);
+  const sh = Math.max(1e-6, sMaxY - sMinY);
+
+  // Symbol spans the wordmark's width and about 1.4x its height, so it reads
+  // as the dominant mark rather than a decoration.
+  const targetW = wordWidth;
+  const targetH = wordHeight * 1.4;
+  const scale = Math.min(targetW / sw, targetH / sh);
+  const gap = wordHeight * 0.55;
+
+  // Which side of the word is "above" depends on the axis convention used by
+  // streetWordmarkAnchors; place the symbol beyond wMaxY and let the caller
+  // flip bearing if needed. Symbol y is inverted here because the traced
+  // contour uses screen coordinates (y down).
+  const placed: ContourPoint[] = symbol.map((p) => ({
+    x: wMinX + (p.x - sMinX) * scale + (wordWidth - sw * scale) / 2,
+    y: wMaxY + gap + (sMaxY - p.y) * scale,
+  }));
+
+  // Enter the word at its first point, having come down the connector from
+  // the symbol's end: symbol -> connector -> word, one continuous line.
+  const symbolEnd = placed[placed.length - 1]!;
+  const wordStart = wordPoints[0]!;
+  const connector: ContourPoint[] = [
+    { x: symbolEnd.x, y: symbolEnd.y },
+    { x: symbolEnd.x, y: wordStart.y },
+    { x: wordStart.x, y: wordStart.y },
+  ];
+
+  // Grid-walk ONLY the symbol and connector. wordPoints are already walked,
+  // and running the walker over them a second time collapses the glyph
+  // strokes into illegible stubs.
+  return [...gridWalkWordmarkPoints([...placed, ...connector]), ...wordPoints];
+}
+
+export function streetLockupCandidates(
+  symbol: ContourPoint[],
+  word: string | null | undefined,
+  preset: CityPreset,
+  targetDistanceKm?: number,
+): MapNativeCandidate[] {
+  if (preset.id !== "manhattan" || !word) return [];
+  const cleanWord = word.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 8);
+  if (cleanWord.length < 2) return [];
+  const points = buildLockupStrokePoints(symbol, cleanWord);
+  if (points.length < 8) return [];
+
+  const targetKm =
+    targetDistanceKm != null && Number.isFinite(targetDistanceKm)
+      ? targetDistanceKm
+      : 18;
+  const out: MapNativeCandidate[] = [];
+  const centers: [number, number][] = [
+    [40.744, -73.99],
+    [40.752, -73.988],
+    [40.758, -73.985],
+  ];
+  // Same cross-street bearings the wordmark families use.
+  const bearings = [107, 112, 118];
+  const baseSteps = [
+    { x: 132, y: 150 },
+    { x: 155, y: 178 },
+    { x: 178, y: 205 },
+  ];
+
+  for (const step of baseSteps) {
+    for (const center of centers) {
+      for (const bearing of bearings) {
+        for (const m of [1, 1.25, 1.55]) {
+          const anchors = streetWordmarkAnchors(
+            points,
+            center,
+            step.x * m,
+            step.y * m,
+            bearing,
+          );
+          if (
+            anchors.length < 2 ||
+            !candidateStaysInBounds(anchors, preset, WORDMARK_BOUNDS_MARGIN)
+          ) {
+            continue;
+          }
+          const km = routeLengthKm(anchors);
+          if (km < MIN_ROUTE_KM || km > MAX_WORDMARK_ROUTE_KM) continue;
+          if (
+            Number.isFinite(targetKm) &&
+            (km < targetKm * 0.5 || km > targetKm * 3.2)
+          ) {
+            continue;
+          }
+          out.push({
+            placement: sourceAlignedPlacementFromAnchors(anchors, bearing),
+            anchors,
+            km,
+            designIntent: `Street-native ${cleanWord} lockup: the uploaded symbol drawn large above ${cleanWord} in block letters, joined as one route. Features: letters, ${cleanWord.split("").join(" ")}, symbol, logo lockup, reading order, baseline, full wordmark.`,
+            kind: "street-wordmark",
+            routeMode: "direct-grid",
+          });
+        }
+      }
+    }
+  }
+  return diverseSubsample(out, Math.min(12, out.length), preset);
+}
+
 export function streetMonogramCandidates(
   word: string | null | undefined,
   preset: CityPreset,
