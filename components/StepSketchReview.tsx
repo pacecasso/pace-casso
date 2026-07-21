@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
-import { Check, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, Maximize, Plus, RotateCcw, Trash2, ZoomIn, ZoomOut } from "lucide-react";
 import type { NormalizedPoint } from "./Step1ImageUpload";
 import {
   buildSketchReviewOptions,
@@ -52,6 +52,74 @@ export default function StepSketchReview({
   const [history, setHistory] = useState<NormalizedSketchPoint[][]>([]);
   const svgRef = useRef<SVGSVGElement>(null);
   const dragIndexRef = useRef<number | null>(null);
+  // Zoom/pan viewport in the 0-1000 sketch space. Dense traces (a logo
+  // with letters is 200+ points) are uneditable at fit-zoom — the user
+  // must be able to zoom into one letter and drag its points.
+  const [view, setView] = useState({ cx: 500, cy: 500, scale: 1 });
+  const panRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+
+  const vbSize = 1000 / view.scale;
+  const clampView = useCallback((cx: number, cy: number, scale: number) => {
+    const s = Math.max(1, Math.min(8, scale));
+    const half = 500 / s;
+    return {
+      cx: Math.max(half, Math.min(1000 - half, cx)),
+      cy: Math.max(half, Math.min(1000 - half, cy)),
+      scale: s,
+    };
+  }, []);
+
+  const zoomBy = useCallback(
+    (factor: number, focus?: { x: number; y: number }) => {
+      setView((v) => {
+        const s = Math.max(1, Math.min(8, v.scale * factor));
+        if (s === v.scale) return v;
+        const f = focus ?? { x: v.cx, y: v.cy };
+        // Keep the focus point stationary on screen while scaling.
+        const ratio = v.scale / s;
+        return clampView(f.x - (f.x - v.cx) * ratio, f.y - (f.y - v.cy) * ratio, s);
+      });
+    },
+    [clampView],
+  );
+
+  // Wheel zoom needs a non-passive native listener; React's synthetic
+  // wheel handler can't preventDefault the page scroll.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const fx = (event.clientX - rect.left) / rect.width;
+      const fy = (event.clientY - rect.top) / rect.height;
+      setView((v) => {
+        const size = 1000 / v.scale;
+        const wx = v.cx - size / 2 + fx * size;
+        const wy = v.cy - size / 2 + fy * size;
+        const s = Math.max(1, Math.min(8, v.scale * (event.deltaY < 0 ? 1.18 : 1 / 1.18)));
+        if (s === v.scale) return v;
+        const ratio = v.scale / s;
+        const half = 500 / s;
+        return {
+          cx: Math.max(half, Math.min(1000 - half, wx - (wx - v.cx) * ratio)),
+          cy: Math.max(half, Math.min(1000 - half, wy - (wy - v.cy) * ratio)),
+          scale: s,
+        };
+      });
+    };
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // Editing marks scale down as the trace gets denser AND as the user
+  // zooms in, so a 250-point letter trace stays line-art instead of a
+  // blob of handles.
+  const density = Math.max(1, points.length / 60);
+  const routeStroke = Math.max(6, 28 / Math.sqrt(density)) / view.scale;
+  const handleR = Math.max(4, 12 / Math.sqrt(density)) / view.scale;
+  const handleStroke = Math.max(2.5, 8 / Math.sqrt(density)) / view.scale;
 
   const pushHistory = useCallback((current: NormalizedSketchPoint[]) => {
     setHistory((prev) => [...prev.slice(-14), current.map((p) => ({ ...p }))]);
@@ -79,16 +147,23 @@ export default function StepSketchReview({
     });
   }, []);
 
-  const pointFromEvent = useCallback((event: React.PointerEvent<SVGSVGElement>) => {
-    const svg = svgRef.current;
-    if (!svg) return null;
-    const rect = svg.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return null;
-    return {
-      x: (event.clientX - rect.left) / rect.width,
-      y: (event.clientY - rect.top) / rect.height,
-    };
-  }, []);
+  const pointFromEvent = useCallback(
+    (event: React.PointerEvent<SVGSVGElement>) => {
+      const svg = svgRef.current;
+      if (!svg) return null;
+      const rect = svg.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      const fx = (event.clientX - rect.left) / rect.width;
+      const fy = (event.clientY - rect.top) / rect.height;
+      // Map through the zoomed viewport back into 0-1 sketch space.
+      const size = 1000 / view.scale;
+      return {
+        x: (view.cx - size / 2 + fx * size) / 1000,
+        y: (view.cy - size / 2 + fy * size) / 1000,
+      };
+    },
+    [view],
+  );
 
   const startDrag = useCallback(
     (index: number, event: React.PointerEvent<SVGCircleElement>) => {
@@ -105,17 +180,42 @@ export default function StepSketchReview({
   const moveDrag = useCallback(
     (event: React.PointerEvent<SVGSVGElement>) => {
       const index = dragIndexRef.current;
-      if (index == null) return;
-      const next = pointFromEvent(event);
-      if (!next) return;
-      setPoints((current) => moveSketchPoint(current, index, next));
+      if (index != null) {
+        const next = pointFromEvent(event);
+        if (!next) return;
+        setPoints((current) => moveSketchPoint(current, index, next));
+        return;
+      }
+      const pan = panRef.current;
+      if (pan && pan.pointerId === event.pointerId) {
+        const svg = svgRef.current;
+        if (!svg) return;
+        const rect = svg.getBoundingClientRect();
+        if (rect.width <= 0) return;
+        const size = 1000 / view.scale;
+        const dx = ((event.clientX - pan.x) / rect.width) * size;
+        const dy = ((event.clientY - pan.y) / rect.height) * size;
+        panRef.current = { pointerId: pan.pointerId, x: event.clientX, y: event.clientY };
+        setView((v) => clampView(v.cx - dx, v.cy - dy, v.scale));
+      }
     },
-    [pointFromEvent],
+    [clampView, pointFromEvent, view.scale],
   );
 
   const endDrag = useCallback(() => {
     dragIndexRef.current = null;
+    panRef.current = null;
   }, []);
+
+  const startPan = useCallback(
+    (event: React.PointerEvent<SVGSVGElement>) => {
+      if (dragIndexRef.current != null) return;
+      if (view.scale <= 1) return;
+      panRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+      svgRef.current?.setPointerCapture(event.pointerId);
+    },
+    [view.scale],
+  );
 
   const addPoint = useCallback(() => {
     pushHistory(points);
@@ -171,7 +271,7 @@ export default function StepSketchReview({
                   d={toPath(option.points)}
                   fill="none"
                   stroke="#18844f"
-                  strokeWidth="38"
+                  strokeWidth={Math.max(10, 38 / Math.sqrt(Math.max(1, option.points.length / 60)))}
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 />
@@ -247,8 +347,10 @@ export default function StepSketchReview({
         <div className="relative aspect-square w-full max-w-[min(84vh,48rem)] border border-pace-line bg-pace-white shadow-sm">
           <svg
             ref={svgRef}
-            viewBox="0 0 1000 1000"
+            viewBox={`${view.cx - vbSize / 2} ${view.cy - vbSize / 2} ${vbSize} ${vbSize}`}
             className="h-full w-full touch-none"
+            style={{ cursor: view.scale > 1 ? "grab" : "default" }}
+            onPointerDown={startPan}
             onPointerMove={moveDrag}
             onPointerUp={endDrag}
             onPointerCancel={endDrag}
@@ -268,7 +370,7 @@ export default function StepSketchReview({
               points={toPolyline(contour)}
               fill="none"
               stroke="#111827"
-              strokeWidth="16"
+              strokeWidth={routeStroke * 0.55}
               strokeLinecap="round"
               strokeLinejoin="round"
               opacity="0.18"
@@ -277,7 +379,7 @@ export default function StepSketchReview({
               d={toPath(points)}
               fill="none"
               stroke="#18844f"
-              strokeWidth="28"
+              strokeWidth={routeStroke}
               strokeLinecap="round"
               strokeLinejoin="round"
             />
@@ -286,10 +388,10 @@ export default function StepSketchReview({
                 key={`${i}-${points.length}`}
                 cx={p.x * 1000}
                 cy={p.y * 1000}
-                r={selectedIndex === i ? 18 : 12}
+                r={selectedIndex === i ? handleR * 1.5 : handleR}
                 fill={selectedIndex === i ? "#ffb703" : "#ffffff"}
                 stroke={selectedIndex === i ? "#111827" : "#18844f"}
-                strokeWidth="8"
+                strokeWidth={handleStroke}
                 onPointerDown={(event) => startDrag(i, event)}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -299,7 +401,38 @@ export default function StepSketchReview({
             ))}
           </svg>
           <div className="pointer-events-none absolute bottom-3 left-3 rounded-md border border-pace-line bg-pace-white/90 px-3 py-2 font-dm text-xs font-semibold text-pace-muted shadow-sm">
-            {safePointCount(points)}
+            {safePointCount(points)} · {view.scale.toFixed(1)}x
+          </div>
+          <div className="absolute right-3 top-3 flex flex-col gap-1.5">
+            <button
+              type="button"
+              onClick={() => zoomBy(1.4)}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-pace-line bg-pace-white text-pace-ink shadow-sm transition hover:border-pace-yellow"
+              title="Zoom in (or scroll on the sketch)"
+              aria-label="Zoom in"
+            >
+              <ZoomIn size={16} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={() => zoomBy(1 / 1.4)}
+              disabled={view.scale <= 1}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-pace-line bg-pace-white text-pace-ink shadow-sm transition hover:border-pace-yellow disabled:cursor-not-allowed disabled:opacity-40"
+              title="Zoom out"
+              aria-label="Zoom out"
+            >
+              <ZoomOut size={16} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setView({ cx: 500, cy: 500, scale: 1 })}
+              disabled={view.scale <= 1}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-pace-line bg-pace-white text-pace-ink shadow-sm transition hover:border-pace-yellow disabled:cursor-not-allowed disabled:opacity-40"
+              title="Fit whole sketch"
+              aria-label="Fit whole sketch"
+            >
+              <Maximize size={16} aria-hidden="true" />
+            </button>
           </div>
         </div>
       </section>

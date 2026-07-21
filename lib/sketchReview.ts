@@ -119,12 +119,16 @@ export function splitSketchComponents(
   let current: NormalizedSketchPoint[] = points.length ? [points[0]!] : [];
   for (let i = 1; i < points.length; i++) {
     if (cuts.has(i - 1)) {
-      if (current.length >= 2) components.push(current);
+      // Keep 1-point components: a lone point between two connectors is a
+      // legitimate spike tip (the Nike swoosh's tail is heel -> TIP -> heel
+      // after simplification). Dropping it silently amputated the tail
+      // from every sketch variant while step 3 still showed it.
+      if (current.length >= 1) components.push(current);
       current = [];
     }
     current.push(points[i]!);
   }
-  if (current.length >= 2) components.push(current);
+  if (current.length >= 1) components.push(current);
   return components.length ? components : [points];
 }
 
@@ -206,15 +210,21 @@ export function buildSketchReviewOptions(
   // signal: it catches letter-dense traces whose components fuse.
   const componentCount = splitSketchComponents(clean).length;
   const scale = Math.max(1, componentCount);
-  const corners = countSharpCorners(clean);
+  // Count corners on a barely-decimated copy: the default 0.006 cleaning
+  // spacing rounds off the corners of SMALL letters (a letter 0.05 tall
+  // has outline points every ~0.003) and under-reports exactly the traces
+  // that need the big budgets. The readable variant also BUILDS from the
+  // fine copy for the same reason.
+  const fine = cleanSketchPoints(points, 0.002);
+  const corners = countSharpCorners(fine);
   if (typeof process !== "undefined" && process.env?.SKETCH_DEBUG === "1") {
     console.log(
-      `[sketchReview:debug] clean=${clean.length} components=${componentCount} corners=${corners} readableBudget=${Math.min(340, Math.max(72, scale * 34, Math.round(corners * 2.4)))}`,
+      `[sketchReview:debug] clean=${clean.length} fine=${fine.length} components=${componentCount} corners=${corners} readableBudget=${Math.min(360, Math.max(72, scale * 34, Math.round(corners * 2.4)))}`,
     );
   }
   const readable = simplifySketchPreservingComponents(
-    clean,
-    Math.min(340, Math.max(72, scale * 34, Math.round(corners * 2.4))),
+    fine,
+    Math.min(360, Math.max(72, scale * 34, Math.round(corners * 2.4))),
   );
   const routeSketch = simplifySketchPreservingComponents(
     smoothSketchPath(clean, 1),

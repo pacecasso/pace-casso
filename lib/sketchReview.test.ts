@@ -216,4 +216,26 @@ assert.deepEqual(
   );
 }
 
+// --- spike tips: 1-point components between two connectors ---------------
+// The swoosh tail simplifies to heel -> TIP -> heel: one far point between
+// two connector-length segments. splitSketchComponents used to discard
+// 1-point components, silently amputating the tail from every variant.
+{
+  const ring = Array.from({ length: 24 }, (_, i) => {
+    const a = (i / 24) * 2 * Math.PI;
+    return { x: 0.2 + 0.08 * Math.cos(a), y: 0.4 + 0.08 * Math.sin(a) };
+  });
+  const withTip = [...ring.slice(0, 12), { x: 0.86, y: 0.25 }, ...ring.slice(12)];
+  const comps = splitSketchComponents(withTip);
+  const tipComp = comps.find(
+    (c) => c.length === 1 && Math.hypot(c[0]!.x - 0.86, c[0]!.y - 0.25) < 0.01,
+  );
+  assert.ok(tipComp, "the spike tip must survive as its own component");
+  const readable = buildSketchReviewOptions(withTip).find((o) => o.id === "readable")!;
+  assert.ok(
+    readable.points.some((p) => Math.hypot(p.x - 0.86, p.y - 0.25) < 0.01),
+    "readable variant keeps the spike tip",
+  );
+}
+
 console.log("sketchReview tests ok");
