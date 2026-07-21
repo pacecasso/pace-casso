@@ -166,6 +166,34 @@ export function simplifySketchPreservingComponents(
   return out;
 }
 
+/**
+ * Sharp direction changes in the drawing. Letterforms are corner-dense —
+ * a block letter is 6-12 corners — while an organic shape (heart, swoosh
+ * belly) is corner-sparse. Corner count is the honest complexity measure:
+ * component counting under-reports lockups because the pen hops between
+ * ADJACENT letters are shorter than the connector threshold, fusing all
+ * the letters into one "component" and starving the budget (the JUST DO
+ * IT trace rendered as 84-point soup while the raw trace was perfect).
+ */
+function countSharpCorners(points: NormalizedSketchPoint[]): number {
+  let corners = 0;
+  for (let i = 1; i < points.length - 1; i++) {
+    const a = points[i - 1]!;
+    const b = points[i]!;
+    const c = points[i + 1]!;
+    const v1x = b.x - a.x;
+    const v1y = b.y - a.y;
+    const v2x = c.x - b.x;
+    const v2y = c.y - b.y;
+    const l1 = Math.hypot(v1x, v1y);
+    const l2 = Math.hypot(v2x, v2y);
+    if (l1 < 1e-6 || l2 < 1e-6) continue;
+    const cos = (v1x * v2x + v1y * v2y) / (l1 * l2);
+    if (cos < Math.cos((40 * Math.PI) / 180)) corners++;
+  }
+  return corners;
+}
+
 export function buildSketchReviewOptions(
   points: NormalizedSketchPoint[],
 ): SketchReviewOption[] {
@@ -174,24 +202,31 @@ export function buildSketchReviewOptions(
 
   // Multi-component art needs a budget that scales with how many separate
   // pieces the drawing has, or the variants destroy it (see
-  // simplifySketchPreservingComponents).
+  // simplifySketchPreservingComponents). Corner density is the second
+  // signal: it catches letter-dense traces whose components fuse.
   const componentCount = splitSketchComponents(clean).length;
   const scale = Math.max(1, componentCount);
+  const corners = countSharpCorners(clean);
+  if (typeof process !== "undefined" && process.env?.SKETCH_DEBUG === "1") {
+    console.log(
+      `[sketchReview:debug] clean=${clean.length} components=${componentCount} corners=${corners} readableBudget=${Math.min(340, Math.max(72, scale * 34, Math.round(corners * 2.4)))}`,
+    );
+  }
   const readable = simplifySketchPreservingComponents(
     clean,
-    Math.min(300, Math.max(72, scale * 34)),
+    Math.min(340, Math.max(72, scale * 34, Math.round(corners * 2.4))),
   );
   const routeSketch = simplifySketchPreservingComponents(
     smoothSketchPath(clean, 1),
-    Math.min(160, Math.max(42, scale * 15)),
+    Math.min(220, Math.max(42, scale * 15, Math.round(corners * 1.5))),
   );
   const bigTurns = simplifySketchPreservingComponents(
     smoothSketchPath(clean, 2),
-    Math.min(110, Math.max(26, scale * 10)),
+    Math.min(150, Math.max(26, scale * 10, Math.round(corners * 0.9))),
   );
   const minimal = simplifySketchPreservingComponents(
     smoothSketchPath(clean, 2),
-    Math.min(80, Math.max(16, scale * 7)),
+    Math.min(100, Math.max(16, scale * 7, Math.round(corners * 0.5))),
   );
 
   return [

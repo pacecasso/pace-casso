@@ -150,4 +150,70 @@ assert.deepEqual(
   );
 }
 
+// --- corner-dense lockups whose letters FUSE into one component -----------
+// The N-PHASE2 regression (July 21): a traced "swoosh + JUST DO IT" whose
+// pen hops between ADJACENT letters are shorter than the connector
+// threshold, so component counting sees ~2 pieces instead of ~10 and the
+// old component-scaled budget (72-84 points) mushed every letter. Corner
+// density is the signal that survives fusion: outline letters are corner
+// factories. The readable variant must keep every letter corner.
+{
+  const step = 0.004;
+  // A dense outline "letter" shaped like a plus sign: 12 sharp corners.
+  const plusLetter = (cx: number, cy: number, s: number): { x: number; y: number }[] => {
+    const corners: [number, number][] = [
+      [-1, -3], [1, -3], [1, -1], [3, -1], [3, 1], [1, 1],
+      [1, 3], [-1, 3], [-1, 1], [-3, 1], [-3, -1], [-1, -1],
+    ];
+    const pts: { x: number; y: number }[] = [];
+    for (let i = 0; i <= corners.length; i++) {
+      const [ax, ay] = corners[i % corners.length]!;
+      const [bx, by] = corners[(i + 1) % corners.length]!;
+      const segLen = Math.hypot(bx - ax, by - ay) * s;
+      const n = Math.max(1, Math.round(segLen / step));
+      for (let k = 0; k < n; k++) {
+        pts.push({
+          x: cx + (ax + ((bx - ax) * k) / n) * s,
+          y: cy + (ay + ((by - ay) * k) / n) * s,
+        });
+      }
+    }
+    return pts;
+  };
+  const letters: { x: number; y: number }[] = [];
+  const cornerTruth: { x: number; y: number }[] = [];
+  for (let i = 0; i < 8; i++) {
+    const cx = 0.08 + i * 0.115;
+    const cy = 0.7;
+    letters.push(...plusLetter(cx, cy, 0.014));
+    for (const [ax, ay] of [
+      [-1, -3], [1, -3], [1, -1], [3, -1], [3, 1], [1, 1],
+      [1, 3], [-1, 3], [-1, 1], [-3, 1], [-3, -1], [-1, -1],
+    ] as [number, number][]) {
+      cornerTruth.push({ x: cx + ax * 0.014, y: cy + ay * 0.014 });
+    }
+  }
+
+  const fusedComponents = splitSketchComponents(cleanSketchPoints(letters));
+  assert.ok(
+    fusedComponents.length <= 3,
+    `precondition: adjacent-letter hops must fuse (got ${fusedComponents.length} components)`,
+  );
+
+  const options = buildSketchReviewOptions(letters);
+  const readable = options.find((o) => o.id === "readable")!;
+  assert.ok(
+    readable.points.length >= 120,
+    `letter-dense trace needs a large readable budget, got ${readable.points.length}`,
+  );
+  let kept = 0;
+  for (const c of cornerTruth) {
+    if (readable.points.some((p) => Math.hypot(p.x - c.x, p.y - c.y) < 0.012)) kept++;
+  }
+  assert.ok(
+    kept >= cornerTruth.length * 0.9,
+    `readable must keep the letter corners: ${kept}/${cornerTruth.length}`,
+  );
+}
+
 console.log("sketchReview tests ok");
