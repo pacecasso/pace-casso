@@ -591,6 +591,7 @@ async function requestStreetTraceCandidates(
   preset: CityPreset,
   targetDistanceKm: number | undefined,
   requiredVisualFeatures: string[],
+  sourceLabel = "the uploaded shape",
 ): Promise<ValidCandidate[]> {
   if (preset.id !== "manhattan") return [];
   if (contour.length < 8) return [];
@@ -634,7 +635,7 @@ async function requestStreetTraceCandidates(
         kind: "street-design",
         routeMode: "direct-grid",
         designIntent:
-          `Street-traced organic route: Manhattan's real streets draw the uploaded shape at hero scale ` +
+          `Street-traced organic route: Manhattan's real streets draw ${sourceLabel} at hero scale ` +
           `(etch-a-sketch corridor trace, mean deviation ${c.meanDeviationM ?? "?"} m — the route hugs the artwork's own outline).` +
           featureText,
       });
@@ -5082,15 +5083,31 @@ export async function autoFindTop5(
   console.log(
     `[autoFindTop5] wordmark: eligible=${wordmarkEligible} text=${wordmarkText ?? "-"} lockupCandidates=${lockupRoutes.length}`,
   );
-  // Organic street tracing: the city's own streets draw single-component
-  // shapes at hero scale. Server CPU only — no paid API behind it.
+  // Organic street tracing: the city's own streets draw the shape at hero
+  // scale. Server CPU only — no paid API behind it. Trace BOTH the user's
+  // own contour (when it is one clean piece) AND the strongest symbol-only
+  // vision draft — for a logo upload, the AI's clean one-line symbol is the
+  // shape worth drawing organically, not the multi-component raw trace.
   const streetTracedRoutes = !options.anchorAround
-    ? await requestStreetTraceCandidates(
-        contour,
-        preset,
-        effectiveTargetDistanceKm,
-        requiredVisualFeatures,
-      )
+    ? (
+        await Promise.all([
+          requestStreetTraceCandidates(
+            contour,
+            preset,
+            effectiveTargetDistanceKm,
+            requiredVisualFeatures,
+          ),
+          lockupSymbolDraft
+            ? requestStreetTraceCandidates(
+                lockupSymbolDraft.points,
+                preset,
+                effectiveTargetDistanceKm,
+                requiredVisualFeatures,
+                `the "${lockupSymbolDraft.label}" interpretation of the upload`,
+              )
+            : Promise.resolve([]),
+        ])
+      ).flat()
     : [];
   const mapNativeRoutes = [
     ...lockupRoutes,
@@ -5170,7 +5187,7 @@ export async function autoFindTop5(
         effectiveTargetDistanceKm,
       )
     : [];
-  const streetTracedSubset = streetTracedRoutes.slice(0, 3);
+  const streetTracedSubset = streetTracedRoutes.slice(0, 4);
   const valid = [
     ...lockupSubset,
     ...streetTracedSubset,
