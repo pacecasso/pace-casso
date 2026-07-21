@@ -3584,12 +3584,19 @@ const WORDMARK_STOP_WORDS = new Set([
 function inferWordmarkPhrase(text: string): string | null {
   const runs = text.match(/\b[A-Z]{2,8}(?:\s+[A-Z]{1,8}){1,3}\b/g) ?? [];
   let best: string | null = null;
+  let bestLetters = 0;
   for (const run of runs) {
-    const joined = run.replace(/\s+/g, "");
-    if (joined.length > 8 || joined.length < 4) continue;
+    const letters = run.replace(/\s+/g, "");
+    if (letters.length > 10 || letters.length < 4) continue;
     const words = run.split(/\s+/);
     if (words.every((w) => WORDMARK_STOP_WORDS.has(w))) continue;
-    if (!best || joined.length > best.length) best = joined;
+    // Keep the SPACES: "JUST DO IT" typesets as stacked words (the
+    // reference-sheet layout), not as one crammed JUSTDOIT.
+    const normalized = words.join(" ");
+    if (!best || letters.length > bestLetters) {
+      best = normalized;
+      bestLetters = letters.length;
+    }
   }
   return best;
 }

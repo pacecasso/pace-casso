@@ -813,44 +813,115 @@ function rotateRingToBaseline(ring: ContourPoint[]): ContourPoint[] {
 
 const LETTER_STROKE_HALF_WIDTH = 0.34;
 
-function blockWordmarkRawStrokePoints(word: string): ContourPoint[] {
-  const letters = word
+/**
+ * Multi-word STACKED layout — the arrangement of the reference sheet Ralph
+ * holds up as the bar (nikegood.jpeg): "JUST" over "DO IT", real words with
+ * their spaces, each row's letters twice the size a crammed single line
+ * would allow. Words pack greedily into rows of at most `maxRowLetters`.
+ */
+function packWordsIntoRows(word: string, maxRowLetters = 5): string[][] {
+  const words = word
     .toUpperCase()
-    .replace(/[^A-Z]/g, "")
-    .slice(0, 8)
-    .split("");
+    .replace(/[^A-Z ]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  const rows: string[][] = [];
+  let current: string[] = [];
+  let letters = 0;
+  for (const w of words) {
+    if (current.length && letters + w.length > maxRowLetters) {
+      rows.push(current);
+      current = [];
+      letters = 0;
+    }
+    current.push(w.slice(0, maxRowLetters));
+    letters += w.length;
+    if (rows.length === 3) break; // at most 3 text rows
+  }
+  if (current.length && rows.length < 3) rows.push(current);
+  return rows;
+}
+
+function blockWordmarkRawStrokePoints(word: string): ContourPoint[] {
+  const rows = packWordsIntoRows(word);
+  if (!rows.length) return [];
   const out: ContourPoint[] = [];
   const advance = 3.55;
-  for (let i = 0; i < letters.length; i++) {
-    const ox = i * advance;
-    const glyph = blockLetterStroke(letters[i]!);
-    if (!glyph.length) continue;
-    // OUTLINE letterforms: each stroke of the glyph inflated into a closed
-    // band, drawn ring by ring. Rings start and end on their own baseline-
-    // most vertex, so travel between rings and letters is short baseline
-    // hops — never a stroke welded through a letterform.
-    const rings = splitGlyphStrokes(glyph)
-      .map((s) => inflateStrokeToRing(s, LETTER_STROKE_HALF_WIDTH))
-      .filter((r) => r.length >= 4)
-      .map(rotateRingToBaseline);
-    for (const ring of rings) {
-      if (out.length > 0) {
-        const prev = out[out.length - 1]!;
-        const entry = ring[0]!;
-        if (Math.abs(prev.y - 4) > 0.6 || Math.abs(entry.y + 0 - 4) > 0.6) {
-          // hop via the baseline only when either end sits away from it
-          out.push({ x: prev.x, y: 4 });
-          out.push({ x: ox + entry.x, y: 4 });
+  const wordGap = 1.9; // extra space between words on the same row
+  const rowHeight = 4;
+  const rowGap = 1.8;
+
+  const rowWidth = (row: string[]) =>
+    row.reduce((s, w) => s + w.length * advance, 0) + (row.length - 1) * wordGap;
+  const maxWidth = Math.max(...rows.map(rowWidth));
+
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r]!;
+    const yOff = r * (rowHeight + rowGap); // author space: y grows downward
+    const baseline = yOff + rowHeight;
+    let ox = (maxWidth - rowWidth(row)) / 2; // center each row
+    for (let w = 0; w < row.length; w++) {
+      const letters = row[w]!.split("");
+      for (const letter of letters) {
+        const glyph = blockLetterStroke(letter);
+        if (!glyph.length) {
+          ox += advance;
+          continue;
         }
+        // OUTLINE letterforms: each glyph stroke inflated into a closed
+        // band, drawn ring by ring. Rings start/end on their baseline-most
+        // vertex, so travel is baseline hops — never welded through a form.
+        // Dedupe strokes the baseline-normalization retraces duplicated —
+        // inflating a stroke twice drew doubled, slightly offset outlines.
+        const seenStrokes = new Set<string>();
+        const strokes = splitGlyphStrokes(glyph).filter((s) => {
+          const a = s[0]!;
+          const b = s[s.length - 1]!;
+          const f = `${a.x.toFixed(2)},${a.y.toFixed(2)}-${b.x.toFixed(2)},${b.y.toFixed(2)}`;
+          const r = `${b.x.toFixed(2)},${b.y.toFixed(2)}-${a.x.toFixed(2)},${a.y.toFixed(2)}`;
+          if (seenStrokes.has(f) || seenStrokes.has(r)) return false;
+          seenStrokes.add(f);
+          return true;
+        });
+        const rings = strokes
+          .map((s) => inflateStrokeToRing(s, LETTER_STROKE_HALF_WIDTH))
+          .filter((ring) => ring.length >= 4)
+          .map(rotateRingToBaseline);
+        for (const ring of rings) {
+          if (out.length > 0) {
+            const prev = out[out.length - 1]!;
+            const entry = { x: ox + ring[0]!.x, y: yOff + ring[0]!.y };
+            const rowChange = Math.abs(prev.y - baseline) > rowHeight * 0.75;
+            if (rowChange) {
+              // travel between text rows around the RIGHT EDGE of the block
+              // — a straight drop at prev.x would slash through the lower
+              // row's letterforms.
+              const edgeX = maxWidth + 1.4;
+              out.push({ x: edgeX, y: prev.y });
+              out.push({ x: edgeX, y: baseline });
+              out.push({ x: entry.x, y: baseline });
+            } else if (
+              Math.abs(prev.y - baseline) > 0.6 ||
+              Math.abs(entry.y - baseline) > 0.6
+            ) {
+              // same row: hop via the baseline
+              out.push({ x: prev.x, y: baseline });
+              out.push({ x: entry.x, y: baseline });
+            }
+          }
+          for (const p of ring) out.push({ x: ox + p.x, y: yOff + p.y });
+        }
+        ox += advance;
       }
-      for (const p of ring) out.push({ x: ox + p.x, y: p.y });
+      ox += wordGap;
     }
   }
   // Glyphs are authored with y=0 at the TOP, but the anchor transform sends
   // larger y northward — so emitting them as-is drew every wordmark upside
   // down on the map. Flip once here, where both the wordmark and lockup
   // paths pick it up.
-  return out.map((p) => ({ x: p.x, y: 4 - p.y }));
+  const totalH = rows.length * rowHeight + (rows.length - 1) * rowGap;
+  return out.map((p) => ({ x: p.x, y: totalH - p.y }));
 }
 
 function gridWalkWordmarkPoints(points: ContourPoint[]): ContourPoint[] {
@@ -2230,10 +2301,12 @@ export function streetWordmarkCandidates(
   if (preset.id !== "manhattan" || !word) return [];
   const cleanWord = word
     .toUpperCase()
-    .replace(/[^A-Z]/g, "")
-    .slice(0, 8);
-  if (cleanWord.length < 2) return [];
-  const letterSequence = cleanWord.split("").join(" ");
+    .replace(/[^A-Z ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 12);
+  if (cleanWord.replace(/ /g, "").length < 2) return [];
+  const letterSequence = cleanWord.replace(/ /g, "").split("").join(" ");
 
   const rawFamilies = [
     {
@@ -2481,11 +2554,12 @@ export function buildLockupStrokePoints(
   const sw = Math.max(1e-6, sMaxX - sMinX);
   const sh = Math.max(1e-6, sMaxY - sMinY);
 
-  // Symbol spans the wordmark's width and up to ~2.4x its height, so it
-  // reads as the dominant mark (the reference sheet's swoosh dwarfs its
-  // slogan) rather than a decoration.
+  // Symbol spans the wordmark's width and reads as the dominant mark (the
+  // reference sheet's swoosh dwarfs its slogan). Height keys on the WIDTH,
+  // not the text-block height — a stacked two-row block would otherwise
+  // balloon the symbol beyond any distance cap.
   const targetW = wordWidth;
-  const targetH = wordHeight * 2.4;
+  const targetH = Math.min(wordHeight * 2.4, wordWidth * 0.5);
   const scale = Math.min(targetW / sw, targetH / sh);
   const gap = wordHeight * 0.55;
 
@@ -2547,7 +2621,13 @@ export function streetLockupCandidates(
   targetDistanceKm?: number,
 ): MapNativeCandidate[] {
   if (preset.id !== "manhattan" || !word) return [];
-  const cleanWord = word.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 8);
+  const cleanWord = word
+    .toUpperCase()
+    .replace(/[^A-Z ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 12);
+  if (cleanWord.replace(/ /g, "").length < 2) return [];
   if (cleanWord.length < 2) return [];
   const points = buildLockupStrokePoints(symbol, cleanWord);
   if (points.length < 8) return [];
@@ -2576,7 +2656,7 @@ export function streetLockupCandidates(
         // Outline letterforms roughly double the drawn length per letter, so
         // smaller physical scales must exist for the km caps to accept —
         // and outlines stay readable smaller than hairline strokes did.
-        for (const m of [0.62, 0.8, 1, 1.25]) {
+        for (const m of [0.4, 0.5, 0.62, 0.8] ) {
           const anchors = streetWordmarkAnchors(
             points,
             center,
