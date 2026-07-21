@@ -18,7 +18,7 @@ import {
   buildArtPathInterpretations,
   type ArtPathInterpretation,
 } from "../lib/artPathInterpretation";
-import { otsuInkThreshold } from "../lib/otsuThreshold";
+import { inkThresholdForUpload } from "../lib/otsuThreshold";
 import type { PhotoContourWorkerResponse } from "../lib/photoContourWorkerMessages";
 import {
   looksLikeSvgFile,
@@ -1249,7 +1249,7 @@ export default function Step1ImageUpload({
         PHOTO_BLUR_SIGMA,
       );
       luminanceRef.current = blurredLum;
-      setThreshold(otsuInkThreshold(blurredLum));
+      setThreshold(inkThresholdForUpload(blurredLum));
 
       imageCtx.imageSmoothingEnabled = false;
       const scale = Math.min(BOX_SIZE / iw, BOX_SIZE / ih);

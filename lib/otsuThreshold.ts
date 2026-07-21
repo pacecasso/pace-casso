@@ -1,3 +1,30 @@
+/**
+ * Threshold for tracing an uploaded image's ink. Otsu splits the histogram
+ * into two classes — right for photos, wrong for light artwork on a white
+ * page: it lands BETWEEN the artwork's dark and light tones and erases
+ * every light stroke (a grey 3D swoosh lost its entire tail this way).
+ * When a dominant near-white background exists, everything that isn't
+ * background is ink — threshold sits just under white.
+ */
+export function inkThresholdForUpload(
+  values: Float32Array | number[],
+): number {
+  const otsu = otsuInkThreshold(values);
+  let white = 0;
+  let valid = 0;
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]!;
+    if (!Number.isFinite(v)) continue;
+    valid++;
+    if (v >= 0.92) white++;
+  }
+  if (valid === 0) return otsu;
+  if (white / valid >= 0.35) {
+    return Math.max(otsu, 0.85);
+  }
+  return otsu;
+}
+
 export function otsuInkThreshold(
   values: Float32Array | number[],
   options: { bins?: number; min?: number; max?: number } = {},
