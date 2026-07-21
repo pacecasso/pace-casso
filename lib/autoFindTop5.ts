@@ -4998,8 +4998,24 @@ export async function autoFindTop5(
   // wordmark (hint "letter") OR a lockup whose drafts describe text, like a
   // symbol sitting above a slogan. Tracing those produces scribble; setting
   // them as giant block letters is what actually reads on a map.
+  /**
+   * RUNNABLE ROUTES ONLY (July 21, Ralph's final call): drawn-over-the-map
+   * geometry — the map-native templates, block-letter wordmarks, and the
+   * symbol-over-slogan lockup — is measurably NOT a runnable route. The
+   * rails sit mid-block (median 5 m / max ~39 m off pavement), and
+   * corridor-snapping them onto the walk graph destroys the shapes (79.7%
+   * coverage, km-scale gaps — the physics is documented in the repo
+   * memory). Every candidate the user sees must be real pavement: Mapbox-
+   * snapped routes, lattice designs compiled onto real junctions, organic
+   * street-graph traces, or hand-verified curated routes. The word/template
+   * machinery stays in the codebase for bespoke commissions where a human
+   * signs off; it does not enter the instant flow.
+   */
+  const RUNNABLE_ROUTES_ONLY = true;
   const wordmarkEligible =
-    hint?.shapeClass === "letter" || visionDescribesLettering(visionDesignDrafts);
+    !RUNNABLE_ROUTES_ONLY &&
+    (hint?.shapeClass === "letter" ||
+      visionDescribesLettering(visionDesignDrafts));
   // Prefer the text vision actually read in the picture over the filename:
   // "nike.png" containing the JUST DO IT lockup should spell the slogan, not
   // the filename. Filename stays as the fallback for uploads vision can't
@@ -5024,7 +5040,8 @@ export async function autoFindTop5(
       ? "gas-pump-person"
       : null;
 
-  const generatedMapNativeRoutes = !options.anchorAround
+  const generatedMapNativeRoutes =
+    !RUNNABLE_ROUTES_ONLY && !options.anchorAround
     ? generateMapNativeCandidates({
         drafts: visionDesignDrafts,
         preset,
@@ -5079,7 +5096,10 @@ export async function autoFindTop5(
     `[autoFindTop5] lockup symbol source: ${lockupSymbolDraft ? `draft "${lockupSymbolDraft.label}" (${lockupSymbolDraft.points.length} pts)` : `trace (${contour.length} pts)`}`,
   );
   const lockupRoutes =
-    !options.anchorAround && wordmarkText && lockupSymbol.length >= 8
+    !RUNNABLE_ROUTES_ONLY &&
+    !options.anchorAround &&
+    wordmarkText &&
+    lockupSymbol.length >= 8
       ? streetLockupCandidates(
           lockupSymbol,
           wordmarkText,
@@ -5088,7 +5108,7 @@ export async function autoFindTop5(
         )
       : [];
   console.log(
-    `[autoFindTop5] wordmark: eligible=${wordmarkEligible} text=${wordmarkText ?? "-"} lockupCandidates=${lockupRoutes.length}`,
+    `[autoFindTop5] wordmark: eligible=${wordmarkEligible} text=${wordmarkText ?? "-"} lockupCandidates=${lockupRoutes.length} (runnableOnly=${RUNNABLE_ROUTES_ONLY})`,
   );
   // Organic street tracing: the city's own streets draw the shape at hero
   // scale. Server CPU only — no paid API behind it. Trace BOTH the user's
