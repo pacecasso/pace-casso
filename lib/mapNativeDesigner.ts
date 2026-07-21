@@ -742,6 +742,77 @@ function blockLetterStroke(letter: string): ContourPoint[] {
   );
 }
 
+/**
+ * Split a raw glyph polyline into its strokes at backtracks (glyphs like T
+ * retrace along a bar to reach the stem — inflating across a reversal makes
+ * a degenerate ring).
+ */
+function splitGlyphStrokes(glyph: ContourPoint[]): ContourPoint[][] {
+  const strokes: ContourPoint[][] = [];
+  let current: ContourPoint[] = [glyph[0]!];
+  for (let i = 1; i < glyph.length; i++) {
+    const p = glyph[i]!;
+    const prev = glyph[i - 1]!;
+    if (current.length >= 2) {
+      const back = current[current.length - 2]!;
+      const d1x = prev.x - back.x;
+      const d1y = prev.y - back.y;
+      const d2x = p.x - prev.x;
+      const d2y = p.y - prev.y;
+      const dot = d1x * d2x + d1y * d2y;
+      const m1 = Math.hypot(d1x, d1y) || 1;
+      const m2 = Math.hypot(d2x, d2y) || 1;
+      if (dot / (m1 * m2) < -0.85) {
+        strokes.push(current);
+        current = [prev];
+      }
+    }
+    current.push(p);
+  }
+  if (current.length >= 2) strokes.push(current);
+  return strokes;
+}
+
+/**
+ * Inflate a stroke polyline into a closed outline ring of the given half
+ * width — the difference between hairline letters that vanish at map scale
+ * and the fat outline letterforms of the reference JUST DO IT (nikegood):
+ * every stroke becomes a band drawn around both rails.
+ */
+function inflateStrokeToRing(stroke: ContourPoint[], half: number): ContourPoint[] {
+  const n = stroke.length;
+  if (n < 2) return [];
+  const normals: ContourPoint[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = stroke[Math.max(0, i - 1)]!;
+    const b = stroke[Math.min(n - 1, i + 1)]!;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const m = Math.hypot(dx, dy) || 1;
+    normals.push({ x: -dy / m, y: dx / m });
+  }
+  const left = stroke.map((p, i) => ({ x: p.x + normals[i]!.x * half, y: p.y + normals[i]!.y * half }));
+  const right = stroke.map((p, i) => ({ x: p.x - normals[i]!.x * half, y: p.y - normals[i]!.y * half }));
+  const ring = [...left, ...right.reverse()];
+  ring.push({ ...ring[0]! });
+  return ring;
+}
+
+/** Rotate a closed ring to start (and end) at its baseline-most vertex. */
+function rotateRingToBaseline(ring: ContourPoint[]): ContourPoint[] {
+  if (ring.length < 3) return ring;
+  const open = ring.slice(0, -1);
+  let best = 0;
+  for (let i = 1; i < open.length; i++) {
+    if (open[i]!.y > open[best]!.y + 1e-9) best = i;
+  }
+  const rotated = [...open.slice(best), ...open.slice(0, best)];
+  rotated.push({ ...rotated[0]! });
+  return rotated;
+}
+
+const LETTER_STROKE_HALF_WIDTH = 0.34;
+
 function blockWordmarkRawStrokePoints(word: string): ContourPoint[] {
   const letters = word
     .toUpperCase()
@@ -749,22 +820,31 @@ function blockWordmarkRawStrokePoints(word: string): ContourPoint[] {
     .slice(0, 8)
     .split("");
   const out: ContourPoint[] = [];
-  const advance = 3.35;
+  const advance = 3.55;
   for (let i = 0; i < letters.length; i++) {
     const ox = i * advance;
     const glyph = blockLetterStroke(letters[i]!);
     if (!glyph.length) continue;
-    // Travel to the next letter along the baseline instead of forcing every
-    // glyph to begin bottom-left and end bottom-right. That forcing bolted
-    // an extra stroke onto both ends of every letter, which is what turned
-    // the wordmark into a row of bars with a continuous underline rather
-    // than readable characters.
-    if (out.length > 0) {
-      const prev = out[out.length - 1]!;
-      if (Math.abs(prev.y - 4) > 0.01) out.push({ x: prev.x, y: 4 });
-      out.push({ x: ox + glyph[0]!.x, y: 4 });
+    // OUTLINE letterforms: each stroke of the glyph inflated into a closed
+    // band, drawn ring by ring. Rings start and end on their own baseline-
+    // most vertex, so travel between rings and letters is short baseline
+    // hops — never a stroke welded through a letterform.
+    const rings = splitGlyphStrokes(glyph)
+      .map((s) => inflateStrokeToRing(s, LETTER_STROKE_HALF_WIDTH))
+      .filter((r) => r.length >= 4)
+      .map(rotateRingToBaseline);
+    for (const ring of rings) {
+      if (out.length > 0) {
+        const prev = out[out.length - 1]!;
+        const entry = ring[0]!;
+        if (Math.abs(prev.y - 4) > 0.6 || Math.abs(entry.y + 0 - 4) > 0.6) {
+          // hop via the baseline only when either end sits away from it
+          out.push({ x: prev.x, y: 4 });
+          out.push({ x: ox + entry.x, y: 4 });
+        }
+      }
+      for (const p of ring) out.push({ x: ox + p.x, y: p.y });
     }
-    for (const p of glyph) out.push({ x: ox + p.x, y: p.y });
   }
   // Glyphs are authored with y=0 at the TOP, but the anchor transform sends
   // larger y northward — so emitting them as-is drew every wordmark upside
@@ -2418,13 +2498,15 @@ export function buildLockupStrokePoints(
     y: wMaxY + gap + (sMaxY - p.y) * scale,
   }));
 
-  // Enter the word at its first point, having come down the connector from
-  // the symbol's end: symbol -> connector -> word, one continuous line.
+  // Enter the word at its first point, having come from the symbol's end:
+  // travel ACROSS at symbol height to the word's left edge, then drop —
+  // dropping at the symbol's own x slashed a vertical line through the
+  // middle letters.
   const symbolEnd = placed[placed.length - 1]!;
   const wordStart = wordPoints[0]!;
   const connector: ContourPoint[] = [
     { x: symbolEnd.x, y: symbolEnd.y },
-    { x: symbolEnd.x, y: wordStart.y },
+    { x: wordStart.x, y: symbolEnd.y },
     { x: wordStart.x, y: wordStart.y },
   ];
 
@@ -2491,7 +2573,10 @@ export function streetLockupCandidates(
   for (const step of baseSteps) {
     for (const center of centers) {
       for (const bearing of bearings) {
-        for (const m of [1, 1.25, 1.55]) {
+        // Outline letterforms roughly double the drawn length per letter, so
+        // smaller physical scales must exist for the km caps to accept —
+        // and outlines stay readable smaller than hairline strokes did.
+        for (const m of [0.62, 0.8, 1, 1.25]) {
           const anchors = streetWordmarkAnchors(
             points,
             center,
