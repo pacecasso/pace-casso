@@ -141,16 +141,25 @@ than 60 points WILL BE REJECTED without being looked at. Spend the points on
 dense sampling of every curve (10-30 points per curve) and on the identity
 features. Only a single plain closed shape (heart, egg, circle) may use fewer.
 
-WORDS AND LETTERS (logos with slogans, wordmarks): an abstract mark alone
-(a swoosh, a chevron, an arc) is AMBIGUOUS as line art — strangers call it
-a leaf or a teardrop. Its words are what make it read. NEVER draw letter
-shapes point-by-point yourself — hand-drawn letter coordinates always come
-out as scribble. Instead, give the draft a "word" field (the text, at most
-~12 letters, e.g. "JUST DO IT") and make your "points" ONLY the symbol as
-one clean closed outline. The system composes the finished lockup — your
-symbol drawn large above the words in block letters — with proven layout
-machinery. Omit "word" when the upload has no text or the text is over
-~12 letters.
+WORDS AND LETTERS — HARD RULE: you may only use words that are VISIBLY
+PRINTED in the uploaded image. Never caption, label, or name the subject
+with invented text ("GAS" on a wordless pump logo, "PUMP" under a pump) —
+a labeled illustration is not the user's logo, and invented words are an
+automatic failure no matter how much they help recognition. When the
+upload DOES contain short printed text (6-12 letters), never draw letter
+shapes point-by-point yourself — hand-drawn letter coordinates always
+come out as scribble. Give the draft a "word" field with the EXACT text
+from the image and make your "points" ONLY the symbol as one clean
+closed outline; the system composes the lockup with proven machinery.
+
+ONE SUBJECT ONLY (multi-object logos): a logo showing two things side by
+side (a pump AND a person, a mascot AND a product) must be interpreted as
+ONE subject — pick the single most distinctive figure and draw only it,
+big. Measured across this project's whole history: no two-object street
+route has ever been recognized by blind judges (the objects merge into
+animal silhouettes); single bold subjects are the only street winners.
+Prefer asymmetric, characterful views (a profile with a nose beats a
+symmetric frontal blob — symmetry reads as hearts and dogs).
 
 Additionally return one extra JSON key at the top level:
   "acceptableGuesses": 4-10 short words/phrases a stranger might reasonably say when
@@ -695,7 +704,7 @@ export async function runArtistLoop(
   // poles), so a round costs ~40-60 s wall-clock and four rounds fit the
   // platform's 300 s cap. This is the difference between the economy loop
   // and the method that produced the unicorn: more shots, harder bar.
-  const maxRounds = Math.max(1, Math.min(6, opts.maxRounds ?? 4));
+  const maxRounds = Math.max(1, Math.min(12, opts.maxRounds ?? 4));
   const timeBudgetMs = opts.timeBudgetMs ?? 270_000;
   const progress = opts.onProgress ?? (() => {});
 
@@ -996,10 +1005,15 @@ export async function runArtistLoop(
   // winners". A route the blind judges couldn't recognize must never be
   // handed to the user with a straight face — that's how a mangled swoosh
   // shipped on July 20. Fail loudly instead; the client shows this message.
-  if (win.judge.recognizedCount < 2) {
+  // Two gates, both required: majority recognition AND real confidence.
+  // A run where two judges half-heartedly said "running person" at
+  // confidence 3 slipped through on count alone (July 22, gas logo) —
+  // low-confidence matches are judges guessing, not recognizing.
+  if (win.judge.recognizedCount < 2 || win.judge.medianConfidence < 5) {
     throw new Error(
-      "The artist tried, but blind judges couldn't recognize the street version " +
-        `(best guesses: ${[...new Set(win.judge.samples.map((s) => s.guess))].join(", ")}). ` +
+      "The artist tried, but blind judges couldn't confidently recognize the street version " +
+        `(best guesses: ${[...new Set(win.judge.samples.map((s) => s.guess))].join(", ")} ` +
+        `at median confidence ${win.judge.medianConfidence}/10). ` +
         "No route was delivered. Bold single shapes work best; thin marks and text don't survive street blocks yet.",
     );
   }
