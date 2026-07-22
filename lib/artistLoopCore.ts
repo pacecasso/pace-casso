@@ -130,7 +130,10 @@ export function axisAlign(local: Pt[]): Pt[] {
  * closed shapes may stay modest. Floor: at least a 4 km route and never a
  * sub-kilometre drawing.
  */
-export function toMeters(pts: StreetDesignPoint[]): {
+export function toMeters(
+  pts: StreetDesignPoint[],
+  capsOverride?: { maxWidthM?: number; maxHeightM?: number; maxRouteM?: number },
+): {
   local: Pt[];
   widthM: number;
   heightM: number;
@@ -146,7 +149,14 @@ export function toMeters(pts: StreetDesignPoint[]): {
   const h = Math.max(1e-6, maxY - minY);
   const { p25, perimeter, strokes } = strokeStats(pts);
 
-  const caps = Math.min(2450 / w, 3300 / h, 32000 / Math.max(perimeter, 1e-6));
+  // Lockups (symbol over block words) are the one class that must exceed
+  // the default caps: nikegood-scale letters need ~4 km of width and a
+  // ~50 km route or they mush at block quantization — the caller opts in.
+  const caps = Math.min(
+    (capsOverride?.maxWidthM ?? 2450) / w,
+    (capsOverride?.maxHeightM ?? 3300) / h,
+    (capsOverride?.maxRouteM ?? 32000) / Math.max(perimeter, 1e-6),
+  );
   let mpu = caps;
   if (strokes < 6) {
     // simple closed shapes: big enough to read, no need to eat the island
@@ -173,8 +183,13 @@ export function toMeters(pts: StreetDesignPoint[]): {
  * spacing (274 m avenue columns × 80 m street rows in the grid frame).
  * A composition that dies here will die on real streets.
  */
-export function simulateStreets(local: Pt[]): Pt[] {
-  const AVE = 274;
+export function simulateStreets(local: Pt[], aveM = 274): Pt[] {
+  // Default = worst-case west-side avenue spacing. Lockup letters live on
+  // the east side's fine grid (Madison/Park/Lex at ~140-160 m) where the
+  // real lattice compiler places them — simulating those at 274 m rejects
+  // compositions the compiler demonstrably handles (the 3/3-judged lattice
+  // wordmark's letters were 275 m wide).
+  const AVE = aveM;
   const ST = 80;
   // resample at ~40 m so long diagonals staircase like real compiled legs
   const dense: Pt[] = [];

@@ -24,6 +24,8 @@ import {
   type LatLng,
 } from "./latticeCompiler";
 import { getManhattanLatticeGraph } from "./manhattanLattice";
+import { LATTICE_GLYPHS, packWordRows } from "./latticeText";
+import { buildLockupStrokePoints } from "./mapNativeDesigner";
 import { buildInterpretationPrompt } from "./interpretationPrompt";
 import {
   reviewStreetDesignSketch,
@@ -65,7 +67,10 @@ async function callClaude(
       max_tokens: maxTokens,
       messages: [{ role: "user", content }],
     };
-    if (useThinking) body.thinking = { type: "adaptive" };
+    // Bounded thinking: adaptive let the designer burn the entire token
+    // budget on deliberation (stop=max_tokens with zero text) and single
+    // calls ran 130-240 s. A fixed budget keeps quality without the sprawl.
+    if (useThinking) body.thinking = { type: "enabled", budget_tokens: 6000 };
     let res: Response;
     try {
       res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -113,7 +118,7 @@ async function callClaude(
 // ---------------------------------------------------------------------------
 const DESIGNER_MODEL = "claude-opus-4-8";
 const JUDGE_MODEL = "claude-opus-4-8";
-const DRAFTS_PER_ROUND = 3;
+const DRAFTS_PER_ROUND = 4;
 
 const POC_ADDENDUM = `
 
@@ -136,10 +141,27 @@ than 60 points WILL BE REJECTED without being looked at. Spend the points on
 dense sampling of every curve (10-30 points per curve) and on the identity
 features. Only a single plain closed shape (heart, egg, circle) may use fewer.
 
+WORDS AND LETTERS (logos with slogans, wordmarks): an abstract mark alone
+(a swoosh, a chevron, an arc) is AMBIGUOUS as line art — strangers call it
+a leaf or a teardrop. Its words are what make it read. NEVER draw letter
+shapes point-by-point yourself — hand-drawn letter coordinates always come
+out as scribble. Instead, give the draft a "word" field (the text, at most
+~12 letters, e.g. "JUST DO IT") and make your "points" ONLY the symbol as
+one clean closed outline. The system composes the finished lockup — your
+symbol drawn large above the words in block letters — with proven layout
+machinery. Omit "word" when the upload has no text or the text is over
+~12 letters.
+
 Additionally return one extra JSON key at the top level:
-  "acceptableGuesses": 4-8 short words/phrases a stranger might reasonably say when
+  "acceptableGuesses": 4-10 short words/phrases a stranger might reasonably say when
   naming the subject of the finished route (synonyms and near-misses that should
-  count as recognition, e.g. for a gas-pump logo: ["gas pump","fuel pump","person at pump"]).`;
+  count as recognition, e.g. for a gas-pump logo: ["gas pump","fuel pump","person at pump"]).
+  For brand marks, include what a stranger who does NOT know the brand would call the
+  shape itself (a swoosh: "checkmark", "check mark"; an apple mark: "apple") and any
+  words the design spells out (spelled-out text IS recognition).`;
+
+/** Test-only hook for offline probes of the typesetter geometry. */
+export const __testTypesetWordSketch = typesetWordSketch;
 
 type ExemplarRecord = { tag: string; note: string; jpegBase64: string };
 
@@ -184,7 +206,128 @@ type DesignRound = {
   points: StreetDesignPoint[];
   label: string;
   visualFeatures: string[];
+  /** True when the composer built a symbol-over-words lockup — those get
+   * nikegood-scale size caps or the letters die at block quantization. */
+  isLockup?: boolean;
 };
+
+/**
+ * The artist's typesetter tool: set a word (or short stacked phrase) in
+ * single-stroke skeleton capitals inside a normalized band, using the
+ * proven glyph library. The AI declaring "word" + "wordBand" instead of
+ * hand-drawing letter coordinates is the difference between "JUST DO IT"
+ * and judges guessing "fishing rod" — measured July 22, 15 drafts in a
+ * row with hand-drawn letters, zero recognized.
+ */
+function typesetWordSketch(
+  word: string,
+  band: { x: number; y: number; w: number; h: number },
+  /** Pen position of the preceding symbol stroke, if any — the connector
+   * routes around the band's left edge instead of slashing across the
+   * text (the diagonal slash + letter row read as "grand piano"). */
+  from?: { x: number; y: number },
+): StreetDesignPoint[] {
+  const clean = word
+    .toUpperCase()
+    .replace(/[^A-Z ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean) return [];
+  const rows = packWordRows(clean, 6, 3) ?? [clean.slice(0, 12)];
+  const rowGap = 0.25;
+  const rowH = band.h / (rows.length + (rows.length - 1) * rowGap);
+  const out: StreetDesignPoint[] = [];
+  // Route the incoming pen around the band's left margin, never across
+  // the text area.
+  if (from) {
+    const edgeX = Math.max(0.01, band.x - 0.05);
+    out.push({ x: edgeX, y: from.y });
+    out.push({ x: edgeX, y: band.y + rowH });
+  }
+  rows.forEach((rowWord, r) => {
+    const letters = rowWord.split("");
+    const glyphCount = letters.filter((ch) => ch !== " ").length;
+    const spaceCount = letters.filter((ch) => ch === " ").length;
+    // Advance widths: normal letters 0.62 of row height, narrow (I) 0.28.
+    // WIDE tracking (0.5 rowH gaps, 0.9 word gaps): the lattice route that
+    // passed 3/3 blind judges had gaps as wide as its letters; tight
+    // tracking joins single-stroke capitals into a piano-key comb.
+    const GAP = 0.5;
+    const widthOf = (ch: string) =>
+      ch === " " ? 0.9 * rowH : (LATTICE_GLYPHS[ch]?.w === 0 ? 0.28 : 0.62) * rowH;
+    let totalW = 0;
+    for (const ch of letters) totalW += widthOf(ch);
+    totalW += (glyphCount + spaceCount - 1) * GAP * rowH;
+    const scale = totalW > band.w ? band.w / totalW : 1;
+    const rowTop = band.y + r * rowH * (1 + rowGap);
+    const baseY = rowTop + rowH * scale;
+    let cursor = band.x + (band.w - totalW * scale) / 2;
+    let rowStartIndex = out.length;
+    for (const ch of letters) {
+      const w = widthOf(ch) * scale;
+      if (ch !== " ") {
+        const glyph = LATTICE_GLYPHS[ch];
+        if (glyph) {
+          // Choose the glyph's traversal orientation so the connector from
+          // the previous pen position is as HORIZONTAL as possible — a
+          // level connector reads as a serif bar; a diagonal one reads as
+          // a phantom letter (T-to-D drew an "N").
+          const raw = glyph.path.map((p) => ({
+            x: cursor + p[0] * w,
+            y: baseY - p[1] * rowH * scale,
+          }));
+          const closed =
+            Math.hypot(
+              raw[0]!.x - raw[raw.length - 1]!.x,
+              raw[0]!.y - raw[raw.length - 1]!.y,
+            ) < 1e-6;
+          const orientations: { x: number; y: number }[][] = [];
+          if (closed && raw.length > 2) {
+            const loop = raw.slice(0, -1);
+            for (let s = 0; s < loop.length; s++) {
+              orientations.push([...loop.slice(s), ...loop.slice(0, s + 1)]);
+            }
+          } else {
+            orientations.push(raw, [...raw].reverse());
+          }
+          const prev = out[out.length - 1] ?? null;
+          let best = orientations[0]!;
+          if (prev) {
+            let bestScore = Infinity;
+            for (const o of orientations) {
+              // Short connectors, and connectors that ride LOW: entries and
+              // exits near the baseline keep inter-letter travel at shoe
+              // level. Cap-level rails join the letters into a piano
+              // keyboard; base-level ones read as ground.
+              const entry = o[0]!;
+              const exit = o[o.length - 1]!;
+              const score =
+                Math.hypot(entry.x - prev.x, entry.y - prev.y) +
+                0.8 * Math.abs(entry.y - baseY) +
+                0.8 * Math.abs(exit.y - baseY);
+              if (score < bestScore) {
+                bestScore = score;
+                best = o;
+              }
+            }
+          }
+          out.push(...best);
+        }
+      }
+      cursor += w + GAP * rowH * scale;
+    }
+    // Row change: travel around the right edge of the text block, never
+    // across the rows (the diagonal slashed straight through "IT").
+    if (r < rows.length - 1 && out.length > rowStartIndex) {
+      const exit = out[out.length - 1]!;
+      const edgeX = band.x + band.w + 0.03;
+      out.push({ x: edgeX, y: exit.y });
+      out.push({ x: edgeX, y: baseY + rowH * rowGap * 0.5 });
+    }
+    rowStartIndex = out.length;
+  });
+  return out;
+}
 
 function cleanPoints(raw: unknown): StreetDesignPoint[] {
   if (!Array.isArray(raw)) return [];
@@ -220,7 +363,9 @@ async function designerCall(
   ];
 
   for (let attempt = 0; attempt < 3; attempt++) {
-    const text = await callClaude(DESIGNER_MODEL, content, 32000, true);
+    // 6k thinking + room for 4 point-list drafts. 32k adaptive invited
+    // multi-minute thinking sprawl that blew the request budget on one call.
+    const text = await callClaude(DESIGNER_MODEL, content, 20000, true);
     let json: {
       label?: string;
       visualFeatures?: string[];
@@ -234,22 +379,53 @@ async function designerCall(
       continue;
     }
     const designs: DesignRound[] = [];
-    const rawDrafts =
+    type RawDraft = {
+      label?: string;
+      visualFeatures?: string[];
+      points?: unknown;
+      word?: unknown;
+      wordBand?: unknown;
+    };
+    const rawDrafts: RawDraft[] =
       Array.isArray(json.drafts) && json.drafts.length
-        ? json.drafts
+        ? (json.drafts as RawDraft[])
         : [{ label: json.label, visualFeatures: json.visualFeatures, points: json.points }];
     for (const d of rawDrafts.slice(0, DRAFTS_PER_ROUND)) {
-      const pts = cleanPoints(d.points);
+      let pts = cleanPoints(d.points);
+      let isLockup = false;
+      const wantsWord = typeof d.word === "string" && d.word.trim().length > 0;
+      if (wantsWord && pts.length >= 8) {
+        // The battle-tested lockup composer (mapNativeDesigner) lays the
+        // symbol out over block words with the connector/baseline lessons
+        // already learned — months of composition fixes the loop must not
+        // re-derive with ad-hoc heuristics.
+        const symbolCount = pts.length;
+        const composed = buildLockupStrokePoints(pts, (d.word as string).trim());
+        if (composed.length >= 8) {
+          // The composer emits map-frame coordinates (y up); the loop's
+          // sketch frame is image space (y down) — flip or the lockup
+          // renders upside-down with its rows swapped.
+          const ys = composed.map((p) => p.y);
+          const lo = Math.min(...ys);
+          const hi = Math.max(...ys);
+          pts = composed.map((p) => ({ x: p.x, y: lo + hi - p.y }));
+          isLockup = true;
+          console.log(
+            `[artist-loop] draft "${d.label}": composed lockup with "${(d.word as string).trim()}" — ${symbolCount} symbol pts -> ${pts.length} lockup pts`,
+          );
+        }
+      }
       if (pts.length < 8) continue;
       const featureCount = Array.isArray(d.visualFeatures) ? d.visualFeatures.length : 0;
       // Density pre-gate: many named features on a sparse line always fails.
-      if (featureCount >= 5 && pts.length < 55) continue;
+      if (!isLockup && featureCount >= 5 && pts.length < 55) continue;
       designs.push({
         points: pts,
         label: typeof d.label === "string" ? d.label : (json.label ?? "your design"),
         visualFeatures: Array.isArray(d.visualFeatures)
           ? d.visualFeatures.filter((f): f is string => typeof f === "string")
           : [],
+        isLockup,
       });
     }
     if (designs.length) {
@@ -515,8 +691,12 @@ export async function runArtistLoop(
   opts: ArtistLoopOptions,
 ): Promise<ArtistLoopRouteResult> {
   const t0 = Date.now();
-  const maxRounds = Math.max(1, Math.min(4, opts.maxRounds ?? 2));
-  const timeBudgetMs = opts.timeBudgetMs ?? 230_000;
+  // Drafts within a round evaluate in PARALLEL (the judges are the long
+  // poles), so a round costs ~40-60 s wall-clock and four rounds fit the
+  // platform's 300 s cap. This is the difference between the economy loop
+  // and the method that produced the unicorn: more shots, harder bar.
+  const maxRounds = Math.max(1, Math.min(6, opts.maxRounds ?? 4));
+  const timeBudgetMs = opts.timeBudgetMs ?? 270_000;
   const progress = opts.onProgress ?? (() => {});
 
   const imageBlock: ContentBlock = {
@@ -533,8 +713,9 @@ export async function runArtistLoop(
   let solved = false;
 
   for (let round = 1; round <= maxRounds && !solved; round++) {
-    // Never start a round we can't plausibly finish (~100 s worst case).
-    if (round > 1 && Date.now() - t0 > timeBudgetMs * 0.45) break;
+    // Never start a round we can't plausibly finish (~60 s worst case with
+    // parallel draft evaluation).
+    if (round > 1 && Date.now() - t0 > timeBudgetMs * 0.72) break;
 
     progress({
       stage: "designing",
@@ -560,85 +741,124 @@ export async function runArtistLoop(
     let sketchFailNote: { design: DesignRound; failBuf: Buffer; judge: JudgeResult } | null =
       null;
 
-    for (let di = 0; di < designs.length && !solved; di++) {
-      const design = designs[di]!;
-      const { local } = toMeters(design.points);
+    progress({
+      stage: "sketch-judge",
+      round,
+      detail: `Showing ${designs.length} drafts to blind judges in parallel…`,
+    });
 
-      // Stage 1: judge the CLEAN sketch. If strangers can't name the line
-      // drawing itself, streets will only make it worse — redraw, don't
-      // waste a compile.
-      progress({
-        stage: "sketch-judge",
-        round,
-        detail: `Draft ${di + 1}/${designs.length} ("${design.label}") — showing the sketch to blind judges…`,
-      });
-      const sketchBuf = await sketchJpeg(local);
-      const sketchJudge = await blindJudge(sketchBuf, acceptable, SKETCH_JUDGE_PROMPT);
-      if (sketchJudge.recognizedCount === 0) {
-        historyLines.push(
-          `Round ${round} draft "${design.label}" (${design.points.length} pts): CLEAN SKETCH already failed — strangers saw ${[...new Set(sketchJudge.samples.map((s) => s.guess))].join(" / ")}.`,
-        );
-        if (!sketchFailNote) sketchFailNote = { design, failBuf: sketchBuf, judge: sketchJudge };
+    // All drafts evaluate CONCURRENTLY — the blind-judge API calls are the
+    // wall-clock cost, and they parallelize cleanly. Each draft runs the
+    // full gauntlet: clean-sketch judge → block-quantization judge →
+    // lattice compile → street-map judge, with early-outs.
+    type DraftOutcome =
+      | { kind: "rec"; rec: RoundRecord }
+      | { kind: "sketch-fail"; design: DesignRound; failBuf: Buffer; judge: JudgeResult; line: string }
+      | { kind: "dead" };
+    const outcomes = await Promise.all(
+      designs.map(async (design, di): Promise<DraftOutcome> => {
+        try {
+          const { local } = toMeters(
+            design.points,
+            design.isLockup
+              ? { maxWidthM: 3900, maxHeightM: 3300, maxRouteM: 52000 }
+              : undefined,
+          );
+          // Stage 1: the CLEAN sketch. If strangers can't name the line
+          // drawing itself, streets only make it worse.
+          const sketchBuf = await sketchJpeg(local);
+          if (typeof process !== "undefined" && process.env?.ARTIST_LOOP_DUMP) {
+            const fsMod = await import("node:fs");
+            fsMod.writeFileSync(
+              `${process.env.ARTIST_LOOP_DUMP}/r${round}-d${di + 1}-${design.label.replace(/[^a-z0-9]+/gi, "-").slice(0, 40)}.jpg`,
+              sketchBuf,
+            );
+          }
+          const sketchJudge = await blindJudge(sketchBuf, acceptable, SKETCH_JUDGE_PROMPT);
+          if (sketchJudge.recognizedCount === 0) {
+            return {
+              kind: "sketch-fail",
+              design,
+              failBuf: sketchBuf,
+              judge: sketchJudge,
+              line: `Round ${round} draft "${design.label}" (${design.points.length} pts): CLEAN SKETCH already failed — strangers saw ${[...new Set(sketchJudge.samples.map((s) => s.guess))].join(" / ")}.`,
+            };
+          }
+          // Stage 2: street SIMULATOR — quantize to block spacing.
+          const simBuf = await sketchJpeg(
+            simulateStreets(local, design.isLockup ? 140 : undefined),
+            10,
+          );
+          const simJudge = await blindJudge(simBuf, acceptable, SKETCH_JUDGE_PROMPT);
+          if (simJudge.recognizedCount === 0) {
+            return {
+              kind: "sketch-fail",
+              design,
+              failBuf: simBuf,
+              judge: simJudge,
+              line: `Round ${round} draft "${design.label}": clean sketch was recognized, but after BLOCK QUANTIZATION strangers saw ${[...new Set(simJudge.samples.map((s) => s.guess))].join(" / ")} — features merged or degenerated at street scale.`,
+            };
+          }
+          progress({
+            stage: "compiling",
+            round,
+            detail: `Draft ${di + 1} ("${design.label}") survived the sketch gates — compiling onto real junctions…`,
+          });
+          const placement = placeAndCompile(local, graph);
+          if (!placement) return { kind: "dead" };
+          const c = placement.compiled;
+          const compiledLocal = c.chain.map((p) => toLocalFrom(placement.origin, p));
+          const compiledBuf = await sharp(
+            await svgToPng(
+              localSvg([
+                { pts: local, color: "#f2b8c0", width: 4 },
+                { pts: compiledLocal, color: "#111", width: 6 },
+              ]),
+            ),
+          )
+            .jpeg({ quality: 85 })
+            .toBuffer();
+          const mapPng = await renderMap(c.chain);
+          const judge = await blindJudge(await cropToRoute(mapPng), acceptable, JUDGE_PROMPT);
+          return {
+            kind: "rec",
+            rec: {
+              round,
+              design,
+              placement,
+              judge,
+              sketchJudge,
+              local,
+              mapPng,
+              sketchBuf,
+              compiledBuf,
+            },
+          };
+        } catch {
+          // One draft's failure (API hiccup, render error) must not sink
+          // the round — the other drafts carry it.
+          return { kind: "dead" };
+        }
+      }),
+    );
+
+    for (const outcome of outcomes) {
+      if (outcome.kind === "sketch-fail") {
+        historyLines.push(outcome.line);
+        // Surface WHY in the progress stream — "no draft survived" with no
+        // detail is undebuggable in production logs.
+        progress({ stage: "sketch-judge", round, detail: outcome.line });
+        if (!sketchFailNote) {
+          sketchFailNote = {
+            design: outcome.design,
+            failBuf: outcome.failBuf,
+            judge: outcome.judge,
+          };
+        }
         continue;
       }
-
-      // Stage 2: street SIMULATOR — quantize to block spacing and judge
-      // again. Survives here → usually survives real streets.
-      progress({
-        stage: "sim-judge",
-        round,
-        detail: `Draft ${di + 1} sketch recognized — checking it survives city blocks…`,
-      });
-      const simBuf = await sketchJpeg(simulateStreets(local), 10);
-      const simJudge = await blindJudge(simBuf, acceptable, SKETCH_JUDGE_PROMPT);
-      if (simJudge.recognizedCount === 0) {
-        historyLines.push(
-          `Round ${round} draft "${design.label}": clean sketch was recognized, but after BLOCK QUANTIZATION strangers saw ${[...new Set(simJudge.samples.map((s) => s.guess))].join(" / ")} — features merged or degenerated at street scale.`,
-        );
-        if (!sketchFailNote) sketchFailNote = { design, failBuf: simBuf, judge: simJudge };
-        continue;
-      }
-
-      progress({
-        stage: "compiling",
-        round,
-        detail: "Compiling the drawing onto real Manhattan street junctions…",
-      });
-      const placement = placeAndCompile(local, graph);
-      if (!placement) continue;
-      const c = placement.compiled;
-
-      const compiledLocal = c.chain.map((p) => toLocalFrom(placement.origin, p));
-      const compiledBuf = await sharp(
-        await svgToPng(
-          localSvg([
-            { pts: local, color: "#f2b8c0", width: 4 },
-            { pts: compiledLocal, color: "#111", width: 6 },
-          ]),
-        ),
-      )
-        .jpeg({ quality: 85 })
-        .toBuffer();
-
-      progress({
-        stage: "street-judge",
-        round,
-        detail: `Compiled to ${c.km.toFixed(1)} km of streets — blind-judging the map view…`,
-      });
-      const mapPng = await renderMap(c.chain);
-      const judge = await blindJudge(await cropToRoute(mapPng), acceptable, JUDGE_PROMPT);
-
-      const rec: RoundRecord = {
-        round,
-        design,
-        placement,
-        judge,
-        sketchJudge,
-        local,
-        mapPng,
-        sketchBuf,
-        compiledBuf,
-      };
+      if (outcome.kind !== "rec") continue;
+      const rec = outcome.rec;
       rounds.push(rec);
       if (
         !bestOfRound ||
@@ -648,7 +868,13 @@ export async function runArtistLoop(
       ) {
         bestOfRound = rec;
       }
-      if (judge.recognizedCount >= 2 && judge.medianConfidence >= 6) {
+      // The bar the unicorn set: unanimous at 6+ or strong majority at 7+.
+      // 2/3 at exactly 6 keeps iterating for something better (the old bar
+      // stopped there, which is why production output plateaued at "meh").
+      if (
+        rec.judge.recognizedCount >= 3 && rec.judge.medianConfidence >= 6 ||
+        (rec.judge.recognizedCount >= 2 && rec.judge.medianConfidence >= 7)
+      ) {
         solved = true;
       }
     }
