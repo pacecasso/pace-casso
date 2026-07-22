@@ -179,7 +179,13 @@ type TraceResult = {
 function traceContour(
   g: Graph,
   contour: LatLng[],
-  opts: { anchorM: number; lambda: number; corridorM: number },
+  opts: {
+    anchorM: number;
+    lambda: number;
+    corridorM: number;
+    trimSpikes?: boolean;
+    closeLoop?: boolean;
+  },
 ): TraceResult {
   const dense: LatLng[] = [];
   for (let i = 1; i < contour.length; i++) {
@@ -202,7 +208,11 @@ function traceContour(
       acc = 0;
     }
   }
-  anchors.push(dense[0]!); // close the loop
+  // A single closed blob loops back to its start; a multi-piece sketch is
+  // an OPEN drawing — force-closing it adds a phantom cross-drawing chord
+  // that can never route within the leg caps and poisons coverage at
+  // every placement.
+  if (opts.closeLoop !== false) anchors.push(dense[0]!);
 
   const chain: LatLng[] = [];
   let coveredM = 0;
@@ -245,7 +255,11 @@ function traceContour(
   }
   const total = coveredM + droppedM;
   return {
-    chain: trimNubs(out),
+    // trimSpikes=false preserves deliberate out-and-back strokes: a user
+    // sketch's spike (the swoosh tail, a unicorn horn) IS the art, and
+    // splicing it out amputates the drawing. Default stays on for
+    // single-blob organic shapes where spurs really are routing noise.
+    chain: opts.trimSpikes === false ? out : trimNubs(out),
     coverage: total > 0 ? coveredM / total : 0,
     maxGapM,
   };
@@ -416,7 +430,19 @@ function toUnit(contour: NormalizedPoint[]): UnitPoint[] {
  */
 export async function traceShapeOnStreets(
   contour: NormalizedPoint[],
-  options: { topK?: number; targetDistanceKm?: number } = {},
+  options: {
+    topK?: number;
+    targetDistanceKm?: number;
+    trimSpikes?: boolean;
+    /** Trace anchor spacing, meters. Default 200; multi-piece sketches
+     * with letter-scale detail need ~120 or the letters blur out. */
+    anchorM?: number;
+    /** Placement sweep overrides (half-size meters / rotation degrees). */
+    scales?: number[];
+    rots?: number[];
+    /** False for open multi-piece sketches (no phantom closing chord). */
+    closeLoop?: boolean;
+  } = {},
 ): Promise<StreetTraceCandidate[]> {
   const topK = Math.max(1, Math.min(4, options.topK ?? 3));
   const unit = toUnit(contour);
@@ -425,8 +451,8 @@ export async function traceShapeOnStreets(
 
   // Hero scale is what makes curves read (the circle proof spans Midtown).
   // scaleM is the shape's half-size: 1400 → ~2.8 km drawing.
-  const scales = [1400, 2000, 2700];
-  const rots = [0, 15, -15, 29];
+  const scales = options.scales ?? [1400, 2000, 2700];
+  const rots = options.rots ?? [0, 15, -15, 29];
   const cands: { center: LatLng; scale: number; rot: number; score: number }[] = [];
   for (let lat = 40.71; lat <= 40.792; lat += 0.008) {
     for (let lng = -74.012; lng <= -73.938; lng += 0.008) {
@@ -465,7 +491,21 @@ export async function traceShapeOnStreets(
       chain,
       coverage,
       maxGapM,
-    } = traceContour(g, target, { anchorM: 200, lambda: 12, corridorM: 90 });
+    } = traceContour(g, target, {
+      anchorM: options.anchorM ?? 200,
+      lambda: 12,
+      corridorM: 90,
+      trimSpikes: options.trimSpikes,
+      closeLoop: options.closeLoop,
+    });
+    if (
+      typeof process !== "undefined" &&
+      process.env?.STREET_TRACE_DEBUG === "1"
+    ) {
+      console.log(
+        `[street-trace:debug] scale=${pk.scale} rot=${pk.rot} coverage=${coverage.toFixed(3)} maxGap=${maxGapM.toFixed(0)} chain=${chain.length}`,
+      );
+    }
     if (chain.length < 8) continue;
     // RUNNABILITY GATE: every dropped leg is a teleport. If the streets
     // couldn't draw ≥95% of the shape connected, this placement is not a

@@ -48,7 +48,12 @@ export async function POST(req: Request) {
     return Response.json({ error: "Rate limit" }, { status: 429 });
   }
 
-  let body: { contour?: unknown; cityId?: unknown; targetDistanceKm?: unknown };
+  let body: {
+    contour?: unknown;
+    cityId?: unknown;
+    targetDistanceKm?: unknown;
+    trimSpikes?: unknown;
+  };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -72,9 +77,16 @@ export async function POST(req: Request) {
       : undefined;
 
   try {
+    const fullSketch = body.trimSpikes === false;
     const candidates = await traceShapeOnStreets(contour, {
       topK: 3,
       targetDistanceKm,
+      // false preserves deliberate out-and-back strokes (spike tips are
+      // part of the user's art, not routing noise); full sketches also
+      // carry letter-scale detail that 200 m anchors would blur out.
+      trimSpikes: fullSketch ? false : undefined,
+      anchorM: fullSketch ? 120 : undefined,
+      closeLoop: fullSketch ? false : undefined,
     });
     return Response.json({
       candidates: candidates.map((c) => ({

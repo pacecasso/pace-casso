@@ -45,7 +45,6 @@ import {
 } from "./curatedNikeSwooshManhattanRoute";
 import { compileContourToLattice } from "./latticeCompiler";
 import { getManhattanLatticeGraph } from "./manhattanLattice";
-import { typesetWordOnLattice } from "./latticeText";
 import { splitSketchComponents } from "./sketchReview";
 import { simplifyLatLng } from "./douglasPeucker";
 
@@ -584,8 +583,15 @@ function routeLengthKm(coords: [number, number][]): number {
  * Etch-a-sketch street tracing (server-side, no API spend): where do the
  * city's REAL streets best draw this shape, at hero scale? The dense road
  * graph draws smooth organic curves the junction lattice can't — a circle
- * spanning Midtown traces round. Single-component bold shapes only; a
- * multi-piece logo's outline is not one traceable curve.
+ * spanning Midtown traces round.
+ *
+ * WHAT THE USER UPLOADS IS WHAT THEY GET BACK (Ralph's standing product
+ * rule, July 22): the approved sketch is the design — the user already
+ * curated it in the touch-up panel, so the pipeline draws the WHOLE
+ * sketch, multi-piece and all. Multi-piece sketches trace with spike
+ * trimming off (out-and-back strokes like the swoosh tail are art, not
+ * routing noise) and their route is branded the signature sketch route
+ * so it pins to pick #1.
  */
 async function requestStreetTraceCandidates(
   contour: ContourPoint[],
@@ -593,10 +599,12 @@ async function requestStreetTraceCandidates(
   targetDistanceKm: number | undefined,
   requiredVisualFeatures: string[],
   sourceLabel = "the uploaded shape",
+  options: { fullSketch?: boolean } = {},
 ): Promise<ValidCandidate[]> {
   if (preset.id !== "manhattan") return [];
   if (contour.length < 8) return [];
-  if (splitSketchComponents(contour).length !== 1) return [];
+  const multiPiece = splitSketchComponents(contour).length > 1;
+  if (multiPiece && !options.fullSketch) return [];
   try {
     const res = await fetch("/api/street-trace", {
       method: "POST",
@@ -605,6 +613,7 @@ async function requestStreetTraceCandidates(
         contour,
         cityId: preset.id,
         targetDistanceKm,
+        trimSpikes: multiPiece ? false : undefined,
       }),
     });
     if (!res.ok) {
@@ -635,10 +644,14 @@ async function requestStreetTraceCandidates(
         km: typeof c.km === "number" ? c.km : routeLengthKm(anchors),
         kind: "street-design",
         routeMode: "direct-grid",
-        designIntent:
-          `Street-traced organic route: Manhattan's real streets draw ${sourceLabel} at hero scale ` +
-          `(etch-a-sketch corridor trace, mean deviation ${c.meanDeviationM ?? "?"} m — the route hugs the artwork's own outline).` +
-          featureText,
+        designIntent: options.fullSketch
+          ? `Signature sketch route: Manhattan's real streets draw your full approved sketch — ` +
+            `every piece you kept, traced stroke by stroke on real pavement ` +
+            `(mean deviation ${c.meanDeviationM ?? "?"} m).` +
+            featureText
+          : `Street-traced organic route: Manhattan's real streets draw ${sourceLabel} at hero scale ` +
+            `(etch-a-sketch corridor trace, mean deviation ${c.meanDeviationM ?? "?"} m — the route hugs the artwork's own outline).` +
+            featureText,
       });
     }
     console.log(`[autoFindTop5] street-trace returned ${out.length} organic candidates`);
@@ -649,51 +662,12 @@ async function requestStreetTraceCandidates(
   }
 }
 
-/**
- * Street-true wordmark: the word typeset in block letters directly ON the
- * junction lattice (lib/latticeText.ts) — vertical strokes ride avenues,
- * horizontal strokes ride cross streets, every corner is a real junction.
- * This is the runnable replacement for the floating lockup/wordmark
- * classes: 3/3 blind judges read the two-row JUST / DO IT at confidence
- * 7-8 while the whole route is pavement. "lockup" in the intent opts into
- * the cleanliness-only quality floors and the pick-#1 pin.
- */
-async function latticeWordmarkCandidates(
-  word: string,
-  preset: CityPreset,
-): Promise<ValidCandidate[]> {
-  if (preset.id !== "manhattan") return [];
-  try {
-    const graph = await getManhattanLatticeGraph();
-    const result = typesetWordOnLattice(word, graph);
-    if (!result) {
-      console.log(`[autoFindTop5] lattice wordmark: no placement for "${word}"`);
-      return [];
-    }
-    const anchors = simplifyLatLng(result.anchors, 8) as [number, number][];
-    if (anchors.length < 8) return [];
-    const letters = word.replace(/ /g, "").split("").join(" ");
-    console.log(
-      `[autoFindTop5] lattice wordmark: "${result.rows.join(" / ")}" ${result.km.toFixed(1)}km pinErr=${result.pinErrM.toFixed(0)}m`,
-    );
-    return [
-      {
-        placement: placementFromAnchors(anchors, 0, 1),
-        anchors,
-        km: result.km,
-        kind: "street-design",
-        routeMode: "direct-grid",
-        designIntent:
-          `Street-true wordmark lockup: ${result.rows.join(" / ")} typeset in block letters ` +
-          `directly on real street junctions — every stroke is pavement, runnable end to end. ` +
-          `Features: letters, ${letters}, reading order, baseline, full wordmark.`,
-      },
-    ];
-  } catch (err) {
-    console.warn("[autoFindTop5] lattice wordmark failed", err);
-    return [];
-  }
-}
+// The lattice wordmark typesetter (lib/latticeText.ts) is street-true and
+// blind-judge verified, but it draws only the INFERRED TEXT and none of
+// the user's actual artwork — offering it as a default pick violated the
+// product rule that what the user uploads is what they get back (Ralph,
+// July 22, after it displaced his swoosh). The machinery stays for the
+// bespoke lane; it does not enter the instant flow.
 
 function placementFromAnchors(
   anchors: [number, number][],
@@ -4621,14 +4595,19 @@ function pinLockupFirst(
   snapped: SnappedCandidate[],
   topK: number,
 ): Top5Pick[] {
-  const isLockup = (intent?: string) => /lockup/i.test(intent ?? "");
-  const idx = picks.findIndex((p) => isLockup(p.designIntent));
+  // The user's own approved sketch, traced whole on real streets, is
+  // always the first thing they see — what they uploaded is what they get
+  // back. (This slot used to pin the lockup class; the signature sketch
+  // route inherits it.)
+  const isSignature = (intent?: string) =>
+    /signature sketch|lockup/i.test(intent ?? "");
+  const idx = picks.findIndex((p) => isSignature(p.designIntent));
   if (idx === 0) return picks;
   if (idx > 0) {
     return [picks[idx]!, ...picks.filter((_, i) => i !== idx)];
   }
   const best = snapped
-    .filter((s) => isLockup(s.designIntent))
+    .filter((s) => isSignature(s.designIntent))
     .sort((a, b) => b.km - a.km)[0];
   if (!best) return picks;
   const pick: Top5Pick = {
@@ -4643,7 +4622,7 @@ function pinLockupFirst(
     shapeMatchScore: best.shapeMatchScore,
     sourceMatchScore: best.sourceMatchScore,
     reason:
-      "Logo lockup: your symbol drawn large above its slogan in block letters, composed directly on street lines.",
+      "Your sketch, whole: every piece you approved, traced onto real streets.",
   };
   return [pick, ...picks].slice(0, Math.max(1, topK));
 }
@@ -5072,16 +5051,6 @@ export async function autoFindTop5(
       ? inferWordmarkText(visionDesignDrafts) ??
         inferWordmarkTextFromSourceName(options.imageSourceName)
       : null;
-  // The LATTICE wordmark class is exempt from the runnable-only gate — it
-  // is runnable by construction (every stroke rides real streets), so its
-  // eligibility uses the original lettering test.
-  const latticeWordmarkEligible =
-    hint?.shapeClass === "letter" || visionDescribesLettering(visionDesignDrafts);
-  const latticeWordText =
-    parsedOrig && latticeWordmarkEligible
-      ? inferWordmarkText(visionDesignDrafts) ??
-        inferWordmarkTextFromSourceName(options.imageSourceName)
-      : null;
   const approvedSketchDraft = visionDesignDrafts.find(
     (draft) => draft.label === APPROVED_SKETCH_LABEL,
   );
@@ -5175,11 +5144,14 @@ export async function autoFindTop5(
   const streetTracedRoutes = !options.anchorAround
     ? (
         await Promise.all([
+          // The user's FULL approved sketch — this is the design, whole.
           requestStreetTraceCandidates(
             contour,
             preset,
             effectiveTargetDistanceKm,
             requiredVisualFeatures,
+            "your art",
+            { fullSketch: true },
           ),
           lockupSymbolDraft
             ? requestStreetTraceCandidates(
@@ -5193,10 +5165,6 @@ export async function autoFindTop5(
         ])
       ).flat()
     : [];
-  const latticeTextRoutes =
-    !options.anchorAround && latticeWordText
-      ? await latticeWordmarkCandidates(latticeWordText, preset)
-      : [];
   const mapNativeRoutes = [
     ...lockupRoutes,
     ...curatedSourceRoutes,
@@ -5277,7 +5245,6 @@ export async function autoFindTop5(
     : [];
   const streetTracedSubset = streetTracedRoutes.slice(0, 4);
   const valid = [
-    ...latticeTextRoutes,
     ...lockupSubset,
     ...streetTracedSubset,
     ...streetWordmarkRoutes,
@@ -5473,7 +5440,6 @@ export async function autoFindTop5(
     ),
   ].slice(0, 8);
   const subset = [
-    ...latticeTextRoutes,
     ...lockupSubset,
     ...streetTracedSubset,
     ...latticeSubset,
@@ -5488,8 +5454,7 @@ export async function autoFindTop5(
     0,
     Math.max(
       snapCount,
-      latticeTextRoutes.length +
-        lockupSubset.length +
+      lockupSubset.length +
         streetTracedSubset.length +
         latticeSubset.length +
         streetWordmarkSubset.length,
