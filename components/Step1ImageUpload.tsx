@@ -25,7 +25,6 @@ import {
   svgFileToContourAndPreview,
 } from "../lib/svgToContour";
 import { reviewStreetDesignSketch } from "../lib/streetDesignSketch";
-import type { ArtistLoopRouteResult } from "../lib/artistLoopCore";
 
 export type NormalizedPoint = { x: number; y: number };
 
@@ -57,19 +56,8 @@ type Step1ImageUploadProps = {
     imageBase64: string | null,
     sourceName?: string | null,
   ) => void;
-  /** Selected city name, used by the AI designer sketch prompt. */
+  /** Selected city name (used in copy). */
   cityLabel?: string;
-  /**
-   * Server-side artist loop (interpret → compile onto real junctions →
-   * blind-judge → redraw). Manhattan-only for now — the lattice compiler and
-   * placement frame are Manhattan facts — so the controller enables it per
-   * city. On success the whole placement + snap flow is skipped.
-   */
-  artistLoopEnabled?: boolean;
-  onArtistRoute?: (
-    result: ArtistLoopRouteResult,
-    imageBase64: string | null,
-  ) => void;
   /** Back to source picker (image vs freehand). */
   onBack?: () => void;
   /**
@@ -547,8 +535,6 @@ function buildPhotoComponents(
 export default function Step1ImageUpload({
   onComplete,
   cityLabel,
-  artistLoopEnabled,
-  onArtistRoute,
   onBack,
   initialImageBase64,
   initialImageName,
@@ -568,13 +554,6 @@ export default function Step1ImageUpload({
   >(null);
   const [selectedInterpretationId, setSelectedInterpretationId] =
     useState<ArtPathInterpretation["id"]>("trace");
-  const [designerSketch, setDesignerSketch] =
-    useState<ArtPathInterpretation | null>(null);
-  const [designerBusy, setDesignerBusy] = useState(false);
-  const [designerError, setDesignerError] = useState<string | null>(null);
-  const [artistBusy, setArtistBusy] = useState(false);
-  const [artistError, setArtistError] = useState<string | null>(null);
-  const [artistProgress, setArtistProgress] = useState<string | null>(null);
   const [undoCount, setUndoCount] = useState(0);
   /** Bumps when line mask bytes change so contour preview can refresh. */
   const [lineMaskVersion, setLineMaskVersion] = useState(0);
@@ -753,11 +732,8 @@ export default function Step1ImageUpload({
   }, [applyContourToCanvas]);
 
   const interpretations = useMemo(
-    () => {
-      const base = buildArtPathInterpretations(normalizedContour);
-      return designerSketch ? [...base, designerSketch] : base;
-    },
-    [designerSketch, normalizedContour],
+    () => buildArtPathInterpretations(normalizedContour),
+    [normalizedContour],
   );
   const selectedInterpretation = useMemo(() => {
     if (!interpretations.length) return null;
@@ -773,172 +749,6 @@ export default function Step1ImageUpload({
   }, [interpretations, selectedInterpretationId]);
   const selectedContour = selectedInterpretation?.points ?? normalizedContour;
 
-  const generateDesignerSketch = useCallback(async () => {
-    if (!uploadedImage || designerBusy) return;
-    setDesignerBusy(true);
-    setDesignerError(null);
-    try {
-      const imageBase64 = await imageFileToSizedDataUrl(uploadedImage.file);
-      const res = await fetch("/api/vision-design", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageBase64,
-          cityLabel,
-        }),
-      });
-      const text = await res.text();
-      const picked = pickDesignerSketch(jsonObjectFromText(text));
-      if (!picked) {
-        if (!res.ok) {
-          throw new Error(`Designer sketch failed (${res.status})`);
-        }
-        throw new Error("Designer sketch did not return enough points.");
-      }
-      let points = picked.points;
-      let review = reviewStreetDesignSketch(points);
-      if (!review.pass) {
-        let bestPoints = points;
-        let bestReview = review;
-        for (const maxPoints of [28, 22, 18, 14, 11]) {
-          const simplified = simplifyDesignerPoints(picked.points, maxPoints);
-          const simplifiedReview = reviewStreetDesignSketch(simplified);
-          if (simplifiedReview.score > bestReview.score) {
-            bestPoints = simplified;
-            bestReview = simplifiedReview;
-          }
-          if (simplifiedReview.pass) {
-            bestPoints = simplified;
-            bestReview = simplifiedReview;
-            break;
-          }
-        }
-        points = bestPoints;
-        review = bestReview;
-      }
-      if (!review.pass && review.score < 48) {
-        throw new Error(
-          "That sketch was too detailed for city streets — try again, or use the traced version.",
-        );
-      }
-      const next: ArtPathInterpretation = {
-        id: "ai-sketch",
-        label: picked.label,
-        description: picked.description,
-        points,
-      };
-      setDesignerSketch(next);
-      setSelectedInterpretationId("ai-sketch");
-      setContourHint("Etch-a-sketch ready. Approve it, then we'll hunt for the best streets to draw it on.");
-      requestAnimationFrame(() => applyContourToCanvas(next.points));
-    } catch (err) {
-      console.warn("[Step1] designer sketch failed:", err);
-      setDesignerError(
-        err instanceof Error
-          ? err.message
-          : "Couldn\u2019t create designer sketch.",
-      );
-    } finally {
-      setDesignerBusy(false);
-    }
-  }, [applyContourToCanvas, cityLabel, designerBusy, uploadedImage]);
-
-  const runArtistLoop = useCallback(async () => {
-    if (!uploadedImage || artistBusy || !onArtistRoute) return;
-    setArtistBusy(true);
-    setArtistError(null);
-    setArtistProgress("Sending your image to the artist…");
-    try {
-      const imageBase64 = await imageFileToSizedDataUrl(uploadedImage.file);
-      const res = await fetch("/api/artist-loop", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageBase64,
-          cityId: "manhattan",
-          cityLabel,
-          sourceName: uploadedImage.file.name,
-        }),
-      });
-      if (!res.ok || !res.body) {
-        const parsed = jsonObjectFromText(await res.text()) as {
-          error?: string;
-        } | null;
-        throw new Error(
-          parsed?.error ?? `Artist route failed (${res.status})`,
-        );
-      }
-      // NDJSON stream: progress lines while the loop designs / compiles /
-      // judges, then one result or error line.
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffered = "";
-      // Object holder (not closed-over lets): TS narrowing doesn't see
-      // assignments made inside consumeLine otherwise.
-      const outcome: {
-        result: ArtistLoopRouteResult | null;
-        error: string | null;
-      } = { result: null, error: null };
-      const consumeLine = (line: string) => {
-        if (!line.trim()) return;
-        const evt = jsonObjectFromText(line) as
-          | {
-              type?: string;
-              detail?: string;
-              result?: ArtistLoopRouteResult;
-              message?: string;
-            }
-          | null;
-        if (!evt) return;
-        if (evt.type === "progress" && typeof evt.detail === "string") {
-          setArtistProgress(evt.detail);
-        } else if (evt.type === "result" && evt.result) {
-          outcome.result = evt.result;
-        } else if (evt.type === "error") {
-          outcome.error = evt.message ?? "The artist loop failed.";
-        }
-      };
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffered += decoder.decode(value, { stream: true });
-        let nl = buffered.indexOf("\n");
-        while (nl >= 0) {
-          consumeLine(buffered.slice(0, nl));
-          buffered = buffered.slice(nl + 1);
-          nl = buffered.indexOf("\n");
-        }
-      }
-      consumeLine(buffered);
-      if (outcome.error) throw new Error(outcome.error);
-      const r = outcome.result;
-      if (
-        !r ||
-        !Array.isArray(r.chain) ||
-        r.chain.length < 2 ||
-        !Array.isArray(r.sketchLatLngs) ||
-        r.sketchLatLngs.length < 2 ||
-        !Array.isArray(r.sketchPoints) ||
-        r.sketchPoints.length < 2
-      ) {
-        throw new Error("The artist loop didn't return a usable route.");
-      }
-      setArtistProgress(null);
-      onArtistRoute(r, imageBase64);
-    } catch (err) {
-      console.warn("[Step1] artist loop failed:", err);
-      setArtistError(
-        err instanceof Error ? err.message : "Couldn’t create the artist route.",
-      );
-      setArtistProgress(null);
-    } finally {
-      setArtistBusy(false);
-    }
-  }, [artistBusy, cityLabel, onArtistRoute, uploadedImage]);
-
-  // NOTE: the AI designer sketch is intentionally NOT auto-fired on upload.
-  // Each generation is a paid vision call; the user triggers it with the
-  // explicit "Create AI sketch" button below.
 
   useEffect(() => {
     if (!selectedInterpretation && normalizedContour) {
@@ -1106,9 +916,6 @@ export default function Step1ImageUpload({
     setSvgError(null);
     setAlphaError(null);
     setDecodeError(null);
-    setDesignerSketch(null);
-    setDesignerError(null);
-    setDesignerBusy(false);
     setSvgBusy(false);
     setAlphaBusy(false);
     setSelectedInterpretationId("trace");
@@ -1534,7 +1341,7 @@ export default function Step1ImageUpload({
         drawing you can run. Touch it up if you like, then keep going.
       </p>
 
-      {svgBusy || alphaBusy || designerBusy ? (
+      {svgBusy || alphaBusy ? (
         <div
           className="mb-2 flex items-center gap-2 rounded-md border border-pace-blue/40 bg-pace-blue/5 px-3 py-2 text-[11px] leading-snug text-pace-ink"
           role="status"
@@ -1547,9 +1354,7 @@ export default function Step1ImageUpload({
           <span>
             {svgBusy
               ? "Reading vector paths from your SVG…"
-              : alphaBusy
-                ? "Reading the transparent PNG — no tracing needed…"
-                : "Designing a street-ready sketch from the logo..."}
+              : "Reading the transparent PNG — no tracing needed…"}
           </span>
         </div>
       ) : null}
@@ -1560,15 +1365,6 @@ export default function Step1ImageUpload({
           role="status"
         >
           {decodeError || svgError || alphaError}
-        </div>
-      ) : null}
-
-      {designerError && !designerSketch && !designerBusy ? (
-        <div
-          className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-900"
-          role="status"
-        >
-          {designerError}
         </div>
       ) : null}
 
@@ -1782,60 +1578,9 @@ export default function Step1ImageUpload({
                       );
                     })}
                   </div>
-                  {uploadedImage ? (
-                    <button
-                      type="button"
-                      onClick={generateDesignerSketch}
-                      disabled={designerBusy}
-                      className="rounded border border-pace-blue/40 bg-pace-blue/5 px-2 py-1.5 text-left font-dm text-[10px] leading-tight text-pace-ink transition hover:border-pace-blue disabled:opacity-50"
-                    >
-                      {designerBusy
-                        ? "Sketching your route…"
-                        : designerSketch
-                          ? "Regenerate AI sketch"
-                          : "Create AI sketch"}
-                    </button>
-                  ) : null}
-                  {designerError ? (
-                    <span className="font-dm text-[10px] leading-snug text-red-600">
-                      {designerError}
-                    </span>
-                  ) : null}
                   {selectedInterpretation ? (
                     <span className="font-dm text-[10px] leading-snug text-pace-muted">
                       {selectedInterpretation.description}
-                    </span>
-                  ) : null}
-                </div>
-              ) : null}
-              {artistLoopEnabled && onArtistRoute && uploadedImage ? (
-                <div className="mt-2 flex w-full max-w-[min(100vw-1rem,280px)] flex-col gap-1.5 rounded border border-pace-yellow/60 bg-pace-yellow/10 px-2 py-2 text-left">
-                  <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
-                    Or let the artist take over
-                  </span>
-                  <button
-                    type="button"
-                    onClick={runArtistLoop}
-                    disabled={artistBusy}
-                    className="rounded border border-pace-yellow bg-pace-white px-2 py-1.5 text-left font-dm text-[10px] leading-tight text-pace-ink transition hover:bg-pace-yellow/20 disabled:opacity-50"
-                  >
-                    {artistBusy
-                      ? "Artist at work — designing, compiling, judging…"
-                      : "Artist route: design, place & street-check it for me"}
-                  </button>
-                  {artistBusy && artistProgress ? (
-                    <span
-                      className="font-dm text-[10px] leading-snug text-pace-blue"
-                      role="status"
-                      aria-live="polite"
-                    >
-                      {artistProgress} This takes a few minutes — the artist
-                      redraws until blind judges recognize the route.
-                    </span>
-                  ) : null}
-                  {artistError && !artistBusy ? (
-                    <span className="font-dm text-[10px] leading-snug text-red-600">
-                      {artistError}
                     </span>
                   ) : null}
                 </div>
