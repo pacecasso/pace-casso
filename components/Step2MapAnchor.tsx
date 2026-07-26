@@ -106,6 +106,51 @@ type Step2MapAnchorProps = {
   }) => void;
 };
 
+function cleanLatLngArray(value: unknown): [number, number][] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(
+      (p): p is [number, number] =>
+        Array.isArray(p) &&
+        typeof p[0] === "number" &&
+        Number.isFinite(p[0]) &&
+        typeof p[1] === "number" &&
+        Number.isFinite(p[1]),
+    )
+    .map(([lat, lng]) => [lat, lng]);
+}
+
+type WowPlacePickPayload = {
+  center: [number, number];
+  rotDeg: number;
+  extentM: number;
+  km: number;
+  dev: number;
+  primed: number;
+  coordinates: [number, number][];
+  anchorLatLngs: [number, number][];
+  previewPngBase64: string;
+};
+
+function cleanWowPick(value: unknown): WowPlacePickPayload | null {
+  if (!value || typeof value !== "object") return null;
+  const rec = value as Record<string, unknown>;
+  const coordinates = cleanLatLngArray(rec.coordinates);
+  const anchorLatLngs = cleanLatLngArray(rec.anchorLatLngs);
+  const center = cleanLatLngArray([rec.center])[0];
+  if (coordinates.length < 2 || anchorLatLngs.length < 2 || !center) return null;
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const rotDeg = num(rec.rotDeg);
+  const extentM = num(rec.extentM);
+  const km = num(rec.km);
+  const dev = num(rec.dev);
+  const primed = num(rec.primed);
+  if (rotDeg == null || extentM == null || km == null || dev == null || primed == null) return null;
+  if (typeof rec.previewPngBase64 !== "string" || !rec.previewPngBase64) return null;
+  return { center, rotDeg, extentM, km, dev, primed, coordinates, anchorLatLngs, previewPngBase64: rec.previewPngBase64 };
+}
+
 export default function Step2MapAnchor({
   contour,
   cityPreset,
@@ -226,6 +271,156 @@ export default function Step2MapAnchor({
       routeFromPick,
     ],
   );
+
+  /**
+   * The verified placement funnel (WOW.md): the server names the subject
+   * from the approved sketch, sweeps street placements, and only returns
+   * picks a vision judge scored >= 6/10 primed — the measured bar below
+   * which routes never blind-read. Empty picks come with an honest reason.
+   */
+  const runWowFind = useCallback(async () => {
+    if (cityPreset.id !== "manhattan") {
+      setAutoHint("Verified auto-find currently supports Manhattan only.");
+      window.setTimeout(() => setAutoHint(null), 6000);
+      return;
+    }
+    setAutoBusy(true);
+    setAutoHint("Reading your art…");
+    setPicks([]);
+    setSelectedPickIdx(null);
+    setPreferredSnappedRoute(null);
+    setSelectedAnchorLatLngs(null);
+    try {
+      const res = await fetch("/api/wow-place", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contour,
+          cityId: cityPreset.id,
+          targetDistanceKm: targetDistanceKm ?? undefined,
+        }),
+      });
+      if (!res.ok) {
+        let message = `Verified auto-find failed (${res.status}).`;
+        try {
+          const payload = (await res.json()) as { error?: unknown };
+          if (typeof payload.error === "string") message = payload.error;
+        } catch {
+          /* keep status message */
+        }
+        throw new Error(message);
+      }
+      if (!res.body) throw new Error("Verified auto-find returned no progress stream.");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      // Ref object (not a plain `let`) — TS control flow can't see closure
+      // assignments.
+      const resultRef: {
+        current: {
+          picks: WowPlacePickPayload[];
+          subject: string | null;
+          message?: string;
+        } | null;
+      } = { current: null };
+
+      const consumeLine = (line: string) => {
+        if (!line.trim()) return;
+        const payload = JSON.parse(line) as Record<string, unknown>;
+        if (payload.type === "progress") {
+          if (typeof payload.detail === "string") setAutoHint(payload.detail);
+          return;
+        }
+        if (payload.type === "error") {
+          throw new Error(
+            typeof payload.message === "string"
+              ? payload.message
+              : "Verified auto-find could not produce a route.",
+          );
+        }
+        if (payload.type === "result" && payload.result && typeof payload.result === "object") {
+          const rec = payload.result as Record<string, unknown>;
+          resultRef.current = {
+            picks: Array.isArray(rec.picks)
+              ? rec.picks.map(cleanWowPick).filter((p): p is WowPlacePickPayload => p !== null)
+              : [],
+            subject: typeof rec.subject === "string" ? rec.subject : null,
+            message: typeof rec.message === "string" ? rec.message : undefined,
+          };
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (value) {
+          buffer += decoder.decode(value, { stream: !done });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) consumeLine(line);
+        }
+        if (done) break;
+      }
+      if (buffer.trim()) consumeLine(buffer);
+      const result = resultRef.current;
+      if (!result) throw new Error("Verified auto-find did not return a result.");
+      const { picks: rawPicks, subject, message } = result;
+
+      if (!rawPicks.length) {
+        setAutoHint(
+          message ??
+            "Nothing cleared the judge's bar, so we're not showing guesses. Bold, simple shapes work best.",
+        );
+        window.setTimeout(() => setAutoHint(null), 15000);
+        return;
+      }
+
+      const subjectLabel = subject ?? "your art";
+      const mapped: Top5Pick[] = rawPicks.map((p) => ({
+        placement: {
+          center: p.center,
+          rotationDeg: p.rotDeg,
+          scale: p.extentM / 2000,
+        },
+        anchorLatLngs: p.anchorLatLngs,
+        routeCoords: p.coordinates,
+        snappedRoute: {
+          coordinates: p.coordinates,
+          distanceMeters: Math.round(p.km * 1000),
+          blockWaypoints: p.coordinates,
+          preserveBlockWaypoints: true,
+        },
+        previewDataUrl: `data:image/png;base64,${p.previewPngBase64}`,
+        distanceKm: p.km,
+        qualityScore: Math.min(100, p.primed * 10),
+        shapeMatchScore: Math.max(1, Math.min(100, Math.round(100 - p.dev))),
+        sourceMatchScore: Math.min(100, p.primed * 10),
+        verifiedRoute: true,
+        verificationLabel: `AI JUDGE ${p.primed}/10`,
+        reason: `A vision judge, told only "${subjectLabel}", scored this street route ${p.primed}/10 before we showed it to you.`,
+      }));
+      setPicks(mapped);
+      setPicksVisionUsed(true);
+      setPicksHint(null);
+      const first = mapped[0]!;
+      setCenter([...first.placement.center] as [number, number]);
+      setRotationDeg(first.placement.rotationDeg);
+      setScale(first.placement.scale);
+      setSelectedPickIdx(0);
+      setPreferredSnappedRoute(routeFromPick(first));
+      setSelectedAnchorLatLngs(first.anchorLatLngs ?? null);
+      setFitNonce((n) => n + 1);
+      setAutoHint(
+        `We read your art as ${subjectLabel} — here are ${mapped.length} judge-checked placements. Tap one to try it.`,
+      );
+    } catch (err) {
+      console.warn("[Step2] wow-place failed:", err);
+      setAutoHint(err instanceof Error ? err.message : "Verified auto-find failed.");
+      window.setTimeout(() => setAutoHint(null), 9000);
+    } finally {
+      setAutoBusy(false);
+    }
+  }, [contour, cityPreset.id, targetDistanceKm, routeFromPick]);
 
   const applyPick = useCallback((pick: Top5Pick, idx: number) => {
     setCenter([...pick.placement.center] as [number, number]);
@@ -421,6 +616,21 @@ export default function Step2MapAnchor({
             <p className="text-[10px] leading-snug text-pace-muted">
               Optional: target distance (km).
             </p>
+            <button
+              type="button"
+              disabled={
+                autoBusy || !contour.length || cityPreset.id !== "manhattan"
+              }
+              onClick={() => void runWowFind()}
+              className="pace-toolbar-btn-primary w-full py-2.5 text-[11px] font-semibold disabled:opacity-50 sm:text-xs"
+              title={
+                cityPreset.id === "manhattan"
+                  ? "Sweep hundreds of street placements, then show only the ones an AI judge scored as clearly readable — or say honestly that none were."
+                  : "Verified auto-find currently supports Manhattan only."
+              }
+            >
+              {autoBusy ? "Working…" : "Auto-find placement (judge-verified)"}
+            </button>
             <button
               type="button"
               disabled={autoBusy || !contour.length}
