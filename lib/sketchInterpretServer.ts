@@ -30,6 +30,8 @@ import {
 } from "./sketchInterpret";
 import { renderStrokesPng } from "./wowPlaceServer";
 
+type Pt2 = [number, number];
+
 const MODEL = "claude-opus-4-8"; // measurement parity with the judge series
 const MAX_ROUNDS = 4;
 
@@ -117,7 +119,13 @@ Output ONLY a JSON object, no prose, in this exact schema (coordinates are 0..10
   {"type":"arc","cx":n,"cy":n,"r":n,"startDeg":n,"endDeg":n},
   {"type":"bez","p0":[x,y],"c":[x,y],"p1":[x,y]}
 ]}]}
-Use exactly ONE stroke. Elements within it are drawn in order as one continuous pen line (consecutive elements must connect end-to-start). If you output several strokes they will be joined with straight lines in drawing order — visible ink — so design the drawing to be continuous yourself.`;
+Use exactly ONE stroke. Elements within it are drawn in order as one continuous pen line (consecutive elements must connect end-to-start). If you output several strokes they will be joined with straight lines in drawing order — visible ink — so design the drawing to be continuous yourself.
+
+Example of the expected level — a running person, one continuous stroke, blind-verified on real streets (note the limbs drawn as out-and-back retraces, the bold proportions, zero fine detail):
+{"strokes":[{"elements":[
+  {"type":"arc","cx":470,"cy":890,"r":65,"startDeg":-90,"endDeg":270},
+  {"type":"line","points":[[470,825],[485,780],[600,690],[700,750],[600,690],[485,780],[380,700],[300,760],[380,700],[485,780],[430,520],[560,400],[590,210],[660,195],[590,210],[560,400],[430,520],[310,390],[210,460]]}
+]}]}`;
 
 export async function interpretSketch(args: {
   apiKey: string;
@@ -165,12 +173,11 @@ export async function interpretSketch(args: {
   const STRATEGY = [
     "",
     "Exaggerate the single most distinctive feature to twice its natural size — make it impossible to miss.",
-    "Ignore this photo's pose entirely: draw the most ICONIC, canonical view of the subject (the version a road-sign or emoji would use).",
-    "Radical simplification: silhouette only — at most 12 straight segments and 2 arcs. Nothing else.",
+    "CROP to a close-up: draw only the part of the subject that carries its identity, filling the whole frame (a head with headphones beats a full figure whose headphones are too small to see). Keep every part connected — one line.",
+    "Ignore this photo's pose entirely: draw the most ICONIC, canonical view of the subject (the version a road-sign or emoji would use), close-up on its identity.",
   ];
 
-  for (round = 1; round <= MAX_ROUNDS; round++) {
-    progress(`Drawing ${subject} — attempt ${round} of ${MAX_ROUNDS}…`);
+  const draftOnce = async (roundNum: number): Promise<Pt2[][] | null> => {
     const content: Parameters<typeof vision>[1] = [img(args.imageBase64, args.mediaType)];
     if (lastPng) content.push(img(lastPng.toString("base64"), "image/png"));
     content.push({
@@ -181,36 +188,52 @@ export async function interpretSketch(args: {
           ? `\nOriginal composition to ECHO wherever it doesn't cost recognition (the owner must see THEIR art in the redraw): ${layout}`
           : "") +
         `\n\n${GRAMMAR}` +
-        (STRATEGY[round - 1] ? `\n\nThis attempt's strategy: ${STRATEGY[round - 1]}` : "") +
+        (STRATEGY[roundNum - 1] ? `\n\nThis attempt's strategy: ${STRATEGY[roundNum - 1]}` : "") +
         (feedback
           ? `\n\nThe second image is your previous attempt as the judges saw it. It failed: ${feedback} Redraw from scratch.`
           : ""),
     });
     const draftText = await vision(args.apiKey, content, 4096);
-    if (!draftText) continue;
+    if (!draftText) return null;
     const jsonText = draftText.slice(draftText.indexOf("{"), draftText.lastIndexOf("}") + 1);
     let parsed: unknown;
     try {
       parsed = JSON.parse(jsonText);
     } catch {
-      feedback = "the drawing program was not valid JSON.";
-      continue;
+      return null;
     }
     const program = parsePrimitiveProgram(parsed);
-    if (!program) {
-      feedback = "the drawing program had no valid strokes.";
-      continue;
-    }
+    if (!program) return null;
     let strokes = compilePrimitiveProgram(program);
-    if (!strokes.length) {
-      feedback = "the compiled drawing was empty.";
-      continue;
-    }
+    if (!strokes.length) return null;
     // Product rule (Ralph, July 27): NO pen lifts — one run, one line. Any
     // extra strokes are joined head-to-tail so the connector ink is real,
     // visible, and judged exactly as it will be run.
-    if (strokes.length > 1) {
-      strokes = [strokes.flat()];
+    if (strokes.length > 1) strokes = [strokes.flat()];
+    return strokes;
+  };
+
+  for (round = 1; round <= MAX_ROUNDS; round++) {
+    progress(`Drawing ${subject} — attempt ${round} of ${MAX_ROUNDS}…`);
+    // Best-of-two: draw two candidates in parallel, keep the one a selector
+    // finds more recognizable, and spend the blind judges only on it.
+    const [a, b] = await Promise.all([draftOnce(round), draftOnce(round)]);
+    let strokes = a ?? b;
+    if (!strokes) {
+      feedback = "the drawing program was invalid.";
+      continue;
+    }
+    if (a && b) {
+      const [pngA, pngB] = await Promise.all([renderStrokesPng(a), renderStrokesPng(b)]);
+      const pick = await vision(args.apiKey, [
+        img(pngA.toString("base64"), "image/png"),
+        img(pngB.toString("base64"), "image/png"),
+        {
+          type: "text",
+          text: `Which of these two one-line drawings reads more clearly as ${subject} at a glance? Reply with exactly one letter:\nANSWER: <A or B>`,
+        },
+      ]);
+      strokes = /ANSWER:\s*B/i.test(pick ?? "") ? b : a;
     }
 
     const png = await renderStrokesPng(strokes);
