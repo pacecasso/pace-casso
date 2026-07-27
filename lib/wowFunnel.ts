@@ -331,7 +331,10 @@ export function exciseLoops(
 // ---------------------------------------------------------------------------
 // Contour -> strokes (upload hygiene)
 // ---------------------------------------------------------------------------
-export const MAX_STROKES = 4; // more pen lifts than this is impractical to run
+// Product rule (Ralph, July 27): NO pen lifts — the drawing is one
+// continuous run. Everything merges into a single stroke; the connector
+// segments become drawn ink, included in distance and in what judges see.
+export const MAX_STROKES = 1;
 
 export function strokeInkLen(seg: Pt[]): number {
   let len = 0;

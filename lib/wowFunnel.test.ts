@@ -232,8 +232,8 @@ function gridGraph(rows: number, cols: number, spacingM: number, origin: LatLng 
   const inkMain = Math.max(...s2.map((s) => s.length));
   assert.ok(inkMain >= 41, "the substantial stroke (circle) survives intact");
 
-  // Two honest strokes far apart (a real pen lift) stay two strokes.
-  // Densely sampled like real traces, so the jump reads as a connector.
+  // NO pen lifts (product rule): even two far-apart components merge into
+  // one continuous stroke — the connector becomes drawn ink.
   const denseRect = (x0: number): { x: number; y: number }[] => {
     const out: { x: number; y: number }[] = [];
     const corners = [
@@ -251,7 +251,7 @@ function gridGraph(rows: number, cols: number, spacingM: number, origin: LatLng 
   };
   const twoRuns = [...denseRect(0.05), ...denseRect(0.65)];
   const s3 = contourToStrokes(twoRuns);
-  assert.strictEqual(s3.length, 2, "genuine pen lift preserved");
+  assert.strictEqual(s3.length, 1, "no pen lifts: components merge into one continuous stroke");
 
   // ink ratio: unit square outline = perimeter 4x span
   const ratio = strokesInkRatio([[ [0, 0], [1000, 0], [1000, 1000], [0, 1000], [0, 0] ]]);

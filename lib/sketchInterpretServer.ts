@@ -104,7 +104,7 @@ async function blindJudge(
 }
 
 const GRAMMAR = `Draw a BOLD one-line interpretation of the subject, the way champion GPS-artists do. Hard rules, each learned from measured failures:
-- ONE bold closed silhouette carries the drawing. At most 4 strokes total; extra strokes only for one critical detail (an eye, an olive) that must float free.
+- The drawing is ONE CONTINUOUS LINE — a runner draws it in a single run without stopping the GPS. No floating parts. To reach an interior detail, travel back along a line you already drew (a retrace adds no visible ink) or attach the detail to the silhouette.
 - EXAGGERATE the 1-2 most distinctive features (a trunk, long ears, a long neck) — bigger than life. Distinctiveness survives; realism does not.
 - NO fine detail: no feature smaller than ~8% of the drawing's span, no texture, no interior lines, no fingers/toes/whiskers. City streets quantize every line to ~250 m blocks — anything thin melts into mush.
 - Limbs/appendages: EITHER a single out-and-back retrace along one path (go down the leg, come back up the same line) at least 15% of the span long, OR a chunky closed limb at least 10% of the span wide. Never a thin 2-line limb narrower than that — it collapses into scribble.
@@ -117,7 +117,7 @@ Output ONLY a JSON object, no prose, in this exact schema (coordinates are 0..10
   {"type":"arc","cx":n,"cy":n,"r":n,"startDeg":n,"endDeg":n},
   {"type":"bez","p0":[x,y],"c":[x,y],"p1":[x,y]}
 ]}]}
-Elements within a stroke are drawn in order as one continuous pen line (consecutive elements should connect end-to-start). Separate strokes are separate runs (pen lifts) — use sparingly.`;
+Use exactly ONE stroke. Elements within it are drawn in order as one continuous pen line (consecutive elements must connect end-to-start). If you output several strokes they will be joined with straight lines in drawing order — visible ink — so design the drawing to be continuous yourself.`;
 
 export async function interpretSketch(args: {
   apiKey: string;
@@ -201,10 +201,16 @@ export async function interpretSketch(args: {
       feedback = "the drawing program had no valid strokes.";
       continue;
     }
-    const strokes = compilePrimitiveProgram(program);
+    let strokes = compilePrimitiveProgram(program);
     if (!strokes.length) {
       feedback = "the compiled drawing was empty.";
       continue;
+    }
+    // Product rule (Ralph, July 27): NO pen lifts — one run, one line. Any
+    // extra strokes are joined head-to-tail so the connector ink is real,
+    // visible, and judged exactly as it will be run.
+    if (strokes.length > 1) {
+      strokes = [strokes.flat()];
     }
 
     const png = await renderStrokesPng(strokes);
