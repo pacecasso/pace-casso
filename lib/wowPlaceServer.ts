@@ -218,6 +218,14 @@ export function joinChains(g: WowGraph, chains: LatLng[][]): LatLng[] {
 export async function runWowPlacement(args: {
   apiKey: string;
   contour: NormalizedPoint[];
+  /**
+   * When the sketch was produced by the AI redraw step, its subject was
+   * already blind-verified upstream — pass it through so the placement
+   * judge screens against the RIGHT reading instead of re-guessing (a
+   * re-guess measurably drifts: a verified "headphones" redraw got
+   * re-read as "snail" and verified against that).
+   */
+  knownSubject?: string;
   targetDistanceKm?: number;
   onProgress?: WowPlaceProgress;
 }): Promise<WowPlaceResult> {
@@ -227,19 +235,26 @@ export async function runWowPlacement(args: {
     return { picks: [], subject: null, subjectConfidence: null, message: "Not enough sketch detail to place." };
   }
 
-  progress("Reading your art…");
-  const contourPng = await renderStrokesPng(strokes);
-  const named = await nameSubject(args.apiKey, contourPng);
-  if (!named || /nothing recognizable/i.test(named.guess) || named.confidence < 3) {
-    return {
-      picks: [],
-      subject: named?.guess ?? null,
-      subjectConfidence: named?.confidence ?? null,
-      message:
-        "Honest check: your line art doesn't yet read as a clear subject on its own, so streets will only blur it further. Bold, simple, closed shapes work best — try the touch-up step.",
-    };
+  let subject: string;
+  let namedConfidence: number | null = null;
+  if (args.knownSubject) {
+    subject = args.knownSubject;
+  } else {
+    progress("Reading your art…");
+    const contourPng = await renderStrokesPng(strokes);
+    const named = await nameSubject(args.apiKey, contourPng);
+    if (!named || /nothing recognizable/i.test(named.guess) || named.confidence < 3) {
+      return {
+        picks: [],
+        subject: named?.guess ?? null,
+        subjectConfidence: named?.confidence ?? null,
+        message:
+          "Honest check: your line art doesn't yet read as a clear subject on its own, so streets will only blur it further. Bold, simple, closed shapes work best — try the touch-up step.",
+      };
+    }
+    subject = named.guess;
+    namedConfidence = named.confidence;
   }
-  const subject = named.guess;
 
   progress(`Looks like ${subject} — testing placements across Manhattan…`);
   const g = (await getStreetGraph()) as WowGraph;
@@ -261,7 +276,7 @@ export async function runWowPlacement(args: {
     return {
       picks: [],
       subject,
-      subjectConfidence: named.confidence,
+      subjectConfidence: namedConfidence,
       message: `We read your art as ${subject}, but it has so much line detail that even at Manhattan-filling size the route would run about ${Math.round(inkRatio * 4.2 * STREET_FACTOR)} km. Simplify the sketch in the touch-up step (fewer wiggles, bolder outline) and try again.`,
     };
   }
@@ -288,7 +303,7 @@ export async function runWowPlacement(args: {
     return {
       picks: [],
       subject,
-      subjectConfidence: named.confidence,
+      subjectConfidence: namedConfidence,
       message: `We read your art as ${subject}, but couldn't fit it as a runnable ${minKm.toFixed(0)}-${maxKm.toFixed(0)} km route on real streets (tried canvas sizes ${Math.min(...extents)}-${Math.max(...extents)} m). Try a different target distance, or simplify the shape.`,
     };
   }
@@ -317,7 +332,7 @@ export async function runWowPlacement(args: {
     return {
       picks: [],
       subject,
-      subjectConfidence: named.confidence,
+      subjectConfidence: namedConfidence,
       message: `We read your art as ${subject} and traced ${candidates.length} street placements, but the judge scored the best only ${best}/10 — below the bar where routes reliably read. We'd rather say so than show you a tangle. Simpler/bolder shapes score higher.`,
     };
   }
@@ -339,5 +354,5 @@ export async function runWowPlacement(args: {
       previewPngBase64: k.png.toString("base64"),
     });
   }
-  return { picks, subject, subjectConfidence: named.confidence };
+  return { picks, subject, subjectConfidence: namedConfidence };
 }

@@ -46,7 +46,7 @@ export async function POST(req: Request) {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) return jsonError("ANTHROPIC_API_KEY not configured on server", 503);
 
-  let body: { contour?: unknown; cityId?: unknown; targetDistanceKm?: unknown };
+  let body: { contour?: unknown; cityId?: unknown; targetDistanceKm?: unknown; subject?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -62,6 +62,12 @@ export async function POST(req: Request) {
 
   const contour = cleanContour(body.contour);
   if (!contour) return jsonError("contour must be >= 8 normalized points", 400);
+  // Optional: the AI-redraw step already blind-verified the sketch's
+  // subject — trust it instead of re-guessing (prompt-only string).
+  const knownSubject =
+    typeof body.subject === "string" && body.subject.trim()
+      ? body.subject.trim().slice(0, 80)
+      : undefined;
   const targetDistanceKm =
     typeof body.targetDistanceKm === "number" &&
     Number.isFinite(body.targetDistanceKm) &&
@@ -84,6 +90,7 @@ export async function POST(req: Request) {
         const result = await runWowPlacement({
           apiKey,
           contour,
+          knownSubject,
           targetDistanceKm,
           onProgress: (detail) => send({ type: "progress", detail }),
         });

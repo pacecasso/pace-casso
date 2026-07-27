@@ -95,6 +95,8 @@ type Step2MapAnchorProps = {
    */
   imageBase64?: string | null;
   imageSourceName?: string | null;
+  /** Blind-verified subject from the AI redraw step, if the sketch came from it. */
+  interpretedSubject?: string | null;
   onBack: () => void;
   onComplete: (args: {
     anchorLatLngs: [number, number][];
@@ -157,6 +159,7 @@ export default function Step2MapAnchor({
   defaultCenter = MANHATTAN_PRESET.defaultCenter,
   imageBase64,
   imageSourceName,
+  interpretedSubject,
   onBack,
   onComplete,
 }: Step2MapAnchorProps) {
@@ -306,6 +309,7 @@ export default function Step2MapAnchor({
           contour,
           cityId: cityPreset.id,
           targetDistanceKm: targetDistanceKm ?? undefined,
+          subject: interpretedSubject ?? undefined,
         }),
       });
       if (!res.ok) {
@@ -434,7 +438,7 @@ export default function Step2MapAnchor({
     } finally {
       setAutoBusy(false);
     }
-  }, [contour, cityPreset.id, targetDistanceKm, routeFromPick]);
+  }, [contour, cityPreset.id, interpretedSubject, targetDistanceKm, routeFromPick]);
 
   const applyPick = useCallback((pick: Top5Pick, idx: number) => {
     setCenter([...pick.placement.center] as [number, number]);

@@ -78,6 +78,10 @@ export default function WorkflowController() {
   );
   const [uploadedImageName, setUploadedImageName] = useState<string | null>(null);
   const [sketchApproved, setSketchApproved] = useState(false);
+  // Subject of an AI street-ready redraw, blind-verified during sketch
+  // review — passed to placement so its judge screens against the right
+  // reading instead of re-guessing. Null for literal traces.
+  const [interpretedSubject, setInterpretedSubject] = useState<string | null>(null);
   const [anchorLocation, setAnchorLocation] = useState<AnchorLocation>(null);
   const [snappedRoute, setSnappedRoute] = useState<RouteLineString | null>(
     null,
@@ -596,6 +600,7 @@ export default function WorkflowController() {
               setUploadedImageBase64(imageBase64);
               setUploadedImageName(sourceName ?? null);
               setSketchApproved(false);
+              setInterpretedSubject(null);
               clearPlacedRouteData();
               setCurrentStep(3);
             }}
@@ -631,9 +636,10 @@ export default function WorkflowController() {
             imageBase64={uploadedImageBase64}
             sourceName={uploadedImageName}
             onBack={() => setCurrentStep(2)}
-            onApprove={(approvedContour) => {
+            onApprove={(approvedContour, meta) => {
               setContourCoordinates(approvedContour);
               setSketchApproved(true);
+              setInterpretedSubject(meta?.aiSubject ?? null);
               clearPlacedRouteData();
             }}
           />
@@ -653,6 +659,7 @@ export default function WorkflowController() {
             defaultCenter={cityPreset.defaultCenter}
             imageBase64={uploadedImageBase64}
             imageSourceName={uploadedImageName}
+            interpretedSubject={interpretedSubject}
             onBack={() => {
               setSketchApproved(false);
               clearPlacedRouteData();

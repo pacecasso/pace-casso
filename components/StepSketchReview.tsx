@@ -16,7 +16,7 @@ type Props = {
   imageBase64?: string | null;
   sourceName?: string | null;
   onBack: () => void;
-  onApprove: (points: NormalizedPoint[]) => void;
+  onApprove: (points: NormalizedPoint[], meta?: { aiSubject?: string | null }) => void;
 };
 
 function toPath(points: NormalizedSketchPoint[]): string {
@@ -50,6 +50,11 @@ export default function StepSketchReview({
   );
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [history, setHistory] = useState<NormalizedSketchPoint[][]>([]);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiNote, setAiNote] = useState<string | null>(null);
+  // Set when the current sketch came from the AI redraw — its blind-verified
+  // subject travels with the approval so placement judges the right reading.
+  const [aiSubject, setAiSubject] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const dragIndexRef = useRef<number | null>(null);
   // Zoom/pan viewport in the 0-1000 sketch space. Dense traces (a logo
@@ -143,6 +148,8 @@ export default function StepSketchReview({
       if (!last) return prev;
       setPoints(last);
       setSelectedIndex(null);
+      // Undo may restore the literal trace — the AI subject no longer applies.
+      setAiSubject(null);
       return prev.slice(0, -1);
     });
   }, []);
@@ -232,11 +239,8 @@ export default function StepSketchReview({
   }, [points, pushHistory, selectedIndex]);
 
   const approve = useCallback(() => {
-    onApprove(points as NormalizedPoint[]);
-  }, [onApprove, points]);
-
-  const [aiBusy, setAiBusy] = useState(false);
-  const [aiNote, setAiNote] = useState<string | null>(null);
+    onApprove(points as NormalizedPoint[], { aiSubject });
+  }, [aiSubject, onApprove, points]);
 
   /**
    * AI street-ready redraw: the server interprets the ORIGINAL upload as a
@@ -320,6 +324,7 @@ export default function StepSketchReview({
       pushHistory(points);
       setPoints(contour);
       setSelectedIndex(null);
+      setAiSubject(subject);
       setAiNote(
         `Redrawn as ${subject} — ${result.hits}/3 blind judges recognized it (${guesses.join(", ")}). Undo restores your original trace.`,
       );

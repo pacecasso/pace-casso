@@ -135,7 +135,7 @@ export async function interpretSketch(args: {
     {
       type: "text",
       text:
-        "What does this image depict, and what are its 2-3 most visually distinctive features (the things a silhouette must keep for a stranger to recognize it)? Reply in this exact format:\nSUBJECT: <the simplest common name a stranger would shout on seeing it — 1-3 words, e.g. \"a gas pump\", \"an elephant\">\nFEATURES: <comma-separated, short>",
+        'What does this image depict, and what are its 2-3 most visually distinctive features (the things a silhouette must keep for a stranger to recognize it)? If the image is a scene or logo with SEVERAL elements, pick the ONE element that would be most recognizable as a simple line drawing — living figures and distinctive silhouettes beat boxes, machines, and text. Reply in this exact format:\nSUBJECT: <the simplest common name a stranger would shout on seeing your line drawing — 1-4 words, e.g. "an elephant", "a person wearing headphones">\nFEATURES: <comma-separated, short>',
     },
   ]);
   const idm = idText?.match(/SUBJECT:\s*(.+?)\s*FEATURES:\s*(.+)/is);
