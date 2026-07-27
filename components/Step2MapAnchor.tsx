@@ -290,6 +290,14 @@ export default function Step2MapAnchor({
     setSelectedPickIdx(null);
     setPreferredSnappedRoute(null);
     setSelectedAnchorLatLngs(null);
+    // The status line and results render below the buttons — off-screen at
+    // most window sizes. A silent minute-long run reads as "nothing
+    // happened" unless we bring the feedback into view.
+    window.setTimeout(() => {
+      document
+        .getElementById("step2-status")
+        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 80);
     try {
       const res = await fetch("/api/wow-place", {
         method: "POST",
@@ -367,11 +375,12 @@ export default function Step2MapAnchor({
       const { picks: rawPicks, subject, message } = result;
 
       if (!rawPicks.length) {
+        // The verdict is the product here — keep it on screen until the
+        // user acts (an auto-cleared message reads as "nothing happened").
         setAutoHint(
           message ??
             "Nothing cleared the judge's bar, so we're not showing guesses. Bold, simple shapes work best.",
         );
-        window.setTimeout(() => setAutoHint(null), 15000);
         return;
       }
 
@@ -413,6 +422,11 @@ export default function Step2MapAnchor({
       setAutoHint(
         `We read your art as ${subjectLabel} — here are ${mapped.length} judge-checked placements. Tap one to try it.`,
       );
+      window.setTimeout(() => {
+        document
+          .getElementById("step2-picks")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 120);
     } catch (err) {
       console.warn("[Step2] wow-place failed:", err);
       setAutoHint(err instanceof Error ? err.message : "Verified auto-find failed.");
@@ -648,9 +662,11 @@ export default function Step2MapAnchor({
             >
               Refine around my placement
             </button>
-            {autoHint ? (
-              <p className="text-[11px] leading-snug text-pace-muted">{autoHint}</p>
-            ) : null}
+            <div id="step2-status">
+              {autoHint ? (
+                <p className="text-[11px] leading-snug text-pace-muted">{autoHint}</p>
+              ) : null}
+            </div>
           </div>
 
           {autoBusy && picks.length === 0 && (
@@ -681,7 +697,10 @@ export default function Step2MapAnchor({
           )}
 
           {picks.length > 0 && (
-            <div className="mt-3 flex flex-col gap-2 rounded border border-pace-line bg-pace-warm/50 p-2">
+            <div
+              id="step2-picks"
+              className="mt-3 flex flex-col gap-2 rounded border border-pace-line bg-pace-warm/50 p-2"
+            >
               <div className="flex items-center justify-between gap-2">
                 <span className="flex items-center gap-1.5 font-bebas text-[11px] tracking-[0.1em] text-pace-ink">
                   {picksVisionUsed ? "PaceCasso top picks" : "Candidates"}
