@@ -42,6 +42,8 @@ export type InterpretResult = {
   guesses: string[];
   hits: number;
   meanConfidence: number;
+  /** 1-10: how recognizable the redraw is as a simplified version of the ORIGINAL upload */
+  resemblance: number;
   rounds: number;
   previewPngBase64: string | null;
   message?: string;
@@ -126,7 +128,7 @@ export async function interpretSketch(args: {
   const progress = args.onProgress ?? (() => {});
   const empty: InterpretResult = {
     contour: null, subject: null, features: null, guesses: [], hits: 0,
-    meanConfidence: 0, rounds: 0, previewPngBase64: null,
+    meanConfidence: 0, resemblance: 0, rounds: 0, previewPngBase64: null,
   };
 
   progress("Studying your image…");
@@ -135,15 +137,16 @@ export async function interpretSketch(args: {
     {
       type: "text",
       text:
-        'What does this image depict, and what are its 2-3 most visually distinctive features (the things a silhouette must keep for a stranger to recognize it)? If the image is a scene or logo with SEVERAL elements, pick the ONE element that would be most recognizable as a simple line drawing — living figures and distinctive silhouettes beat boxes, machines, and text. Reply in this exact format:\nSUBJECT: <the simplest common name a stranger would shout on seeing your line drawing — 1-4 words, e.g. "an elephant", "a person wearing headphones">\nFEATURES: <comma-separated, short>',
+        'What does this image depict, and what are its 2-3 most visually distinctive features (the things a silhouette must keep for a stranger to recognize it)? If the image is a scene or logo with SEVERAL elements, pick the ONE element that would be most recognizable as a simple line drawing — living figures and distinctive silhouettes beat boxes, machines, and text. Reply in this exact format:\nSUBJECT: <the simplest common name a stranger would shout on seeing your line drawing — 1-4 words, e.g. "an elephant", "a person wearing headphones">\nFEATURES: <comma-separated, short>\nLAYOUT: <one sentence: the overall composition/pose/arrangement of the original, so a redraw can echo it>',
     },
   ]);
-  const idm = idText?.match(/SUBJECT:\s*(.+?)\s*FEATURES:\s*(.+)/is);
+  const idm = idText?.match(/SUBJECT:\s*(.+?)\s*FEATURES:\s*(.+?)(?:\s*LAYOUT:\s*(.+))?$/is);
   if (!idm) {
     return { ...empty, message: "Couldn't read the image — try a clearer upload." };
   }
   const subject = idm[1]!.trim().replace(/\s+/g, " ").slice(0, 80);
   const features = idm[2]!.trim().replace(/\s+/g, " ").slice(0, 200);
+  const layout = (idm[3] ?? "").trim().replace(/\s+/g, " ").slice(0, 240);
 
   let best: {
     contour: NormalizedPoint[];
@@ -151,6 +154,7 @@ export async function interpretSketch(args: {
     hits: number;
     meanConfidence: number;
     guesses: string[];
+    resemblance: number;
   } | null = null;
   let feedback = "";
   let lastPng: Buffer | null = null;
@@ -172,7 +176,11 @@ export async function interpretSketch(args: {
     content.push({
       type: "text",
       text:
-        `Subject: ${subject}\nDistinctive features to preserve: ${features}\n\n${GRAMMAR}` +
+        `Subject: ${subject}\nDistinctive features to preserve: ${features}` +
+        (layout
+          ? `\nOriginal composition to ECHO wherever it doesn't cost recognition (the owner must see THEIR art in the redraw): ${layout}`
+          : "") +
+        `\n\n${GRAMMAR}` +
         (STRATEGY[round - 1] ? `\n\nThis attempt's strategy: ${STRATEGY[round - 1]}` : "") +
         (feedback
           ? `\n\nThe second image is your previous attempt as the judges saw it. It failed: ${feedback} Redraw from scratch.`
@@ -211,23 +219,47 @@ export async function interpretSketch(args: {
       : 0;
     const guesses = verdicts.map((v) => `${v.guess} (${v.confidence})`);
 
-    if (!best || hits > best.hits || (hits === best.hits && meanConfidence > best.meanConfidence)) {
+    // Recognition alone is not the product — a passing draft that abandons
+    // the user's composition is "recognizable but not YOUR logo". Score
+    // resemblance to the original and prefer it among passing drafts.
+    let resemblance = 0;
+    if (hits >= 2) {
+      const resText = await vision(args.apiKey, [
+        img(args.imageBase64, args.mediaType),
+        img(png.toString("base64"), "image/png"),
+        {
+          type: "text",
+          text:
+            "The second image is a bold one-line redraw of the first. How recognizable is it as a simplified version of the first image — same composition, same identity? Reply in this exact format:\nSCORE: <1-10>\nWHY: <short phrase>",
+        },
+      ]);
+      const rm = resText?.match(/SCORE:\s*(\d+)/i);
+      if (rm) resemblance = Number(rm[1]);
+    }
+
+    if (
+      !best ||
+      hits > best.hits ||
+      (hits === best.hits && resemblance > best.resemblance) ||
+      (hits === best.hits && resemblance === best.resemblance && meanConfidence > best.meanConfidence)
+    ) {
       best = {
         contour: strokesToContour(strokes),
         png,
         hits,
         meanConfidence: Number(meanConfidence.toFixed(1)),
         guesses,
+        resemblance,
       };
     }
-    // Don't settle for a weak pass: 3/3 at low confidence still tends to
-    // fall under the street judge's bar downstream ("I think I see it" vs
-    // "OH WOW"). Keep drawing unless it is STRONGLY recognized.
-    if (hits === 3 && verdicts.length === 3 && meanConfidence >= 7) break;
+    // Don't settle: strong recognition AND real resemblance, or keep drawing.
+    if (hits === 3 && verdicts.length === 3 && meanConfidence >= 7 && resemblance >= 6) break;
     feedback =
-      hits === 3
-        ? `all judges said ${subject}, but only at confidence ${meanConfidence.toFixed(0)}/10 — make it bolder and more unmistakable.`
-        : `blind judges saw "${verdicts.map((v) => v.guess).join('", "')}" instead of ${subject}.`;
+      hits >= 2 && resemblance < 6
+        ? `judges recognized ${subject}, but it doesn't look like the ORIGINAL (resemblance ${resemblance}/10) — keep the same subject and echo the original's composition${layout ? `: ${layout}` : ""}.`
+        : hits === 3
+          ? `all judges said ${subject}, but only at confidence ${meanConfidence.toFixed(0)}/10 — make it bolder and more unmistakable.`
+          : `blind judges saw "${verdicts.map((v) => v.guess).join('", "')}" instead of ${subject}.`;
   }
 
   if (!best || best.hits < 2) {
@@ -239,6 +271,7 @@ export async function interpretSketch(args: {
       guesses: best?.guesses ?? [],
       hits: best?.hits ?? 0,
       meanConfidence: best?.meanConfidence ?? 0,
+      resemblance: best?.resemblance ?? 0,
       message: `We tried ${Math.min(round, MAX_ROUNDS)} redraws of "${subject}", but blind judges never reliably recognized any of them${best?.guesses.length ? ` (best attempt was seen as: ${best.guesses.join(", ")})` : ""}. This subject may need a simpler reference image.`,
     };
   }
@@ -250,6 +283,7 @@ export async function interpretSketch(args: {
     guesses: best.guesses,
     hits: best.hits,
     meanConfidence: best.meanConfidence,
+    resemblance: best.resemblance,
     rounds: Math.min(round, MAX_ROUNDS),
     previewPngBase64: best.png.toString("base64"),
   };

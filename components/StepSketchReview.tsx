@@ -325,8 +325,14 @@ export default function StepSketchReview({
       setPoints(contour);
       setSelectedIndex(null);
       setAiSubject(subject);
+      const resemblance =
+        typeof result.resemblance === "number" && Number.isFinite(result.resemblance)
+          ? result.resemblance
+          : null;
       setAiNote(
-        `Redrawn as ${subject} — ${result.hits}/3 blind judges recognized it (${guesses.join(", ")}). Undo restores your original trace.`,
+        `Redrawn as ${subject} — ${result.hits}/3 blind judges recognized it (${guesses.join(", ")})` +
+          (resemblance != null ? `; resemblance to your art ${resemblance}/10` : "") +
+          ". Undo restores your original trace; press the button again for a different take.",
       );
     } catch (err) {
       console.warn("[SketchReview] interpret-sketch failed:", err);
