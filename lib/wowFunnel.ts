@@ -15,7 +15,8 @@
  *  - spur cleanup (off-contour anchors dropped, short node-loops excised)
  *    removes one-block stubs without harming intended retraces >=440 m.
  */
-import type { LatLng } from "./streetGraphTrace";
+import type { LatLng, NormalizedPoint } from "./streetGraphTrace";
+import { splitSketchComponents } from "./sketchReview";
 
 export type Pt = [number, number]; // shape space, y-UP, ~0..1000
 export type WowGraph = {
@@ -328,6 +329,92 @@ export function exciseLoops(
 }
 
 // ---------------------------------------------------------------------------
+// Contour -> strokes (upload hygiene)
+// ---------------------------------------------------------------------------
+export const MAX_STROKES = 4; // more pen lifts than this is impractical to run
+
+export function strokeInkLen(seg: Pt[]): number {
+  let len = 0;
+  for (let i = 1; i < seg.length; i++) {
+    len += Math.hypot(seg[i]![0] - seg[i - 1]![0], seg[i]![1] - seg[i - 1]![1]);
+  }
+  return len;
+}
+
+/** Total ink length divided by the larger bbox span, in shape units. */
+export function strokesInkRatio(strokes: Pt[][]): number {
+  const all = strokes.flat();
+  const xs = all.map((p) => p[0]);
+  const ys = all.map((p) => p[1]);
+  const span = Math.max(
+    Math.max(...xs) - Math.min(...xs),
+    Math.max(...ys) - Math.min(...ys),
+  ) || 1;
+  let len = 0;
+  for (const seg of strokes) len += strokeInkLen(seg);
+  return len / span;
+}
+
+/**
+ * Split a traced contour (normalized, y-down) into runnable strokes.
+ * Real Step-1 traces over-fragment (a photo trace can split into a dozen+
+ * components, most of them specks) and every placement then dies on the
+ * too-few-intersections gate. All thresholds are PROPORTIONAL to the
+ * drawing's span — nothing here is tuned to any particular image:
+ *  - drop ink-specks (< 2% of span — tracer noise, invisible at street
+ *    scale; intended detail like an eye or olive is a loop far above it),
+ *  - merge strokes across short gaps (< 8% of span — the connector simply
+ *    gets drawn, standard GPS-art practice),
+ *  - cap at MAX_STROKES pen lifts by merging the smallest remaining gaps.
+ */
+export function contourToStrokes(contour: NormalizedPoint[]): Pt[][] {
+  const components = splitSketchComponents(contour);
+  let strokes: Pt[][] = components
+    .map((comp) => comp.map((p): Pt => [p.x * 1000, (1 - p.y) * 1000]))
+    .filter((s) => s.length >= 1);
+  if (!strokes.length) return [];
+
+  const all = strokes.flat();
+  const xs = all.map((p) => p[0]);
+  const ys = all.map((p) => p[1]);
+  const span = Math.max(
+    Math.max(...xs) - Math.min(...xs),
+    Math.max(...ys) - Math.min(...ys),
+  ) || 1;
+
+  const substantial = strokes.filter((s) => strokeInkLen(s) >= span * 0.02);
+  if (substantial.length) strokes = substantial;
+
+  const gap = (a: Pt[], b: Pt[]) => {
+    const e = a[a.length - 1]!;
+    const s = b[0]!;
+    return Math.hypot(s[0] - e[0], s[1] - e[1]);
+  };
+  const merged: Pt[][] = [strokes[0]!.slice()];
+  for (let i = 1; i < strokes.length; i++) {
+    const prev = merged[merged.length - 1]!;
+    if (gap(prev, strokes[i]!) < span * 0.08) prev.push(...strokes[i]!);
+    else merged.push(strokes[i]!.slice());
+  }
+  strokes = merged;
+
+  while (strokes.length > MAX_STROKES) {
+    let best = 1;
+    let bestGap = Infinity;
+    for (let i = 1; i < strokes.length; i++) {
+      const d = gap(strokes[i - 1]!, strokes[i]!);
+      if (d < bestGap) {
+        bestGap = d;
+        best = i;
+      }
+    }
+    strokes[best - 1]!.push(...strokes[best]!);
+    strokes.splice(best, 1);
+  }
+  return strokes;
+}
+
+// ---------------------------------------------------------------------------
 // Tracing + sweep
 // ---------------------------------------------------------------------------
 export type WowCandidate = {
@@ -401,6 +488,17 @@ export function chainsKm(chains: LatLng[][]): number {
   return m / 1000;
 }
 
+export type SweepStats = {
+  tried: number;
+  jumps: number;
+  snap: number;
+  short: number;
+  avoid: number;
+  kmLow: number;
+  kmHigh: number;
+  dup: number;
+};
+
 export type SweepOptions = {
   centers: LatLng[];
   extentsM?: number[];
@@ -413,6 +511,8 @@ export type SweepOptions = {
   avoidBox?: { s: number; n: number; w: number; e: number; maxOverlap: number };
   /** stop early once this many gated candidates exist (0 = no cap) */
   maxCandidates?: number;
+  /** when provided, per-gate rejection counts are accumulated into it */
+  stats?: SweepStats;
 };
 
 // Manhattan defaults — mirror the offline rig that produced WOW.md
@@ -460,21 +560,45 @@ export function sweepPlacements(g: WowGraph, segments: Pt[][], opts: SweepOption
   const maxSnapM = opts.maxSnapM ?? 150;
   const out: WowCandidate[] = [];
   const seen = new Set<string>();
+  const stats = opts.stats;
   for (let pi = 0; pi < opts.centers.length; pi++) {
     for (let si = 0; si < extents.length; si++) {
       for (let ri = 0; ri < rotations.length; ri++) {
         for (let mi = 0; mi < mirrors.length; mi++) {
+          if (stats) stats.tried++;
           const { chains, jumps, maxSnapD, nodeSig, dev } = traceSegmentsOnGraph(
             g, mask, segments, opts.centers[pi]!, extents[si]!, rotations[ri]!, mirrors[mi]!,
           );
-          if (jumps > 0) continue;
-          if (maxSnapD > maxSnapM) continue;
-          if (chains.some((c) => c.length < 4)) continue;
-          if (opts.avoidBox && boxOverlapFrac(chains, opts.avoidBox) > opts.avoidBox.maxOverlap) continue;
+          if (jumps > 0) {
+            if (stats) stats.jumps++;
+            continue;
+          }
+          if (maxSnapD > maxSnapM) {
+            if (stats) stats.snap++;
+            continue;
+          }
+          if (chains.some((c) => c.length < 4)) {
+            if (stats) stats.short++;
+            continue;
+          }
+          if (opts.avoidBox && boxOverlapFrac(chains, opts.avoidBox) > opts.avoidBox.maxOverlap) {
+            if (stats) stats.avoid++;
+            continue;
+          }
           const km = chainsKm(chains);
-          if (km < minKm || km > maxKm) continue;
+          if (km < minKm) {
+            if (stats) stats.kmLow++;
+            continue;
+          }
+          if (km > maxKm) {
+            if (stats) stats.kmHigh++;
+            continue;
+          }
           const hash = `${nodeSig}:${km.toFixed(1)}`;
-          if (seen.has(hash)) continue;
+          if (seen.has(hash)) {
+            if (stats) stats.dup++;
+            continue;
+          }
           seen.add(hash);
           out.push({
             id: `wow-p${pi}-s${si}-r${ri}-m${mi}`,

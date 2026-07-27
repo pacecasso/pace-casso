@@ -14,6 +14,9 @@ import {
   traceSegmentsOnGraph,
   sweepPlacements,
   chainsKm,
+  contourToStrokes,
+  strokesInkRatio,
+  MAX_STROKES,
 } from "./wowFunnel";
 
 const M_PER_LAT = 111320;
@@ -198,6 +201,61 @@ function gridGraph(rows: number, cols: number, spacingM: number, origin: LatLng 
   const gapM =
     Math.abs(t.chains[0]![0]![0] - t.chains[1]![0]![0]) * M_PER_LAT;
   assert.ok(gapM > 1500, "strokes remain spatially separate (no connector)");
+}
+
+// --- contourToStrokes: upload hygiene is proportional, not image-specific ---
+{
+  // A clean single stroke passes through untouched.
+  const square = [
+    { x: 0.1, y: 0.1 }, { x: 0.9, y: 0.1 }, { x: 0.9, y: 0.9 }, { x: 0.1, y: 0.9 }, { x: 0.1, y: 0.1 },
+  ];
+  const s1 = contourToStrokes(square);
+  assert.strictEqual(s1.length, 1, "clean closed shape stays one stroke");
+  assert.strictEqual(s1[0]!.length, 5);
+
+  // Over-fragmented trace: a big circle plus many specks scattered far away
+  // (each speck is a real component after connector splitting). Specks are
+  // dropped; the drawing that remains is the circle.
+  const frag: { x: number; y: number }[] = [];
+  for (let i = 0; i <= 40; i++) {
+    const a = (i / 40) * 2 * Math.PI;
+    frag.push({ x: 0.5 + 0.4 * Math.cos(a), y: 0.5 + 0.4 * Math.sin(a) });
+  }
+  for (let k = 0; k < 12; k++) {
+    // tiny 3-point specks, each ~0.4% of span, separated by big jumps
+    const bx = 0.05 + (k % 4) * 0.25;
+    const by = 0.03 + Math.floor(k / 4) * 0.03;
+    frag.push({ x: bx, y: by }, { x: bx + 0.004, y: by }, { x: bx + 0.004, y: by + 0.004 });
+  }
+  const s2 = contourToStrokes(frag);
+  assert.ok(s2.length <= MAX_STROKES, `stroke count capped, got ${s2.length}`);
+  const inkMain = Math.max(...s2.map((s) => s.length));
+  assert.ok(inkMain >= 41, "the substantial stroke (circle) survives intact");
+
+  // Two honest strokes far apart (a real pen lift) stay two strokes.
+  // Densely sampled like real traces, so the jump reads as a connector.
+  const denseRect = (x0: number): { x: number; y: number }[] => {
+    const out: { x: number; y: number }[] = [];
+    const corners = [
+      [x0, 0.45], [x0 + 0.3, 0.45], [x0 + 0.3, 0.55], [x0, 0.55], [x0, 0.45],
+    ];
+    for (let i = 1; i < corners.length; i++) {
+      for (let t = 0; t < 12; t++) {
+        out.push({
+          x: corners[i - 1]![0]! + ((corners[i]![0]! - corners[i - 1]![0]!) * t) / 12,
+          y: corners[i - 1]![1]! + ((corners[i]![1]! - corners[i - 1]![1]!) * t) / 12,
+        });
+      }
+    }
+    return out;
+  };
+  const twoRuns = [...denseRect(0.05), ...denseRect(0.65)];
+  const s3 = contourToStrokes(twoRuns);
+  assert.strictEqual(s3.length, 2, "genuine pen lift preserved");
+
+  // ink ratio: unit square outline = perimeter 4x span
+  const ratio = strokesInkRatio([[ [0, 0], [1000, 0], [1000, 1000], [0, 1000], [0, 0] ]]);
+  assert.ok(Math.abs(ratio - 4) < 1e-9, `square ink ratio 4, got ${ratio}`);
 }
 
 console.log("wowFunnel tests passed");

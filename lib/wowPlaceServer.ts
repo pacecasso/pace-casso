@@ -19,7 +19,6 @@
  */
 import sharp from "sharp";
 import { getStreetGraph, type LatLng, type NormalizedPoint } from "./streetGraphTrace";
-import { splitSketchComponents } from "./sketchReview";
 import {
   type Pt,
   type WowCandidate,
@@ -32,6 +31,8 @@ import {
   nearestGiantNode,
   sweepPlacements,
   chainsKm,
+  contourToStrokes,
+  strokesInkRatio,
 } from "./wowFunnel";
 
 const JUDGE_MODEL = "claude-opus-4-8"; // measurement parity with the July series
@@ -62,27 +63,6 @@ export type WowPlaceResult = {
   /** honest explanation when picks is empty */
   message?: string;
 };
-
-// ---------------------------------------------------------------------------
-// Contour -> strokes (shape space, y-up)
-// ---------------------------------------------------------------------------
-export function contourToStrokes(contour: NormalizedPoint[]): Pt[][] {
-  const components = splitSketchComponents(contour);
-  const strokes: Pt[][] = [];
-  for (const comp of components) {
-    const pts: Pt[] = comp.map((p) => [p.x * 1000, (1 - p.y) * 1000]);
-    // Components too small to trace as their own run (1-2 point spike tips)
-    // are merged into the previous stroke so their geometry isn't lost.
-    if (pts.length < 3 && strokes.length) {
-      strokes[strokes.length - 1]!.push(...pts);
-    } else if (pts.length >= 3) {
-      strokes.push(pts);
-    } else if (pts.length) {
-      strokes.push(pts); // first component, tiny — keep; gates will judge it
-    }
-  }
-  return strokes.filter((s) => s.length >= 1);
-}
 
 // ---------------------------------------------------------------------------
 // Rendering (plain style — identical to the offline rig the judges scored)
@@ -265,11 +245,33 @@ export async function runWowPlacement(args: {
   const g = (await getStreetGraph()) as WowGraph;
   const minKm = args.targetDistanceKm ? Math.max(4, args.targetDistanceKm * 0.7) : 7;
   const maxKm = args.targetDistanceKm ? Math.min(42, args.targetDistanceKm * 1.5) : 26;
+
+  // Size the canvas from the artwork: route km scales with the contour's
+  // ink-length-to-span ratio, so detailed art gets a smaller canvas instead
+  // of dying wholesale on the distance gate (gas.png: 2-piece dense contour
+  // exceeded 26 km at EVERY fixed extent and returned zero candidates).
+  const inkRatio = strokesInkRatio(strokes);
+  const STREET_FACTOR = 1.25; // measured snap overhead vs straight-line ink
+  const extentForKm = (km: number) => (km * 1000) / (inkRatio * STREET_FACTOR);
+  const extents = [0.15, 0.4, 0.65, 0.9]
+    .map((t) => extentForKm(minKm + t * (maxKm - minKm)))
+    .map((e) => Math.round(Math.min(4200, Math.max(1100, e))))
+    .filter((e, i, arr) => arr.indexOf(e) === i);
+  if (extentForKm(minKm) > 4200) {
+    return {
+      picks: [],
+      subject,
+      subjectConfidence: named.confidence,
+      message: `We read your art as ${subject}, but it has so much line detail that even at Manhattan-filling size the route would run about ${Math.round(inkRatio * 4.2 * STREET_FACTOR)} km. Simplify the sketch in the touch-up step (fewer wiggles, bolder outline) and try again.`,
+    };
+  }
+
   const candidates: WowCandidate[] = [];
   for (let i = 0; i < MANHATTAN_CENTERS.length; i++) {
     candidates.push(
       ...sweepPlacements(g, strokes, {
         centers: [MANHATTAN_CENTERS[i]!],
+        extentsM: extents,
         mirrors: [false], // mirrored art can't round-trip through the manual editor
         minKm,
         maxKm,
@@ -277,13 +279,17 @@ export async function runWowPlacement(args: {
       }),
     );
     progress(`Testing placements across Manhattan… (${i + 1}/${MANHATTAN_CENTERS.length} areas)`);
+    // The sweep is synchronous CPU work; without yielding, every enqueued
+    // progress line buffers until the whole sweep finishes and the user
+    // stares at a dead button for a minute (observed with gas.png).
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
   if (!candidates.length) {
     return {
       picks: [],
       subject,
       subjectConfidence: named.confidence,
-      message: `We read your art as ${subject}, but couldn't fit it as a runnable ${minKm.toFixed(0)}-${maxKm.toFixed(0)} km route on real streets. Try a different target distance, or simplify the shape.`,
+      message: `We read your art as ${subject}, but couldn't fit it as a runnable ${minKm.toFixed(0)}-${maxKm.toFixed(0)} km route on real streets (tried canvas sizes ${Math.min(...extents)}-${Math.max(...extents)} m). Try a different target distance, or simplify the shape.`,
     };
   }
 
@@ -293,7 +299,11 @@ export async function runWowPlacement(args: {
   const scored = await Promise.all(
     screenSet.map(async (c) => {
       const png = await renderChainsPng(c.segments);
-      const score = await primedScore(args.apiKey, png, subject);
+      let score = await primedScore(args.apiKey, png, subject);
+      if (score == null) {
+        // one retry — a transient judge failure must not read as "0/10"
+        score = await primedScore(args.apiKey, png, subject);
+      }
       return { c, png, score: score ?? 0 };
     }),
   );
