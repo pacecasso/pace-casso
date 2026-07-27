@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Maximize, Plus, RotateCcw, Trash2, ZoomIn, ZoomOut } from "lucide-react";
+import { Check, Maximize, Plus, RotateCcw, Sparkles, Trash2, ZoomIn, ZoomOut } from "lucide-react";
 import type { NormalizedPoint } from "./Step1ImageUpload";
 import {
   buildSketchReviewOptions,
@@ -235,6 +235,102 @@ export default function StepSketchReview({
     onApprove(points as NormalizedPoint[]);
   }, [onApprove, points]);
 
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiNote, setAiNote] = useState<string | null>(null);
+
+  /**
+   * AI street-ready redraw: the server interprets the ORIGINAL upload as a
+   * bold one-line drawing and blind-tests every draft on three judges with
+   * zero context — only versions at least 2 of 3 strangers recognized come
+   * back. Opt-in, and Undo restores the literal trace.
+   */
+  const runAiRedraw = useCallback(async () => {
+    if (!imageBase64 || aiBusy) return;
+    setAiBusy(true);
+    setAiNote("Studying your image…");
+    try {
+      const res = await fetch("/api/interpret-sketch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64 }),
+      });
+      if (!res.ok) {
+        let message = `AI redraw failed (${res.status}).`;
+        try {
+          const payload = (await res.json()) as { error?: unknown };
+          if (typeof payload.error === "string") message = payload.error;
+        } catch {
+          /* keep status message */
+        }
+        throw new Error(message);
+      }
+      if (!res.body) throw new Error("AI redraw returned no progress stream.");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const resultRef: { current: Record<string, unknown> | null } = { current: null };
+      const consumeLine = (line: string) => {
+        if (!line.trim()) return;
+        const payload = JSON.parse(line) as Record<string, unknown>;
+        if (payload.type === "progress" && typeof payload.detail === "string") {
+          setAiNote(payload.detail);
+        } else if (payload.type === "error") {
+          throw new Error(
+            typeof payload.message === "string" ? payload.message : "AI redraw failed.",
+          );
+        } else if (payload.type === "result" && payload.result && typeof payload.result === "object") {
+          resultRef.current = payload.result as Record<string, unknown>;
+        }
+      };
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (value) {
+          buffer += decoder.decode(value, { stream: !done });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) consumeLine(line);
+        }
+        if (done) break;
+      }
+      if (buffer.trim()) consumeLine(buffer);
+      const result = resultRef.current;
+      if (!result) throw new Error("AI redraw did not return a result.");
+      const contour = Array.isArray(result.contour)
+        ? (result.contour as { x?: unknown; y?: unknown }[]).filter(
+            (p): p is NormalizedSketchPoint =>
+              !!p &&
+              typeof p.x === "number" &&
+              Number.isFinite(p.x) &&
+              typeof p.y === "number" &&
+              Number.isFinite(p.y),
+          )
+        : [];
+      const subject = typeof result.subject === "string" ? result.subject : "your art";
+      const guesses = Array.isArray(result.guesses)
+        ? (result.guesses as unknown[]).filter((g): g is string => typeof g === "string")
+        : [];
+      if (!contour.length) {
+        setAiNote(
+          typeof result.message === "string"
+            ? result.message
+            : "The AI couldn't produce a redraw that strangers recognized.",
+        );
+        return;
+      }
+      pushHistory(points);
+      setPoints(contour);
+      setSelectedIndex(null);
+      setAiNote(
+        `Redrawn as ${subject} — ${result.hits}/3 blind judges recognized it (${guesses.join(", ")}). Undo restores your original trace.`,
+      );
+    } catch (err) {
+      console.warn("[SketchReview] interpret-sketch failed:", err);
+      setAiNote(err instanceof Error ? err.message : "AI redraw failed.");
+    } finally {
+      setAiBusy(false);
+    }
+  }, [aiBusy, imageBase64, points, pushHistory]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-pace-warm lg:flex-row">
       <aside className="flex max-h-[46vh] min-h-0 flex-col overflow-y-auto border-b-2 border-pace-yellow bg-pace-white px-[clamp(1rem,4vw,2.5rem)] py-4 lg:max-h-none lg:w-96 lg:shrink-0 lg:border-b-0 lg:border-r lg:border-pace-line lg:px-4">
@@ -324,6 +420,24 @@ export default function StepSketchReview({
             <Check size={20} aria-hidden="true" />
           </button>
         </div>
+
+        {imageBase64 ? (
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={() => void runAiRedraw()}
+              disabled={aiBusy}
+              className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-md border border-pace-blue bg-pace-white px-4 font-bebas text-sm tracking-[0.12em] text-pace-blue transition hover:bg-pace-blue hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+              title="Redraw your image as a bold one-line drawing built to survive city streets — blind-tested on three AI judges before you see it. Undo restores your trace."
+            >
+              <Sparkles size={16} aria-hidden="true" />
+              {aiBusy ? "Redrawing…" : "AI street-ready redraw"}
+            </button>
+            {aiNote ? (
+              <p className="mt-2 text-[11px] leading-snug text-pace-muted">{aiNote}</p>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="mt-auto flex gap-2 pt-5">
           <button

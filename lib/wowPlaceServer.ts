@@ -37,7 +37,7 @@ import {
 
 const JUDGE_MODEL = "claude-opus-4-8"; // measurement parity with the July series
 const PRIMED_KEEP_THRESHOLD = 6;
-const SCREEN_COUNT = 12;
+const SCREEN_COUNT = 16;
 const MAX_PICKS = 5;
 
 export type WowPlaceProgress = (detail: string) => void;
