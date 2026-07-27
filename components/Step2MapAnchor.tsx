@@ -381,9 +381,16 @@ export default function Step2MapAnchor({
       if (!rawPicks.length) {
         // The verdict is the product here — keep it on screen until the
         // user acts (an auto-cleared message reads as "nothing happened").
+        // A literal trace that fails will fail identically forever; the fix
+        // is the AI redraw one step back, so point there explicitly.
+        const redrawTip =
+          !interpretedSubject && imageBase64
+            ? " Tip: press Back and use the blue “AI street-ready redraw” button on the sketch screen — it rebuilds your art in a form that survives streets — then try this again."
+            : "";
         setAutoHint(
-          message ??
-            "Nothing cleared the judge's bar, so we're not showing guesses. Bold, simple shapes work best.",
+          (message ??
+            "Nothing cleared the judge's bar, so we're not showing guesses. Bold, simple shapes work best.") +
+            redrawTip,
         );
         return;
       }
@@ -438,7 +445,7 @@ export default function Step2MapAnchor({
     } finally {
       setAutoBusy(false);
     }
-  }, [contour, cityPreset.id, interpretedSubject, targetDistanceKm, routeFromPick]);
+  }, [contour, cityPreset.id, imageBase64, interpretedSubject, targetDistanceKm, routeFromPick]);
 
   const applyPick = useCallback((pick: Top5Pick, idx: number) => {
     setCenter([...pick.placement.center] as [number, number]);
