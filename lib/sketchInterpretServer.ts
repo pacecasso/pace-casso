@@ -106,7 +106,8 @@ async function blindJudge(
 }
 
 const GRAMMAR = `Draw a BOLD one-line interpretation of the subject, the way champion GPS-artists do. Hard rules, each learned from measured failures:
-- The drawing is ONE CONTINUOUS LINE — a runner draws it in a single run without stopping the GPS. No floating parts. To reach an interior detail, travel back along a line you already drew (a retrace adds no visible ink) or attach the detail to the silhouette.
+- Draw the subject as ONE CLOSED SILHOUETTE OUTLINE — as if tracing around a solid, filled shape. NEVER a stick figure: measured on real streets, skeletal line-drawings melt into scribble while chunky closed outlines survive. Limbs, ears, tails and handles are outline protrusions WITH WIDTH (at least 8% of the span across), like a bold logo silhouette. The pen ends where it started.
+- The drawing is ONE CONTINUOUS LINE — a runner draws it in a single run without stopping the GPS. No floating parts. To reach an unavoidable interior detail, travel back along a line you already drew (a retrace adds no visible ink) or attach the detail to the silhouette.
 - EXAGGERATE the 1-2 most distinctive features (a trunk, long ears, a long neck) — bigger than life. Distinctiveness survives; realism does not.
 - NO fine detail: no feature smaller than ~8% of the drawing's span, no texture, no interior lines, no fingers/toes/whiskers. City streets quantize every line to ~250 m blocks — anything thin melts into mush.
 - Limbs/appendages: EITHER a single out-and-back retrace along one path (go down the leg, come back up the same line) at least 15% of the span long, OR a chunky closed limb at least 10% of the span wide. Never a thin 2-line limb narrower than that — it collapses into scribble.
@@ -121,10 +122,14 @@ Output ONLY a JSON object, no prose, in this exact schema (coordinates are 0..10
 ]}]}
 Use exactly ONE stroke. Elements within it are drawn in order as one continuous pen line (consecutive elements must connect end-to-start). If you output several strokes they will be joined with straight lines in drawing order — visible ink — so design the drawing to be continuous yourself.
 
-Example of the expected level — a running person, one continuous stroke, blind-verified on real streets (note the limbs drawn as out-and-back retraces, the bold proportions, zero fine detail):
+Example of the expected level — an elephant, one continuous CLOSED silhouette outline, blind-verified at confidence 9 on real streets (note: chunky legs with width, the ear as an attached lobe, the trunk as a wide curved protrusion, pen returns to start):
 {"strokes":[{"elements":[
-  {"type":"arc","cx":470,"cy":890,"r":65,"startDeg":-90,"endDeg":270},
-  {"type":"line","points":[[470,825],[485,780],[600,690],[700,750],[600,690],[485,780],[380,700],[300,760],[380,700],[485,780],[430,520],[560,400],[590,210],[660,195],[590,210],[560,400],[430,520],[310,390],[210,460]]}
+  {"type":"bez","p0":[95,160],"c":[70,380],"p1":[140,600]},
+  {"type":"line","points":[[140,600],[170,690],[280,780],[350,720],[430,640],[410,500],[320,560],[350,720]]},
+  {"type":"bez","p0":[350,720],"c":[560,840],"p1":[760,640]},
+  {"type":"line","points":[[760,640],[790,520],[845,340],[790,470],[770,470],[770,0],[670,0],[670,420],[480,400],[450,410],[450,0],[350,0],[350,440],[300,480],[250,520]]},
+  {"type":"bez","p0":[250,520],"c":[160,380],"p1":[160,240]},
+  {"type":"line","points":[[160,240],[200,175],[215,225]]}
 ]}]}`;
 
 export async function interpretSketch(args: {
