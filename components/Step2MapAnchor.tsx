@@ -5,11 +5,7 @@ import dynamic from "next/dynamic";
 import type { LatLngExpression } from "leaflet";
 import L from "leaflet";
 import { NormalizedPoint } from "./Step1ImageUpload";
-import {
-  autoFindTop5,
-  type ShapeHint,
-  type Top5Pick,
-} from "../lib/autoFindTop5";
+import { type Top5Pick } from "../lib/autoFindTop5";
 import { MANHATTAN_PRESET, type CityPreset } from "../lib/cityPresets";
 import { buildAnchorLatLngsFromContour } from "../lib/placementFromContour";
 import {
@@ -153,6 +149,109 @@ function cleanWowPick(value: unknown): WowPlacePickPayload | null {
   return { center, rotDeg, extentM, km, dev, primed, coordinates, anchorLatLngs, previewPngBase64: rec.previewPngBase64 };
 }
 
+type WowPlaceResultPayload = {
+  picks: WowPlacePickPayload[];
+  subject: string | null;
+  message?: string;
+};
+
+async function readNdjsonResult(
+  res: Response,
+  onProgress: (detail: string) => void,
+): Promise<Record<string, unknown>> {
+  if (!res.ok) {
+    let message = `Route search failed (${res.status}).`;
+    try {
+      const payload = (await res.json()) as { error?: unknown };
+      if (typeof payload.error === "string") message = payload.error;
+    } catch {
+      /* keep status message */
+    }
+    throw new Error(message);
+  }
+  if (!res.body) throw new Error("Route search returned no progress stream.");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  // Ref object (not a plain let) — TS control flow can't see closure writes.
+  const resultRef: { current: Record<string, unknown> | null } = { current: null };
+  const consumeLine = (line: string) => {
+    if (!line.trim()) return;
+    const payload = JSON.parse(line) as Record<string, unknown>;
+    if (payload.type === "progress") {
+      if (typeof payload.detail === "string") onProgress(payload.detail);
+      return;
+    }
+    if (payload.type === "error") {
+      throw new Error(
+        typeof payload.message === "string" ? payload.message : "Route search failed.",
+      );
+    }
+    if (payload.type === "result" && payload.result && typeof payload.result === "object") {
+      resultRef.current = payload.result as Record<string, unknown>;
+    }
+  };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (value) {
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) consumeLine(line);
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) consumeLine(buffer);
+  if (!resultRef.current) throw new Error("Route search did not return a result.");
+  return resultRef.current;
+}
+
+async function fetchWowPlace(
+  body: Record<string, unknown>,
+  onProgress: (detail: string) => void,
+): Promise<WowPlaceResultPayload> {
+  const res = await fetch("/api/wow-place", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const rec = await readNdjsonResult(res, onProgress);
+  return {
+    picks: Array.isArray(rec.picks)
+      ? rec.picks.map(cleanWowPick).filter((p): p is WowPlacePickPayload => p !== null)
+      : [],
+    subject: typeof rec.subject === "string" ? rec.subject : null,
+    message: typeof rec.message === "string" ? rec.message : undefined,
+  };
+}
+
+async function fetchInterpret(
+  imageBase64: string,
+  onProgress: (detail: string) => void,
+): Promise<{ contour: NormalizedPoint[] | null; subject: string | null; message?: string }> {
+  const res = await fetch("/api/interpret-sketch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ imageBase64 }),
+  });
+  const rec = await readNdjsonResult(res, onProgress);
+  const contour = Array.isArray(rec.contour)
+    ? (rec.contour as { x?: unknown; y?: unknown }[]).filter(
+        (p): p is NormalizedPoint =>
+          !!p &&
+          typeof p.x === "number" &&
+          Number.isFinite(p.x) &&
+          typeof p.y === "number" &&
+          Number.isFinite(p.y),
+      )
+    : null;
+  return {
+    contour: contour && contour.length >= 8 ? contour : null,
+    subject: typeof rec.subject === "string" ? rec.subject : null,
+    message: typeof rec.message === "string" ? rec.message : undefined,
+  };
+}
+
 export default function Step2MapAnchor({
   contour,
   cityPreset,
@@ -173,7 +272,6 @@ export default function Step2MapAnchor({
   const [targetDistanceKm, setTargetDistanceKm] = useState<number | null>(null);
   const [picks, setPicks] = useState<Top5Pick[]>([]);
   const [picksVisionUsed, setPicksVisionUsed] = useState(false);
-  const [picksHint, setPicksHint] = useState<ShapeHint | null>(null);
   const [selectedPickIdx, setSelectedPickIdx] = useState<number | null>(null);
   const [preferredSnappedRoute, setPreferredSnappedRoute] =
     useState<RouteLineString | null>(null);
@@ -195,208 +293,35 @@ export default function Step2MapAnchor({
     return pick.snappedRoute;
   }, []);
 
-  const runAutoFind = useCallback(
-    async (mode: "full" | "refine") => {
-      setAutoBusy(true);
-      setAutoHint(
-        mode === "refine"
-          ? "Polishing your placement…"
-          : "Finding the best spots in the city…",
-      );
-      setPicks([]);
-      setSelectedPickIdx(null);
-      setPreferredSnappedRoute(null);
-      setSelectedAnchorLatLngs(null);
-      try {
-        const r = await autoFindTop5(contour, cityPreset, {
-          anchorSource: "image",
-          imageBase64: imageBase64 ?? undefined,
-          imageSourceName: imageSourceName ?? undefined,
-          anchorAround:
-            mode === "refine"
-              ? { center, rotationDeg, scale }
-              : undefined,
-          targetDistanceKm:
-            mode === "full" && targetDistanceKm != null
-              ? targetDistanceKm
-              : undefined,
-        });
-        if (r.picks.length === 0) {
-          // We'd rather show nothing than a tangle that only looks like a
-          // route in a thumbnail. Say so plainly and point at what works:
-          // simpler artwork, or placing it by hand.
-          setAutoHint(
-            r.snapFailures && r.snapFailures > 0
-              ? "The map service is busy right now — give it a minute and try again."
-              : "Nothing we found would read as your artwork on the streets, so we're not showing guesses. Bold, simple shapes work best — or drag it where you want it and we'll fit it to the streets.",
-          );
-          window.setTimeout(() => setAutoHint(null), 9000);
-          return;
-        }
-        setPicks(r.picks);
-        setPicksVisionUsed(r.visionUsed);
-        setPicksHint(r.hint ?? null);
-        // Auto-apply the #1 pick so the map updates immediately; user can tap others.
-        const first = r.picks[0]!;
-        setCenter([...first.placement.center] as [number, number]);
-        setRotationDeg(first.placement.rotationDeg);
-        setScale(first.placement.scale);
-        setSelectedPickIdx(0);
-        setPreferredSnappedRoute(routeFromPick(first));
-        setSelectedAnchorLatLngs(first.anchorLatLngs ?? null);
-        setFitNonce((n) => n + 1);
-        const partialNote =
-          r.snapFailures && r.snapFailures > 0
-            ? " Retry in a minute for even more."
-            : "";
-        setAutoHint(
-          r.relaxedQuality
-            ? `These are our best attempts so far — tap one and nudge it, or hit Refine to polish it.${partialNote}`
-            : `Here are ${r.picks.length} options — tap one to try it.${partialNote}`,
-        );
-      } catch (err) {
-        console.warn("[Step2] autoFindTop5 failed:", err);
-        setAutoHint("Couldn’t reach routing — try again or adjust by hand.");
-        window.setTimeout(() => setAutoHint(null), 5000);
-      } finally {
-        setAutoBusy(false);
-      }
-    },
-    [
-      contour,
-      cityPreset,
-      imageBase64,
-      imageSourceName,
-      center,
-      rotationDeg,
-      scale,
-      targetDistanceKm,
-      routeFromPick,
-    ],
-  );
-
   /**
-   * The verified placement funnel (WOW.md): the server names the subject
-   * from the approved sketch, sweeps street placements, and only returns
-   * picks a vision judge scored >= 6/10 primed — the measured bar below
-   * which routes never blind-read. Empty picks come with an honest reason.
+   * ONE button, the whole funnel (Ralph, July 28: "multiple options that
+   * all fail is terrible"). Cascade: try the art exactly as drawn ->
+   * verified street placement; if the judge refuses and we have the
+   * original image, redraw it street-ready automatically and place that.
+   * Ends in verified picks or ONE honest final answer — never a menu of
+   * dead ends.
    */
   const runWowFind = useCallback(async () => {
     if (cityPreset.id !== "manhattan") {
-      setAutoHint("Verified auto-find currently supports Manhattan only.");
+      setAutoHint("Route finding currently supports Manhattan only.");
       window.setTimeout(() => setAutoHint(null), 6000);
       return;
     }
     setAutoBusy(true);
-    setAutoHint("Reading your art…");
+    setAutoHint("Trying your art exactly as drawn…");
     setPicks([]);
     setSelectedPickIdx(null);
     setPreferredSnappedRoute(null);
     setSelectedAnchorLatLngs(null);
-    // The status line and results render below the buttons — off-screen at
-    // most window sizes. A silent minute-long run reads as "nothing
-    // happened" unless we bring the feedback into view.
     window.setTimeout(() => {
       document
         .getElementById("step2-status")
         ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }, 80);
-    try {
-      const res = await fetch("/api/wow-place", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contour,
-          cityId: cityPreset.id,
-          targetDistanceKm: targetDistanceKm ?? undefined,
-          subject: interpretedSubject ?? undefined,
-        }),
-      });
-      if (!res.ok) {
-        let message = `Verified auto-find failed (${res.status}).`;
-        try {
-          const payload = (await res.json()) as { error?: unknown };
-          if (typeof payload.error === "string") message = payload.error;
-        } catch {
-          /* keep status message */
-        }
-        throw new Error(message);
-      }
-      if (!res.body) throw new Error("Verified auto-find returned no progress stream.");
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      // Ref object (not a plain `let`) — TS control flow can't see closure
-      // assignments.
-      const resultRef: {
-        current: {
-          picks: WowPlacePickPayload[];
-          subject: string | null;
-          message?: string;
-        } | null;
-      } = { current: null };
-
-      const consumeLine = (line: string) => {
-        if (!line.trim()) return;
-        const payload = JSON.parse(line) as Record<string, unknown>;
-        if (payload.type === "progress") {
-          if (typeof payload.detail === "string") setAutoHint(payload.detail);
-          return;
-        }
-        if (payload.type === "error") {
-          throw new Error(
-            typeof payload.message === "string"
-              ? payload.message
-              : "Verified auto-find could not produce a route.",
-          );
-        }
-        if (payload.type === "result" && payload.result && typeof payload.result === "object") {
-          const rec = payload.result as Record<string, unknown>;
-          resultRef.current = {
-            picks: Array.isArray(rec.picks)
-              ? rec.picks.map(cleanWowPick).filter((p): p is WowPlacePickPayload => p !== null)
-              : [],
-            subject: typeof rec.subject === "string" ? rec.subject : null,
-            message: typeof rec.message === "string" ? rec.message : undefined,
-          };
-        }
-      };
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (value) {
-          buffer += decoder.decode(value, { stream: !done });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-          for (const line of lines) consumeLine(line);
-        }
-        if (done) break;
-      }
-      if (buffer.trim()) consumeLine(buffer);
-      const result = resultRef.current;
-      if (!result) throw new Error("Verified auto-find did not return a result.");
-      const { picks: rawPicks, subject, message } = result;
-
-      if (!rawPicks.length) {
-        // The verdict is the product here — keep it on screen until the
-        // user acts (an auto-cleared message reads as "nothing happened").
-        // A literal trace that fails will fail identically forever; the fix
-        // is the AI redraw one step back, so point there explicitly.
-        const redrawTip =
-          !interpretedSubject && imageBase64
-            ? " Tip: press Back and use the blue “AI street-ready redraw” button on the sketch screen — it rebuilds your art in a form that survives streets — then try this again."
-            : "";
-        setAutoHint(
-          (message ??
-            "Nothing cleared the judge's bar, so we're not showing guesses. Bold, simple shapes work best.") +
-            redrawTip,
-        );
-        return;
-      }
-
-      const subjectLabel = subject ?? "your art";
-      const mapped: Top5Pick[] = rawPicks.map((p) => ({
+    const applyResult = (result: WowPlaceResultPayload, redrawn: boolean) => {
+      const subjectLabel = result.subject ?? "your art";
+      const mapped: Top5Pick[] = result.picks.map((p) => ({
         placement: {
           center: p.center,
           rotationDeg: p.rotDeg,
@@ -421,7 +346,6 @@ export default function Step2MapAnchor({
       }));
       setPicks(mapped);
       setPicksVisionUsed(true);
-      setPicksHint(null);
       const first = mapped[0]!;
       setCenter([...first.placement.center] as [number, number]);
       setRotationDeg(first.placement.rotationDeg);
@@ -431,16 +355,68 @@ export default function Step2MapAnchor({
       setSelectedAnchorLatLngs(first.anchorLatLngs ?? null);
       setFitNonce((n) => n + 1);
       setAutoHint(
-        `We read your art as ${subjectLabel} — here are ${mapped.length} judge-checked placements. Tap one to try it.`,
+        redrawn
+          ? `Your art as-drawn didn't survive the streets, so we redrew it as ${subjectLabel} — ${mapped.length} judge-checked placements. Tap one to try it.`
+          : `We read your art as ${subjectLabel} — here are ${mapped.length} judge-checked placements. Tap one to try it.`,
       );
       window.setTimeout(() => {
         document
           .getElementById("step2-picks")
           ?.scrollIntoView({ behavior: "smooth", block: "start" });
       }, 120);
+    };
+
+    try {
+      // Stage 1: the user's art, exactly as approved.
+      const literal = await fetchWowPlace(
+        {
+          contour,
+          cityId: cityPreset.id,
+          targetDistanceKm: targetDistanceKm ?? undefined,
+          subject: interpretedSubject ?? undefined,
+        },
+        setAutoHint,
+      );
+      if (literal.picks.length) {
+        applyResult(literal, false);
+        return;
+      }
+
+      // Stage 2: automatic street-ready redraw, then place that.
+      if (!imageBase64) {
+        setAutoHint(
+          literal.message ??
+            "Nothing cleared the judge's bar. Bold, simple shapes work best — or drag the art where you want it and continue; we'll fit it to the streets.",
+        );
+        return;
+      }
+      setAutoHint("Your art as-drawn didn't pass the street judges — redrawing it street-ready…");
+      const interp = await fetchInterpret(imageBase64, setAutoHint);
+      if (!interp.contour) {
+        setAutoHint(
+          `${literal.message ?? "Your art as-drawn didn't pass the street judges."} We also tried redrawing it automatically: ${interp.message ?? "no redraw was recognized by blind judges."} You can still drag the art where you want it and continue — we'll fit it to the streets faithfully.`,
+        );
+        return;
+      }
+      const placed = await fetchWowPlace(
+        {
+          contour: interp.contour,
+          cityId: cityPreset.id,
+          targetDistanceKm: targetDistanceKm ?? undefined,
+          subject: interp.subject ?? undefined,
+        },
+        setAutoHint,
+      );
+      if (placed.picks.length) {
+        applyResult(placed, true);
+        return;
+      }
+      setAutoHint(
+        `We tried your art as-drawn and an automatic street-ready redraw (as ${interp.subject ?? "your subject"}) — neither cleared the judge's bar. ${placed.message ?? ""} You can still place it yourself: drag it where you want it and continue, and we'll fit it to the streets faithfully.`,
+      );
     } catch (err) {
-      console.warn("[Step2] wow-place failed:", err);
-      setAutoHint(err instanceof Error ? err.message : "Verified auto-find failed.");
+      console.warn("[Step2] find-my-route cascade failed:", err);
+      setAutoHint(err instanceof Error ? err.message : "Route finding failed.");
       window.setTimeout(() => setAutoHint(null), 9000);
     } finally {
       setAutoBusy(false);
@@ -462,7 +438,6 @@ export default function Step2MapAnchor({
     setSelectedPickIdx(null);
     setPreferredSnappedRoute(null);
     setSelectedAnchorLatLngs(null);
-    setPicksHint(null);
     setAutoHint(null);
   }, []);
 
@@ -650,29 +625,16 @@ export default function Step2MapAnchor({
               className="pace-toolbar-btn-primary w-full py-2.5 text-[11px] font-semibold disabled:opacity-50 sm:text-xs"
               title={
                 cityPreset.id === "manhattan"
-                  ? "Sweep hundreds of street placements, then show only the ones an AI judge scored as clearly readable — or say honestly that none were."
-                  : "Verified auto-find currently supports Manhattan only."
+                  ? "Tries your art exactly as drawn, and if the street judges refuse, automatically redraws it street-ready and tries again. Shows only routes an AI judge verified — or one honest answer."
+                  : "Route finding currently supports Manhattan only."
               }
             >
-              {autoBusy ? "Working…" : "Auto-find placement (judge-verified)"}
+              {autoBusy ? "Finding your route…" : "Find my route"}
             </button>
-            <button
-              type="button"
-              disabled={autoBusy || !contour.length}
-              onClick={() => void runAutoFind("full")}
-              className="pace-toolbar-btn w-full py-2.5 text-[11px] font-semibold disabled:opacity-50 sm:text-xs"
-            >
-              {autoBusy ? "Working…" : "Auto-find placement"}
-            </button>
-            <button
-              type="button"
-              disabled={autoBusy || !contour.length}
-              onClick={() => void runAutoFind("refine")}
-              className="w-full rounded border border-pace-line bg-pace-white py-2 text-[11px] font-medium text-pace-ink transition hover:border-pace-yellow hover:bg-pace-warm disabled:opacity-50 sm:text-xs"
-              title="Search tightly around where you've placed the shape — good once you've nudged it into roughly the right area."
-            >
-              Refine around my placement
-            </button>
+            <p className="text-[10px] leading-snug text-pace-muted">
+              Prefer to place it yourself? Drag the yellow dot, then continue —
+              we&apos;ll fit your art to the streets exactly where you put it.
+            </p>
             <div id="step2-status">
               {autoHint ? (
                 <p className="text-[11px] leading-snug text-pace-muted">{autoHint}</p>
@@ -745,11 +707,6 @@ export default function Step2MapAnchor({
                   clear
                 </button>
               </div>
-              {picksHint?.reason && (
-                <p className="-mt-1 text-[11px] italic leading-tight text-pace-muted">
-                  “{picksHint.reason}”
-                </p>
-              )}
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 {picks.map((p, idx) => {
                   const selected = selectedPickIdx === idx;
