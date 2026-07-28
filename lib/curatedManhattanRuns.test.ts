@@ -53,8 +53,8 @@ for (const run of CURATED_MANHATTAN_RUNS) {
 
 // lookup + GPX rendering
 {
-  const heart = getCuratedRun("les-heart");
-  assert.ok(heart, "les-heart missing");
+  const heart = getCuratedRun("catalog-heart");
+  assert.ok(heart, "catalog-heart missing");
   assert.strictEqual(getCuratedRun("nope"), undefined);
   const gpx = curatedRunToGpx(heart!);
   assert.ok(gpx.startsWith('<?xml version="1.0"'), "gpx header");

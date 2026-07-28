@@ -151,13 +151,13 @@ for (const run of CURATED_MANHATTAN_RUNS) {
   );
 }
 
-const heart = CURATED_MANHATTAN_RUNS.find((r) => r.id === "les-heart");
-if (!heart) throw new Error("les-heart run missing");
+const heart = CURATED_MANHATTAN_RUNS.find((r) => r.id === "catalog-heart");
+if (!heart) throw new Error("catalog-heart run missing");
 await renderRoute(
   heart.coords,
   800,
-  path.join(outDir, "les-heart-hero.png"),
-  "les-heart hero",
+  path.join(outDir, "catalog-heart-hero.png"),
+  "catalog-heart hero",
 );
 
 console.log("done");
