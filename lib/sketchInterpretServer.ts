@@ -107,7 +107,8 @@ async function blindJudge(
 }
 
 const GRAMMAR = `Draw a BOLD one-line interpretation of the subject, the way champion GPS-artists do. Hard rules, each learned from measured failures:
-- Draw the subject as ONE CLOSED SILHOUETTE OUTLINE — as if tracing around a solid, filled shape. NEVER a stick figure: measured on real streets, skeletal line-drawings melt into scribble while chunky closed outlines survive. Limbs, ears, tails and handles are outline protrusions WITH WIDTH (at least 8% of the span across), like a bold logo silhouette. The pen ends where it started.
+- Draw the subject as ONE CLOSED SILHOUETTE OUTLINE — as if tracing around a solid, filled shape. NEVER a thin stick figure: measured on real streets, skeletal line-drawings melt into scribble while chunky closed outlines survive. Limbs, ears, tails and handles are outline protrusions WITH WIDTH (at least 8% of the span across), like a bold logo silhouette. The pen ends where it started.
+- EXCEPTION — HUMAN FIGURES: closed-outline humans read as ROBOTS (measured: three blind judges called one "robot" at confidence 9). Draw a person as a bold ACTION FIGURE instead: one large round head (a circle ~13% of the span) on a body of thick out-and-back retraced limbs in a DYNAMIC ASYMMETRIC pose — mid-stride, arms at different angles, everything diagonal, nothing vertical-symmetric. Wearables (headphones, a hat) must be drawn HUGE, at least 20% of the span, or dropped.
 - The drawing is ONE CONTINUOUS LINE — a runner draws it in a single run without stopping the GPS. No floating parts. To reach an unavoidable interior detail, travel back along a line you already drew (a retrace adds no visible ink) or attach the detail to the silhouette.
 - EXAGGERATE the 1-2 most distinctive features (a trunk, long ears, a long neck) — bigger than life. Distinctiveness survives; realism does not.
 - NO fine detail: no feature smaller than ~8% of the drawing's span, no texture, no interior lines, no fingers/toes/whiskers. City streets quantize every line to ~250 m blocks — anything thin melts into mush.
@@ -131,6 +132,12 @@ Example of the expected level — an elephant, one continuous CLOSED silhouette 
   {"type":"line","points":[[760,640],[790,520],[845,340],[790,470],[770,470],[770,0],[670,0],[670,420],[480,400],[450,410],[450,0],[350,0],[350,440],[300,480],[250,520]]},
   {"type":"bez","p0":[250,520],"c":[160,380],"p1":[160,240]},
   {"type":"line","points":[[160,240],[200,175],[215,225]]}
+]}]}
+
+Example for a HUMAN FIGURE — a sprinting runner, blind-verified on real streets ABOVE a human reference sample (note: big round head, thick retraced limbs, dynamic diagonal mid-stride pose):
+{"strokes":[{"elements":[
+  {"type":"arc","cx":470,"cy":890,"r":65,"startDeg":-90,"endDeg":270},
+  {"type":"line","points":[[485,780],[600,690],[700,750],[600,690],[485,780],[380,700],[300,760],[380,700],[485,780],[430,520],[560,400],[590,210],[660,195],[590,210],[560,400],[430,520],[310,390],[210,460]]}
 ]}]}`;
 
 export async function interpretSketch(args: {
@@ -162,17 +169,14 @@ export async function interpretSketch(args: {
   const features = idm[2]!.trim().replace(/\s+/g, " ").slice(0, 200);
   const layout = (idm[3] ?? "").trim().replace(/\s+/g, " ").slice(0, 240);
 
-  let best: {
+  type LadderBest = {
     contour: NormalizedPoint[];
     png: Buffer;
     hits: number;
     meanConfidence: number;
     guesses: string[];
     resemblance: number;
-  } | null = null;
-  let feedback = "";
-  let lastPng: Buffer | null = null;
-  let round = 0;
+  } | null;
 
   // Each retry changes STRATEGY, not just wording — identical prompts
   // converge on the same failed drawing.
@@ -183,123 +187,183 @@ export async function interpretSketch(args: {
     "Ignore this photo's pose entirely: draw the most ICONIC, canonical view of the subject (the version a road-sign or emoji would use), close-up on its identity.",
   ];
 
-  const draftOnce = async (roundNum: number): Promise<Pt2[][] | null> => {
-    const content: Parameters<typeof vision>[1] = [img(args.imageBase64, args.mediaType)];
-    if (lastPng) content.push(img(lastPng.toString("base64"), "image/png"));
-    content.push({
-      type: "text",
-      text:
-        `Subject: ${subject}\nDistinctive features to preserve: ${features}` +
-        (layout
-          ? `\nOriginal composition to ECHO wherever it doesn't cost recognition (the owner must see THEIR art in the redraw): ${layout}`
-          : "") +
-        `\n\n${GRAMMAR}` +
-        (STRATEGY[roundNum - 1] ? `\n\nThis attempt's strategy: ${STRATEGY[roundNum - 1]}` : "") +
-        (feedback
-          ? `\n\nThe second image is your previous attempt as the judges saw it. It failed: ${feedback} Redraw from scratch.`
-          : ""),
-    });
-    const draftText = await vision(args.apiKey, content, 4096);
-    if (!draftText) return null;
-    const jsonText = draftText.slice(draftText.indexOf("{"), draftText.lastIndexOf("}") + 1);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(jsonText);
-    } catch {
-      return null;
+  let roundsUsed = 0;
+
+  const runLadder = async (
+    subj: string,
+    feats: string,
+    lay: string,
+    maxRounds: number,
+  ): Promise<LadderBest> => {
+    let best: LadderBest = null;
+    let feedback = "";
+    let lastPng: Buffer | null = null;
+
+    const draftOnce = async (roundNum: number): Promise<Pt2[][] | null> => {
+      const content: Parameters<typeof vision>[1] = [img(args.imageBase64, args.mediaType)];
+      if (lastPng) content.push(img(lastPng.toString("base64"), "image/png"));
+      content.push({
+        type: "text",
+        text:
+          `Subject: ${subj}\nDistinctive features to preserve: ${feats}` +
+          (lay
+            ? `\nOriginal composition to ECHO wherever it doesn't cost recognition (the owner must see THEIR art in the redraw): ${lay}`
+            : "") +
+          `\n\n${GRAMMAR}` +
+          (STRATEGY[roundNum - 1] ? `\n\nThis attempt's strategy: ${STRATEGY[roundNum - 1]}` : "") +
+          (feedback
+            ? `\n\nThe second image is your previous attempt as the judges saw it. It failed: ${feedback} Redraw from scratch.`
+            : ""),
+      });
+      const draftText = await vision(args.apiKey, content, 4096);
+      if (!draftText) return null;
+      const jsonText = draftText.slice(draftText.indexOf("{"), draftText.lastIndexOf("}") + 1);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(jsonText);
+      } catch {
+        return null;
+      }
+      const program = parsePrimitiveProgram(parsed);
+      if (!program) return null;
+      let strokes = compilePrimitiveProgram(program);
+      if (!strokes.length) return null;
+      // Product rule (Ralph, July 27): NO pen lifts — one run, one line. Any
+      // extra strokes are joined head-to-tail so the connector ink is real,
+      // visible, and judged exactly as it will be run.
+      if (strokes.length > 1) strokes = [strokes.flat()];
+      return strokes;
+    };
+
+    for (let round = 1; round <= maxRounds; round++) {
+      roundsUsed++;
+      progress(`Drawing ${subj} — attempt ${round} of ${maxRounds}…`);
+      // Best-of-two, both judged: draw two candidates in parallel and blind-
+      // judge BOTH street-simulated renders. A cheap selector used to pick
+      // one candidate for judging, but it measurably picked wrong (July 28,
+      // gas logo: the losing sibling of a failed round was the drawing that
+      // passed on a later run) — judged shots are what buy reliability.
+      const drafts = (await Promise.all([draftOnce(round), draftOnce(round)])).filter(
+        (d): d is Pt2[][] => d !== null,
+      );
+      if (!drafts.length) {
+        feedback = "the drawing program was invalid.";
+        continue;
+      }
+      progress(`Blind-testing attempt ${round} on three judges (street-simulated)…`);
+      const judged = await Promise.all(
+        drafts.map(async (strokes, di) => {
+          const png = await renderStrokesPng(strokes);
+          // Judge the STREET-SIMULATED version: snapped to a Manhattan-pitch
+          // lattice, the same quantization real placement applies. Clean
+          // renders measurably pass drafts whose thin features then melt on
+          // streets (paper-9 coffee mug -> streets 3/10); lattice renders
+          // predict streets.
+          const snappedPng = await renderStrokesPng(snapStrokesToLattice(strokes));
+          if (process.env.INTERPRET_DEBUG_DIR) {
+            const { writeFile } = await import("node:fs/promises");
+            const tag = `${subj.replace(/\W+/g, "-").slice(0, 40)}-r${round}${di ? "b" : "a"}`;
+            void writeFile(`${process.env.INTERPRET_DEBUG_DIR}/draft-${tag}.png`, snappedPng).catch(() => {});
+          }
+          const verdicts = (
+            await Promise.all([1, 2, 3].map(() => blindJudge(args.apiKey, snappedPng)))
+          ).filter((v): v is { guess: string; confidence: number } => v !== null);
+          const hits = verdicts.filter((v) => guessMatchesSubject(subj, v.guess)).length;
+          const meanConfidence = verdicts.length
+            ? verdicts.reduce((a, v) => a + v.confidence, 0) / verdicts.length
+            : 0;
+          return { strokes, png, snappedPng, verdicts, hits, meanConfidence };
+        }),
+      );
+      judged.sort((x, y) => y.hits - x.hits || y.meanConfidence - x.meanConfidence);
+      const top = judged[0]!;
+      const { strokes, png, verdicts, hits, meanConfidence } = top;
+      lastPng = top.snappedPng;
+      const guesses = verdicts.map((v) => `${v.guess} (${v.confidence})`);
+
+      // Recognition alone is not the product — a passing draft that abandons
+      // the user's composition is "recognizable but not YOUR logo". Score
+      // resemblance to the original and prefer it among passing drafts.
+      let resemblance = 0;
+      if (hits >= 2) {
+        const resText = await vision(args.apiKey, [
+          img(args.imageBase64, args.mediaType),
+          img(png.toString("base64"), "image/png"),
+          {
+            type: "text",
+            text:
+              "The second image is a bold one-line redraw of the first. How recognizable is it as a simplified version of the first image — same composition, same identity? Reply in this exact format:\nSCORE: <1-10>\nWHY: <short phrase>",
+          },
+        ]);
+        const rm = resText?.match(/SCORE:\s*(\d+)/i);
+        if (rm) resemblance = Number(rm[1]);
+      }
+
+      if (
+        !best ||
+        hits > best.hits ||
+        (hits === best.hits && resemblance > best.resemblance) ||
+        (hits === best.hits && resemblance === best.resemblance && meanConfidence > best.meanConfidence)
+      ) {
+        best = {
+          contour: strokesToContour(strokes),
+          png,
+          hits,
+          meanConfidence: Number(meanConfidence.toFixed(1)),
+          guesses,
+          resemblance,
+        };
+      }
+      // Don't settle: strong recognition AND real resemblance, or keep drawing.
+      if (hits === 3 && verdicts.length === 3 && meanConfidence >= 7 && resemblance >= 6) break;
+      feedback =
+        hits >= 2 && resemblance < 6
+          ? `judges recognized ${subj}, but it doesn't look like the ORIGINAL (resemblance ${resemblance}/10) — keep the same subject and echo the original's composition${lay ? `: ${lay}` : ""}.`
+          : hits === 3
+            ? `all judges said ${subj}, but only at confidence ${meanConfidence.toFixed(0)}/10 — make it bolder and more unmistakable.`
+            : `blind judges saw "${verdicts.map((v) => v.guess).join('", "')}" instead of ${subj}.`;
     }
-    const program = parsePrimitiveProgram(parsed);
-    if (!program) return null;
-    let strokes = compilePrimitiveProgram(program);
-    if (!strokes.length) return null;
-    // Product rule (Ralph, July 27): NO pen lifts — one run, one line. Any
-    // extra strokes are joined head-to-tail so the connector ink is real,
-    // visible, and judged exactly as it will be run.
-    if (strokes.length > 1) strokes = [strokes.flat()];
-    return strokes;
+    return best;
   };
 
-  for (round = 1; round <= MAX_ROUNDS; round++) {
-    progress(`Drawing ${subject} — attempt ${round} of ${MAX_ROUNDS}…`);
-    // Best-of-two: draw two candidates in parallel, keep the one a selector
-    // finds more recognizable, and spend the blind judges only on it.
-    const [a, b] = await Promise.all([draftOnce(round), draftOnce(round)]);
-    let strokes = a ?? b;
-    if (!strokes) {
-      feedback = "the drawing program was invalid.";
-      continue;
-    }
-    if (a && b) {
-      const [pngA, pngB] = await Promise.all([renderStrokesPng(a), renderStrokesPng(b)]);
-      const pick = await vision(args.apiKey, [
-        img(pngA.toString("base64"), "image/png"),
-        img(pngB.toString("base64"), "image/png"),
-        {
-          type: "text",
-          text: `Which of these two one-line drawings reads more clearly as ${subject} at a glance? Reply with exactly one letter:\nANSWER: <A or B>`,
-        },
-      ]);
-      strokes = /ANSWER:\s*B/i.test(pick ?? "") ? b : a;
-    }
+  let best = await runLadder(subject, features, layout, MAX_ROUNDS);
+  let usedSubject = subject;
+  let usedFeatures = features;
 
-    const png = await renderStrokesPng(strokes);
-    // Judge the STREET-SIMULATED version: snapped to a Manhattan-pitch
-    // lattice, the same quantization real placement applies. Clean renders
-    // measurably pass drafts whose thin features then melt on streets
-    // (paper-9 coffee mug -> streets 3/10); lattice renders predict streets.
-    const snappedPng = await renderStrokesPng(snapStrokesToLattice(strokes));
-    lastPng = snappedPng;
-    progress(`Blind-testing attempt ${round} on three judges (street-simulated)…`);
-    const verdicts = (
-      await Promise.all([1, 2, 3].map(() => blindJudge(args.apiKey, snappedPng)))
-    ).filter((v): v is { guess: string; confidence: number } => v !== null);
-    const hits = verdicts.filter((v) => guessMatchesSubject(subject, v.guess)).length;
-    const meanConfidence = verdicts.length
-      ? verdicts.reduce((a, v) => a + v.confidence, 0) / verdicts.length
-      : 0;
-    const guesses = verdicts.map((v) => `${v.guess} (${v.confidence})`);
-
-    // Recognition alone is not the product — a passing draft that abandons
-    // the user's composition is "recognizable but not YOUR logo". Score
-    // resemblance to the original and prefer it among passing drafts.
-    let resemblance = 0;
-    if (hits >= 2) {
-      const resText = await vision(args.apiKey, [
-        img(args.imageBase64, args.mediaType),
-        img(png.toString("base64"), "image/png"),
-        {
-          type: "text",
-          text:
-            "The second image is a bold one-line redraw of the first. How recognizable is it as a simplified version of the first image — same composition, same identity? Reply in this exact format:\nSCORE: <1-10>\nWHY: <short phrase>",
-        },
-      ]);
-      const rm = resText?.match(/SCORE:\s*(\d+)/i);
-      if (rm) resemblance = Number(rm[1]);
+  // Fallback ladder (July 28, learned from Ralph's gas logo): composite
+  // subjects like "a person wearing headphones" draw as unrecognizable
+  // figures (judges saw a giraffe), while the iconic OBJECT inside them
+  // (headphones alone) has a road-sign silhouette. When every draft of the
+  // primary subject fails, re-ask for the most drawable object and try it.
+  if (!best || best.hits < 2) {
+    const fbText = await vision(args.apiKey, [
+      img(args.imageBase64, args.mediaType),
+      {
+        type: "text",
+        text:
+          `A bold one-line drawing of "${subject}" was NOT recognizable to blind judges. Name the TWO most iconic, simply-drawable OBJECTS visible in this image instead — objects whose silhouette alone a stranger names instantly, the way road-sign and emoji icons work (e.g. headphones, an umbrella, a musical note). NOT a person or full figure, NOT text or letters, and NEVER a box-shaped object (rectangles quantize to nothing on city streets — prefer curved, distinctive silhouettes). Most iconic first. Reply in this exact format:\nSUBJECT: <1-3 words, e.g. "headphones">\nFEATURES: <2-3 comma-separated silhouette features it must keep>\nALT: <1-3 words, a different object>\nALTFEATURES: <2-3 comma-separated silhouette features>`,
+      },
+    ]);
+    const fbm = fbText?.match(
+      /SUBJECT:\s*(.+?)\s*FEATURES:\s*(.+?)(?:\s*ALT:\s*(.+?)\s*ALTFEATURES:\s*(.+))?$/is,
+    );
+    const clean = (v: string | undefined, max: number) =>
+      v?.trim().replace(/\s+/g, " ").slice(0, max) ?? "";
+    const candidates = [
+      { subj: clean(fbm?.[1], 80), feats: clean(fbm?.[2], 200) },
+      { subj: clean(fbm?.[3], 80), feats: clean(fbm?.[4], 200) },
+    ].filter((c) => c.subj && c.subj.toLowerCase() !== subject.toLowerCase());
+    for (const [ci, c] of candidates.entries()) {
+      progress(`"${subject}" didn't survive as a one-line drawing — trying the ${c.subj} from your image instead…`);
+      const fbBest = await runLadder(c.subj, c.feats, "", ci === 0 ? 3 : 2);
+      if (fbBest && fbBest.hits >= 2) {
+        best = fbBest;
+        usedSubject = c.subj;
+        usedFeatures = c.feats;
+        break;
+      }
+      if (fbBest && (!best || fbBest.hits > best.hits)) best = fbBest;
     }
-
-    if (
-      !best ||
-      hits > best.hits ||
-      (hits === best.hits && resemblance > best.resemblance) ||
-      (hits === best.hits && resemblance === best.resemblance && meanConfidence > best.meanConfidence)
-    ) {
-      best = {
-        contour: strokesToContour(strokes),
-        png,
-        hits,
-        meanConfidence: Number(meanConfidence.toFixed(1)),
-        guesses,
-        resemblance,
-      };
-    }
-    // Don't settle: strong recognition AND real resemblance, or keep drawing.
-    if (hits === 3 && verdicts.length === 3 && meanConfidence >= 7 && resemblance >= 6) break;
-    feedback =
-      hits >= 2 && resemblance < 6
-        ? `judges recognized ${subject}, but it doesn't look like the ORIGINAL (resemblance ${resemblance}/10) — keep the same subject and echo the original's composition${layout ? `: ${layout}` : ""}.`
-        : hits === 3
-          ? `all judges said ${subject}, but only at confidence ${meanConfidence.toFixed(0)}/10 — make it bolder and more unmistakable.`
-          : `blind judges saw "${verdicts.map((v) => v.guess).join('", "')}" instead of ${subject}.`;
   }
 
   if (!best || best.hits < 2) {
@@ -307,24 +371,24 @@ export async function interpretSketch(args: {
       ...empty,
       subject,
       features,
-      rounds: Math.min(round, MAX_ROUNDS),
+      rounds: roundsUsed,
       guesses: best?.guesses ?? [],
       hits: best?.hits ?? 0,
       meanConfidence: best?.meanConfidence ?? 0,
       resemblance: best?.resemblance ?? 0,
-      message: `We tried ${Math.min(round, MAX_ROUNDS)} redraws of "${subject}", but blind judges never reliably recognized any of them${best?.guesses.length ? ` (best attempt was seen as: ${best.guesses.join(", ")})` : ""}. This subject may need a simpler reference image.`,
+      message: `We tried ${roundsUsed} redraws of "${subject}"${usedSubject !== subject ? ` (and its ${usedSubject})` : ""}, but blind judges never reliably recognized any of them${best?.guesses.length ? ` (best attempt was seen as: ${best.guesses.join(", ")})` : ""}. This subject may need a simpler reference image.`,
     };
   }
 
   return {
     contour: best.contour,
-    subject,
-    features,
+    subject: usedSubject,
+    features: usedFeatures,
     guesses: best.guesses,
     hits: best.hits,
     meanConfidence: best.meanConfidence,
     resemblance: best.resemblance,
-    rounds: Math.min(round, MAX_ROUNDS),
+    rounds: roundsUsed,
     previewPngBase64: best.png.toString("base64"),
   };
 }

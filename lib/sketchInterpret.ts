@@ -230,6 +230,12 @@ export function snapStrokesToLattice(
 const STOP_WORDS = new Set([
   "the", "and", "with", "person", "figure", "shape", "logo", "line", "drawing",
   "image", "picture", "icon", "symbol", "simple", "abstract", "outline",
+  // Accessory verbs from composite subjects ("a person WEARING headphones").
+  // July 28: a draft judged as "person wearing hat" false-passed the subject
+  // "a person wearing headphones" because "wearing" counted as a match.
+  // Pose verbs (running, walking) stay matchable — "a running person" vs
+  // judge's "running person" is a real hit.
+  "wearing", "holding", "carrying", "using", "riding",
 ]);
 
 function tokens(text: string): string[] {
