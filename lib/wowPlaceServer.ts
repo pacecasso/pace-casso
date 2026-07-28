@@ -30,6 +30,7 @@ import {
   shortestGraphPath,
   nearestGiantNode,
   sweepPlacements,
+  candidateScore,
   chainsKm,
   contourToStrokes,
   strokesInkRatio,
@@ -308,7 +309,10 @@ export async function runWowPlacement(args: {
     };
   }
 
-  candidates.sort((a, b) => a.dev - b.dev);
+  // Rank by the combined quality score (clean lines + shape fidelity) so
+  // the judges — and ultimately the user — see the best-LOOKING fits, not
+  // just the tightest ones.
+  candidates.sort((a, b) => candidateScore(a) - candidateScore(b));
   const screenSet = candidates.slice(0, SCREEN_COUNT);
   progress(`Asking the judge about the ${screenSet.length} tightest fits…`);
   const scored = await Promise.all(
