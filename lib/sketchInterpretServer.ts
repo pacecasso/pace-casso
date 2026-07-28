@@ -27,6 +27,7 @@ import {
   compilePrimitiveProgram,
   strokesToContour,
   guessMatchesSubject,
+  snapStrokesToLattice,
 } from "./sketchInterpret";
 import { renderStrokesPng } from "./wowPlaceServer";
 
@@ -242,10 +243,15 @@ export async function interpretSketch(args: {
     }
 
     const png = await renderStrokesPng(strokes);
-    lastPng = png;
-    progress(`Blind-testing attempt ${round} on three judges…`);
+    // Judge the STREET-SIMULATED version: snapped to a Manhattan-pitch
+    // lattice, the same quantization real placement applies. Clean renders
+    // measurably pass drafts whose thin features then melt on streets
+    // (paper-9 coffee mug -> streets 3/10); lattice renders predict streets.
+    const snappedPng = await renderStrokesPng(snapStrokesToLattice(strokes));
+    lastPng = snappedPng;
+    progress(`Blind-testing attempt ${round} on three judges (street-simulated)…`);
     const verdicts = (
-      await Promise.all([1, 2, 3].map(() => blindJudge(args.apiKey, png)))
+      await Promise.all([1, 2, 3].map(() => blindJudge(args.apiKey, snappedPng)))
     ).filter((v): v is { guess: string; confidence: number } => v !== null);
     const hits = verdicts.filter((v) => guessMatchesSubject(subject, v.guess)).length;
     const meanConfidence = verdicts.length

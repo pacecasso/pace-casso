@@ -63,6 +63,9 @@ export type WowPlaceResult = {
   subjectConfidence: number | null;
   /** honest explanation when picks is empty */
   message?: string;
+  /** when refused: the best screened candidate as the judge saw it */
+  refusedPreviewPngBase64?: string;
+  refusedPreviewScore?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -309,11 +312,30 @@ export async function runWowPlacement(args: {
     };
   }
 
-  // Rank by the combined quality score (clean lines + shape fidelity) so
-  // the judges — and ultimately the user — see the best-LOOKING fits, not
-  // just the tightest ones.
-  candidates.sort((a, b) => candidateScore(a) - candidateScore(b));
-  const screenSet = candidates.slice(0, SCREEN_COUNT);
+  // Rank by the combined quality score (clean lines + shape fidelity), but
+  // screen a ROTATION-DIVERSE set: geometry scoring alone favored tilted
+  // placements, and orientation-bound subjects (mugs, houses) stop reading
+  // when tilted — a paper-9 mug screened only ±29° placements and scored
+  // 3/10. Upright candidates always get seats; the judge arbitrates.
+  const byRot = new Map<number, WowCandidate[]>();
+  for (const c of candidates) {
+    if (!byRot.has(c.rotDeg)) byRot.set(c.rotDeg, []);
+    byRot.get(c.rotDeg)!.push(c);
+  }
+  const rotGroups = [...byRot.entries()]
+    .sort((a, b) => Math.abs(a[0]) - Math.abs(b[0]))
+    .map(([, list]) => list.sort((a, b) => candidateScore(a) - candidateScore(b)));
+  const screenSet: WowCandidate[] = [];
+  for (let i = 0; screenSet.length < SCREEN_COUNT; i++) {
+    let added = false;
+    for (const group of rotGroups) {
+      if (i < group.length && screenSet.length < SCREEN_COUNT) {
+        screenSet.push(group[i]!);
+        added = true;
+      }
+    }
+    if (!added) break;
+  }
   progress(`Asking the judge about the ${screenSet.length} tightest fits…`);
   const scored = await Promise.all(
     screenSet.map(async (c) => {
@@ -332,12 +354,14 @@ export async function runWowPlacement(args: {
     .slice(0, MAX_PICKS);
 
   if (!keepers.length) {
-    const best = Math.max(...scored.map((s) => s.score));
+    const bestScored = scored.slice().sort((a, b) => b.score - a.score)[0];
     return {
       picks: [],
       subject,
       subjectConfidence: namedConfidence,
-      message: `We read your art as ${subject} and traced ${candidates.length} street placements, but the judge scored the best only ${best}/10 — below the bar where routes reliably read. We'd rather say so than show you a tangle. Simpler/bolder shapes score higher.`,
+      message: `We read your art as ${subject} and traced ${candidates.length} street placements, but the judge scored the best only ${bestScored?.score ?? 0}/10 — below the bar where routes reliably read. We'd rather say so than show you a tangle. Simpler/bolder shapes score higher.`,
+      refusedPreviewPngBase64: bestScored?.png.toString("base64"),
+      refusedPreviewScore: bestScored?.score,
     };
   }
 

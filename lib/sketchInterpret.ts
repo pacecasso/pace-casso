@@ -173,6 +173,60 @@ export function strokesToContour(strokes: Pt[][], maxPoints = 550): NormalizedPo
   return out;
 }
 
+/**
+ * Simulate street quantization: snap a drawing to a Manhattan-pitch lattice
+ * (~250 m avenue x ~80 m street blocks at a 3.5 km canvas) with L-shaped
+ * connections. The July SURVIVABILITY series showed lattice renders predict
+ * street recognizability far better than clean renders — judging THIS
+ * version during drafting closes the paper-passes/streets-fail gap.
+ */
+export function snapStrokesToLattice(
+  strokes: Pt[][],
+  extentM = 3500,
+  pitchXM = 250,
+  pitchYM = 80,
+): Pt[][] {
+  const all = strokes.flat();
+  if (!all.length) return [];
+  const xs = all.map((p) => p[0]);
+  const ys = all.map((p) => p[1]);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const span = Math.max(Math.max(...xs) - minX, Math.max(...ys) - minY) || 1;
+  const mPerUnit = extentM / span;
+  const px = pitchXM / mPerUnit; // lattice pitch in shape units
+  const py = pitchYM / mPerUnit;
+  return strokes.map((seg) => {
+    // densify then snap each sample; join with horizontal-first L corners
+    const dense: Pt[] = [];
+    for (let i = 0; i < seg.length; i++) {
+      const a = seg[i]!;
+      dense.push(a);
+      const b = seg[i + 1];
+      if (!b) continue;
+      const d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const steps = Math.max(1, Math.ceil((d * mPerUnit) / 40));
+      for (let k = 1; k < steps; k++) {
+        const t = k / steps;
+        dense.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      }
+    }
+    const snapped: Pt[] = [];
+    for (const [x, y] of dense) {
+      const p: Pt = [Math.round((x - minX) / px) * px + minX, Math.round((y - minY) / py) * py + minY];
+      const last = snapped[snapped.length - 1];
+      if (!last || last[0] !== p[0] || last[1] !== p[1]) snapped.push(p);
+    }
+    const out: Pt[] = [];
+    for (const p of snapped) {
+      const last = out[out.length - 1];
+      if (last && last[0] !== p[0] && last[1] !== p[1]) out.push([p[0], last[1]]);
+      out.push(p);
+    }
+    return out.length >= 2 ? out : snapped;
+  }).filter((s) => s.length >= 2);
+}
+
 const STOP_WORDS = new Set([
   "the", "and", "with", "person", "figure", "shape", "logo", "line", "drawing",
   "image", "picture", "icon", "symbol", "simple", "abstract", "outline",

@@ -720,9 +720,13 @@ export function sweepPlacements(g: WowGraph, segments: Pt[][], opts: SweepOption
 /**
  * Placement quality score (lower = better): balances clean lines (jitter,
  * what comparative judges see) against shape fidelity (chamfer dev, what
- * recognition depends on). Scales chosen so typical values contribute
- * comparably (jitter ~400-1000 deg/km, dev ~20-60 m).
+ * recognition depends on). Dev is normalized by canvas size — absolute
+ * meters grow with extent, and an un-normalized dev term systematically
+ * preferred the SMALLEST canvases, exactly where thin features melt
+ * (measured: a paper-9 coffee mug screened only small-canvas placements
+ * and scored 4/10 on streets).
  */
-export function candidateScore(c: { dev: number; jitter: number }): number {
-  return c.jitter / 100 + c.dev / 10;
+export function candidateScore(c: { dev: number; jitter: number; extentM: number }): number {
+  const devRel = c.dev / Math.max(1, c.extentM / 1000); // meters per km of canvas
+  return c.jitter / 100 + devRel / 3;
 }

@@ -106,4 +106,24 @@ import {
   assert.ok(!guessMatchesSubject("the logo", "a logo"), "filler-only subjects never match");
 }
 
+// --- snapStrokesToLattice -------------------------------------------------------
+{
+  const { snapStrokesToLattice } = await import("./sketchInterpret");
+  // a diagonal line snaps to lattice steps (more points, axis-aligned segs)
+  const snapped = snapStrokesToLattice([[[0, 0], [1000, 1000]]]);
+  assert.ok(snapped.length === 1 && snapped[0]!.length > 2, "diagonal becomes staircase");
+  for (let i = 1; i < snapped[0]!.length; i++) {
+    const a = snapped[0]![i - 1]!;
+    const b = snapped[0]![i]!;
+    assert.ok(a[0] === b[0] || a[1] === b[1], "every snapped segment is axis-aligned");
+  }
+  // a tiny feature (below one lattice cell) collapses
+  const tiny = snapStrokesToLattice([
+    [[0, 0], [1000, 0]],
+    [[500, 500], [512, 500], [512, 508], [500, 500]],
+  ]);
+  const tinyStroke = tiny[1];
+  assert.ok(!tinyStroke || tinyStroke.length <= 2, "sub-cell feature melts, as on real streets");
+}
+
 console.log("sketchInterpret tests passed");
