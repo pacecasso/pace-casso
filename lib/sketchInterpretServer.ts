@@ -296,6 +296,8 @@ export async function interpretSketch(args: {
     meanConfidence: number;
     guesses: string[];
     resemblance: number;
+    /** false when the resemblance call failed and 3 is just the default */
+    resemblanceMeasured: boolean;
   } | null;
 
   // Each retry changes STRATEGY, not just wording — identical prompts
@@ -484,6 +486,7 @@ export async function interpretSketch(args: {
       // resemblance to the original and prefer it among passing drafts.
       // In compare mode the judges ALREADY scored likeness to the original.
       let resemblance = 0;
+      let resemblanceMeasured = mode === "compare"; // compare scores ARE the measure
       if (mode === "compare") {
         resemblance = Number(meanConfidence.toFixed(1));
       } else if (hits >= 2) {
@@ -499,19 +502,26 @@ export async function interpretSketch(args: {
           ]);
         let rm = (await askResemblance())?.match(/SCORE:\s*(\d+)/i);
         if (!rm) rm = (await askResemblance())?.match(/SCORE:\s*(\d+)/i);
-        // Unmeasurable (service failure after retries) must not read as
-        // "resemblance 0" — that fails the fallback floor and steers
-        // feedback at a non-existent problem. 3 = floor-neutral default.
-        resemblance = rm ? Number(rm[1]) : 3;
+        if (rm) {
+          resemblance = Number(rm[1]);
+          resemblanceMeasured = true;
+        } else {
+          // Unmeasurable (service failure after retries): 3 keeps feedback
+          // from chasing a phantom "doesn't look like the original", but it
+          // is NOT acceptance-grade — a degraded-API run measurably shipped
+          // a "musical note" rescue for the gas logo through this default
+          // (July 30). Only a MEASURED resemblance can pass the floor.
+          resemblance = 3;
+        }
       }
 
       // A draft that would be ACCEPTED downstream (hits >= 2 and above the
       // fallback resemblance floor) must never be evicted from `best` by a
       // higher-hits draft that would be REFUSED (e.g. a "musical note"
       // rescue at hits 3, resemblance 2 displacing a hits-2/res-4 keeper).
-      const acceptable = (b: { hits: number; resemblance: number }) =>
-        b.hits >= 2 && b.resemblance >= 3;
-      const cand = { hits, resemblance };
+      const acceptable = (b: { hits: number; resemblance: number; resemblanceMeasured: boolean }) =>
+        b.hits >= 2 && b.resemblance >= 3 && b.resemblanceMeasured;
+      const cand = { hits, resemblance, resemblanceMeasured };
       if (
         !best ||
         (acceptable(cand) && !acceptable(best)) ||
@@ -529,6 +539,7 @@ export async function interpretSketch(args: {
           meanConfidence: Number(meanConfidence.toFixed(1)),
           guesses,
           resemblance,
+          resemblanceMeasured,
         };
       }
       // A dense drawing shrinks at placement until features melt — give the
@@ -641,7 +652,7 @@ export async function interpretSketch(args: {
       // recognizable, but not the user's art. Element rescues that are
       // genuinely part of the artwork measure resemblance 3-4; below 3 the
       // rescue is a different drawing and an honest refusal serves better.
-      if (fbBest && fbBest.hits >= 2 && fbBest.resemblance >= 3) {
+      if (fbBest && fbBest.hits >= 2 && fbBest.resemblanceMeasured && fbBest.resemblance >= 3) {
         best = fbBest;
         usedSubject = c.subj;
         usedFeatures = c.feats;
