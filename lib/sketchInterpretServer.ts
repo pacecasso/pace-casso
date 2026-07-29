@@ -35,11 +35,26 @@ import {
   snapStrokesToLattice,
 } from "./sketchInterpret";
 import { renderStrokesPng } from "./wowPlaceServer";
+import { strokesInkRatio } from "./wowFunnel";
 
 type Pt2 = [number, number];
 
 const MODEL = "claude-opus-4-8"; // measurement parity with the judge series
 const MAX_ROUNDS = 4;
+// Placement physics for the scale-honest street simulation (mirrors
+// wowPlaceServer: extent = km*1000 / (inkRatio * STREET_FACTOR), clamped).
+// A drawing's own ink density decides how LARGE it can be placed while
+// staying runnable — dense drawings shrink until features melt. Simulating
+// at a fixed canvas hid that (July 29: a draft passed the sim at 7/10, then
+// every street placement of it scored 2-6 because 25 km of ink forced a
+// 2.2 km canvas). SIM_TARGET_KM sits in the upper-middle of wow-place's
+// default 7-26 km window, matching the extents it actually tries.
+const SIM_STREET_FACTOR = 1.25;
+const SIM_TARGET_KM = 20;
+const simExtentM = (strokes: Pt2[][]): number => {
+  const inkUnits = strokesInkRatio(strokes); // ink length / span, unitless
+  return Math.round(Math.min(4200, Math.max(1100, (SIM_TARGET_KM * 1000) / (inkUnits * SIM_STREET_FACTOR))));
+};
 // Comparative-judge pass bar, calibrated July 29 against renders with known
 // Ralph verdicts vs gas.png: v5's compiled lattice render (his "OK, starting
 // point" bar) scored 6,6,7; a wrong-image control (elephant) scored 2,2,2.
@@ -200,7 +215,8 @@ COMPOSITE-ARTWORK OVERRIDE — this image is a composition of several elements, 
 - Travel between elements along the composition's natural connector (a hose, cord, strap, leash) exactly where it attaches in the original — if there is none, travel along the shared ground line.
 - Keep each element's size within ~2x of its proportion in the original: a tiny element beside a huge one reads as clutter, so grow the small one.
 - Keep at most ONE interior identity detail per element (a window, a label patch) as a single closed loop attached to the outline via a retrace; drop all other interior detail.
-- The whole composition is still ONE continuous line — reach separated parts via the connector or a retrace along already-drawn ink, never a floating part.`;
+- The whole composition is still ONE continuous line — reach separated parts via the connector or a retrace along already-drawn ink, never a floating part.
+- LINE BUDGET: keep the total drawn line under ~7x the drawing's span (the street-verified full-logo route runs 23 km of line across a 3.6 km canvas). Every extra wiggle and retrace forces the WHOLE drawing to be placed smaller on streets until its elements melt — sparse and huge beats dense and small.`;
 
 export async function interpretSketch(args: {
   apiKey: string;
@@ -348,8 +364,11 @@ export async function interpretSketch(args: {
           // lattice, the same quantization real placement applies. Clean
           // renders measurably pass drafts whose thin features then melt on
           // streets (paper-9 coffee mug -> streets 3/10); lattice renders
-          // predict streets.
-          const snappedPng = await renderStrokesPng(snapStrokesToLattice(strokes));
+          // predict streets. The lattice is rendered at the canvas size the
+          // draft's own ink density forces at placement (simExtentM) — a
+          // fixed canvas measurably passed ink-dense drafts that then shrank
+          // below feature scale on real streets.
+          const snappedPng = await renderStrokesPng(snapStrokesToLattice(strokes, simExtentM(strokes)));
           if (process.env.INTERPRET_DEBUG_DIR) {
             const { writeFile } = await import("node:fs/promises");
             const tag = `${subj.replace(/\W+/g, "-").slice(0, 40)}-r${round}${di ? "b" : "a"}`;
@@ -374,7 +393,7 @@ export async function interpretSketch(args: {
           const meanConfidence = verdicts.length
             ? verdicts.reduce((a, v) => a + v.confidence, 0) / verdicts.length
             : 0;
-          return { strokes, png, snappedPng, verdicts, hits, meanConfidence };
+          return { strokes, png, snappedPng, verdicts, hits, meanConfidence, extentM: simExtentM(strokes) };
         }),
       );
       judged.sort((x, y) => y.hits - x.hits || y.meanConfidence - x.meanConfidence);
@@ -419,21 +438,29 @@ export async function interpretSketch(args: {
           resemblance,
         };
       }
+      // A dense drawing shrinks at placement until features melt — say so
+      // explicitly, or the drafter just re-draws the same ink-heavy design.
+      const inkNote =
+        top.extentM <= 2400
+          ? ` The drawing also uses too much total line for its size: at a runnable distance it must shrink to about ${top.extentM} m across, melting every detail — redraw with substantially LESS ink (sparser lines, fewer retraces, simpler interiors) so it can be placed larger.`
+          : "";
       // Don't settle: strong recognition AND real resemblance, or keep drawing.
       if (mode === "compare") {
         if (hits === 3 && verdicts.length === 3 && meanConfidence >= 7) break;
-        feedback = `judges comparing it to the ORIGINAL scored likeness ${verdicts
-          .map((v) => v.confidence)
-          .join(", ")}/10 (${verdicts.map((v) => v.guess).join("; ")}) — keep EVERY element and the original arrangement, and make each element bolder.`;
+        feedback =
+          `judges comparing it to the ORIGINAL scored likeness ${verdicts
+            .map((v) => v.confidence)
+            .join(", ")}/10 (${verdicts.map((v) => v.guess).join("; ")}) — keep EVERY element and the original arrangement, and make each element bolder.` +
+          inkNote;
         continue;
       }
       if (hits === 3 && verdicts.length === 3 && meanConfidence >= 7 && resemblance >= 6) break;
       feedback =
-        hits >= 2 && resemblance < 6
+        (hits >= 2 && resemblance < 6
           ? `judges recognized ${subj}, but it doesn't look like the ORIGINAL (resemblance ${resemblance}/10) — keep the same subject and echo the original's composition${lay ? `: ${lay}` : ""}.`
           : hits === 3
             ? `all judges said ${subj}, but only at confidence ${meanConfidence.toFixed(0)}/10 — make it bolder and more unmistakable.`
-            : `blind judges saw "${verdicts.map((v) => v.guess).join('", "')}" instead of ${subj}.`;
+            : `blind judges saw "${verdicts.map((v) => v.guess).join('", "')}" instead of ${subj}.`) + inkNote;
     }
     return best;
   };
