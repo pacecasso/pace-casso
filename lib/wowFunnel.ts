@@ -421,7 +421,16 @@ export function strokeInkLen(seg: Pt[]): number {
  * sure that is what it is trying to be"); staircase wobble on organic
  * streets destroys it even when every element is present.
  */
-export function strokesRectilinearity(strokes: Pt[][]): number {
+export function strokesAxisAlignment(strokes: Pt[][]): {
+  rectilinearity: number;
+  /**
+   * The dominant axis's angle from shape-space horizontal, in (-45, 45].
+   * Grid placement must SUBTRACT this from its rotations — art drawn
+   * rectilinear along tilted axes would otherwise be classified grid-art
+   * and then swept at rotations that leave every line off the grid.
+   */
+  dominantDeg: number;
+} {
   const segs: { ang: number; len: number }[] = [];
   let total = 0;
   for (const seg of strokes) {
@@ -435,7 +444,7 @@ export function strokesRectilinearity(strokes: Pt[][]): number {
       total += len;
     }
   }
-  if (!total) return 0;
+  if (!total) return { rectilinearity: 0, dominantDeg: 0 };
   // Dominant axis via length-weighted circular mean with period 90 degrees.
   let sx = 0;
   let sy = 0;
@@ -451,7 +460,11 @@ export function strokesRectilinearity(strokes: Pt[][]): number {
     if (d > 45) d = 90 - d;
     if (d <= 15) aligned += s.len;
   }
-  return aligned / total;
+  return { rectilinearity: aligned / total, dominantDeg: dom > 45 ? dom - 90 : dom };
+}
+
+export function strokesRectilinearity(strokes: Pt[][]): number {
+  return strokesAxisAlignment(strokes).rectilinearity;
 }
 
 /** Total ink length divided by the larger bbox span, in shape units. */

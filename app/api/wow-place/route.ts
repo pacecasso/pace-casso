@@ -23,7 +23,10 @@ function parseOriginalImage(raw: unknown): { data: string; media: JudgeMedia } |
     if (comma === -1) return null;
     const mt = raw.slice(0, comma).split(":")[1]?.split(";")[0] ?? "image/png";
     data = raw.slice(comma + 1);
-    if (ALLOWED_MEDIA.has(mt as JudgeMedia)) media = mt as JudgeMedia;
+    // Reject disallowed media outright — relabeling SVG/AVIF bytes as PNG
+    // makes every judge call 400, zeroing all candidates into a refusal.
+    if (!ALLOWED_MEDIA.has(mt as JudgeMedia)) return null;
+    media = mt as JudgeMedia;
   }
   if (data.length > MAX_IMAGE_B64) return null;
   return { data, media };
@@ -39,9 +42,17 @@ function cleanContour(raw: unknown): NormalizedPoint[] | null {
     if (typeof x !== "number" || typeof y !== "number") continue;
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
     pts.push({ x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) });
-    if (pts.length >= MAX_POINTS) break;
   }
-  return pts.length >= 8 ? pts : null;
+  if (pts.length < 8) return null;
+  if (pts.length <= MAX_POINTS) return pts;
+  // Downsample, never truncate: SVG traces run up to ~1200 points, and
+  // dropping everything past 600 silently placed HALF the artwork.
+  const stride = pts.length / MAX_POINTS;
+  const sampled: NormalizedPoint[] = [];
+  for (let i = 0; i < MAX_POINTS; i++) {
+    sampled.push(pts[Math.min(pts.length - 1, Math.floor(i * stride))]!);
+  }
+  return sampled;
 }
 
 function jsonError(message: string, status: number): Response {

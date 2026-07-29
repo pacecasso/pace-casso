@@ -34,7 +34,7 @@ import {
   chainsKm,
   contourToStrokes,
   strokesInkRatio,
-  strokesRectilinearity,
+  strokesAxisAlignment,
 } from "./wowFunnel";
 
 const JUDGE_MODEL = "claude-opus-4-8"; // measurement parity with the July series
@@ -172,46 +172,60 @@ async function visionCall(
   prompt: string,
   leadImage?: { data: string; media: JudgeMedia },
 ): Promise<string | null> {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: JUDGE_MODEL,
-      max_tokens: 1024,
-      messages: [
-        {
-          role: "user",
-          content: [
-            ...(leadImage
-              ? [
-                  {
-                    type: "image",
-                    source: { type: "base64", media_type: leadImage.media, data: leadImage.data },
-                  },
-                ]
-              : []),
-            {
-              type: "image",
-              source: { type: "base64", media_type: "image/png", data: png.toString("base64") },
-            },
-            { type: "text", text: prompt },
-          ],
+  // Screening bursts ~16 judge calls at once — transient 429/5xx/network
+  // failures are routine and a silently-null judge reads as "0/10".
+  // Retry twice with backoff before giving up.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1000 * attempt));
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
         },
-      ],
-    }),
-  });
-  if (!res.ok) return null;
-  const json = (await res.json()) as { content?: { type: string; text?: string }[] };
-  const text = (json.content ?? [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text ?? "")
-    .join(" ")
-    .trim();
-  return text || null;
+        body: JSON.stringify({
+          model: JUDGE_MODEL,
+          max_tokens: 1024,
+          messages: [
+            {
+              role: "user",
+              content: [
+                ...(leadImage
+                  ? [
+                      {
+                        type: "image",
+                        source: { type: "base64", media_type: leadImage.media, data: leadImage.data },
+                      },
+                    ]
+                  : []),
+                {
+                  type: "image",
+                  source: { type: "base64", media_type: "image/png", data: png.toString("base64") },
+                },
+                { type: "text", text: prompt },
+              ],
+            },
+          ],
+        }),
+      });
+      if (!res.ok) {
+        if (res.status !== 429 && res.status < 500) return null;
+        continue;
+      }
+      const json = (await res.json()) as { content?: { type: string; text?: string }[] };
+      const text = (json.content ?? [])
+        .filter((b) => b.type === "text")
+        .map((b) => b.text ?? "")
+        .join(" ")
+        .trim();
+      return text || null;
+    } catch {
+      /* network failure — retry */
+    }
+  }
+  return null;
 }
 
 /** Stage-A gate: what does the user's line art depict? */
@@ -347,7 +361,12 @@ export async function runWowPlacement(args: {
   // of dying wholesale on the distance gate (gas.png: 2-piece dense contour
   // exceeded 26 km at EVERY fixed extent and returned zero candidates).
   const inkRatio = strokesInkRatio(strokes);
-  const gridArt = strokesRectilinearity(strokes) >= GRID_ART_RECTILINEARITY;
+  const axis = strokesAxisAlignment(strokes);
+  const gridArt = axis.rectilinearity >= GRID_ART_RECTILINEARITY;
+  // Align the art's OWN dominant axis with the grid, not shape-space
+  // vertical — rectilinear art drawn along tilted axes would otherwise be
+  // swept at rotations that leave every line off the grid.
+  const gridRotations = GRID_ROTATIONS_DEG.map((r) => Math.round(r - axis.dominantDeg));
   const STREET_FACTOR = 1.25; // measured snap overhead vs straight-line ink
   const extentForKm = (km: number) => (km * 1000) / (inkRatio * STREET_FACTOR);
   // Grid art searches a restricted center/rotation set, so it gets more
@@ -394,12 +413,14 @@ export async function runWowPlacement(args: {
   // organic-street placements staircase every clean line (Ralph: "messy and
   // less obvious"). Fall back to the full sweep only if the grid has no fit.
   let candidates: WowCandidate[];
+  let widenedAlready = !gridArt;
   if (gridArt) {
     progress("Straight-edged art — placing on the street grid, aligned to the avenues…");
-    candidates = await runSweep(GRID_CENTERS, GRID_ROTATIONS_DEG);
+    candidates = await runSweep(GRID_CENTERS, gridRotations);
     if (!candidates.length) {
       progress("No grid-aligned fit — widening the search…");
       candidates = await runSweep(MANHATTAN_CENTERS);
+      widenedAlready = true;
     }
   } else {
     candidates = await runSweep(MANHATTAN_CENTERS);
@@ -451,7 +472,7 @@ export async function runWowPlacement(args: {
           // one retry — a transient judge failure must not read as "0/10"
           score = await judgeOnce(png);
         }
-        return { c, png, score: score ?? 0 };
+        return { c, png, score: score ?? 0, judgeFailed: score == null };
       }),
     );
   };
@@ -471,9 +492,15 @@ export async function runWowPlacement(args: {
   // weak draft refused at 4/10 without ever trying the rest of the island.
   // The refusal only wins over organic-street placements when the island
   // ALSO has nothing above the bar.
-  if (!keepers.length && gridArt) {
+  if (!keepers.length && !widenedAlready) {
     progress("Grid placements didn't clear the bar — trying the whole island…");
-    const widened = await runSweep(MANHATTAN_CENTERS);
+    // The grid pass already judged GRID_CENTERS at -29; the island sweep
+    // re-produces those (shared centers x rot -29) — drop the duplicates so
+    // the same route isn't judged twice or shown as two identical picks.
+    const seenPlacement = new Set(candidates.map((c) => `${c.center[0]},${c.center[1]}|${c.extentM}|${c.rotDeg}`));
+    const widened = (await runSweep(MANHATTAN_CENTERS)).filter(
+      (c) => !seenPlacement.has(`${c.center[0]},${c.center[1]}|${c.extentM}|${c.rotDeg}`),
+    );
     if (widened.length) {
       candidates = candidates.concat(widened);
       scored = scored.concat(await screenAndJudge(widened));
@@ -482,6 +509,17 @@ export async function runWowPlacement(args: {
   }
 
   if (!keepers.length) {
+    // Every judge call failing is OUR outage (API 529 wave), not a verdict
+    // on the art — refusing with "scored 0/10" blames the user wrongly.
+    if (scored.length && scored.every((s) => s.judgeFailed)) {
+      return {
+        picks: [],
+        subject,
+        subjectConfidence: namedConfidence,
+        message:
+          "Our route-judging service is overloaded right now — this isn't about your art. Please try again in a few minutes.",
+      };
+    }
     const bestScored = scored.slice().sort((a, b) => b.score - a.score)[0];
     return {
       picks: [],

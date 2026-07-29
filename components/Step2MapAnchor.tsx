@@ -276,6 +276,19 @@ export default function Step2MapAnchor({
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [autoBusy, setAutoBusy] = useState(false);
   const [autoHint, setAutoHint] = useState<string | null>(null);
+  // A failure arms a delayed hint-clear; if the user re-runs within that
+  // window the stale timer would wipe the NEW run's message mid-flight.
+  const hintTimerRef = useRef<number | null>(null);
+  const armHintClear = useCallback((ms: number) => {
+    if (hintTimerRef.current !== null) window.clearTimeout(hintTimerRef.current);
+    hintTimerRef.current = window.setTimeout(() => setAutoHint(null), ms);
+  }, []);
+  useEffect(
+    () => () => {
+      if (hintTimerRef.current !== null) window.clearTimeout(hintTimerRef.current);
+    },
+    [],
+  );
   const leafletId = useLeafletContainerId();
   const [targetDistanceKm, setTargetDistanceKm] = useState<number | null>(null);
   const [picks, setPicks] = useState<Top5Pick[]>([]);
@@ -312,9 +325,10 @@ export default function Step2MapAnchor({
   const runWowFind = useCallback(async () => {
     if (cityPreset.id !== "manhattan") {
       setAutoHint("Route finding currently supports Manhattan only.");
-      window.setTimeout(() => setAutoHint(null), 6000);
+      armHintClear(6000);
       return;
     }
+    if (hintTimerRef.current !== null) window.clearTimeout(hintTimerRef.current);
     setAutoBusy(true);
     setAutoHint("Trying your art exactly as drawn…");
     setPicks([]);
@@ -402,7 +416,7 @@ export default function Step2MapAnchor({
       const interp = await fetchInterpret(imageBase64, setAutoHint);
       if (!interp.contour) {
         setAutoHint(
-          `${literal.message ?? "Your art as-drawn didn't pass the street judges."} We also tried redrawing it automatically: ${interp.message ?? "no redraw was recognized by blind judges."} You can still drag the art where you want it and continue — we'll fit it to the streets faithfully.`,
+          `${literal.message ?? "Your art as-drawn didn't pass the street judges."} We also tried redrawing it automatically: ${interp.message ?? "no redraw was recognized by blind judges."} Each attempt draws fresh, so pressing "Find my route" again often succeeds — or drag the art where you want it and continue; we'll fit it to the streets faithfully.`,
         );
         return;
       }
@@ -425,16 +439,16 @@ export default function Step2MapAnchor({
         return;
       }
       setAutoHint(
-        `We tried your art as-drawn and an automatic street-ready redraw (as ${interp.subject ?? "your subject"}) — neither cleared the judge's bar. ${placed.message ?? ""} You can still place it yourself: drag it where you want it and continue, and we'll fit it to the streets faithfully.`,
+        `We tried your art as-drawn and an automatic street-ready redraw (as ${interp.subject ?? "your subject"}) — neither cleared the judge's bar. ${placed.message ?? ""} Each attempt draws fresh, so pressing "Find my route" again often succeeds — or place it yourself: drag it where you want it and continue, and we'll fit it to the streets faithfully.`,
       );
     } catch (err) {
       console.warn("[Step2] find-my-route cascade failed:", err);
       setAutoHint(err instanceof Error ? err.message : "Route finding failed.");
-      window.setTimeout(() => setAutoHint(null), 9000);
+      armHintClear(9000);
     } finally {
       setAutoBusy(false);
     }
-  }, [contour, cityPreset.id, imageBase64, interpretedSubject, targetDistanceKm, routeFromPick]);
+  }, [contour, cityPreset.id, imageBase64, interpretedSubject, targetDistanceKm, routeFromPick, armHintClear]);
 
   const applyPick = useCallback((pick: Top5Pick, idx: number) => {
     setCenter([...pick.placement.center] as [number, number]);

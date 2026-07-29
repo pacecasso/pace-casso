@@ -95,27 +95,44 @@ async function vision(
   )[],
   maxTokens = 1024,
 ): Promise<string | null> {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: maxTokens,
-      messages: [{ role: "user", content }],
-    }),
-  });
-  if (!res.ok) return null;
-  const json = (await res.json()) as { content?: { type: string; text?: string }[] };
-  const text = (json.content ?? [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text ?? "")
-    .join(" ")
-    .trim();
-  return text || null;
+  // A full run bursts ~30 vision calls; transient 429/5xx/network failures
+  // are routine under that load and a silently-null judge or identify call
+  // corrupts the whole verdict (measured July 30: a live run's fallback
+  // ladder never ran because its one identify call failed — 4 rounds
+  // instead of 9, honest rescue skipped). Retry twice with backoff.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1000 * attempt));
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: maxTokens,
+          messages: [{ role: "user", content }],
+        }),
+      });
+      if (!res.ok) {
+        // 4xx other than 429 won't heal on retry
+        if (res.status !== 429 && res.status < 500) return null;
+        continue;
+      }
+      const json = (await res.json()) as { content?: { type: string; text?: string }[] };
+      const text = (json.content ?? [])
+        .filter((b) => b.type === "text")
+        .map((b) => b.text ?? "")
+        .join(" ")
+        .trim();
+      return text || null;
+    } catch {
+      /* network failure — retry */
+    }
+  }
+  return null;
 }
 
 const img = (data: string, media: Media) =>
@@ -258,8 +275,13 @@ export async function interpretSketch(args: {
     return { ...empty, message: "Couldn't read the image — try a clearer upload." };
   }
   const subject = idm[1]!.trim().replace(/\s+/g, " ").slice(0, 80);
-  const features = idm[2]!.trim().replace(/\s+/g, " ").slice(0, 200);
-  // LAYOUT is the last greedy capture — cut the trailing COMPOSITE line off it.
+  // When the model omits LAYOUT, the lazy FEATURES capture swallows the
+  // trailing COMPOSITE line — strip it from BOTH captures.
+  const features = idm[2]!
+    .replace(/COMPOSITE:[\s\S]*$/i, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 200);
   const layout = (idm[3] ?? "")
     .replace(/COMPOSITE:[\s\S]*$/i, "")
     .trim()
@@ -294,6 +316,11 @@ export async function interpretSketch(args: {
   ];
 
   let roundsUsed = 0;
+  // Counts drafts that actually reached judges with at least one verdict.
+  // Zero across a whole run means the VISION SERVICE failed (measured July
+  // 30: an API 529 "Overloaded" wave nulled every draft call and the run
+  // refused with "none passed" — blaming the user's art for our outage).
+  let judgedDraftCount = 0;
 
   const runLadder = async (
     subj: string,
@@ -328,12 +355,24 @@ export async function interpretSketch(args: {
             : ""),
       });
       const draftText = await vision(args.apiKey, content, 4096);
-      if (!draftText) return null;
+      const dumpFail = async (reason: string) => {
+        if (!process.env.INTERPRET_DEBUG_DIR) return;
+        const { writeFile } = await import("node:fs/promises");
+        void writeFile(
+          `${process.env.INTERPRET_DEBUG_DIR}/draftfail-${Date.now()}-${reason}.txt`,
+          `${reason}\n---\n${draftText ?? "(null draftText)"}`,
+        ).catch(() => {});
+      };
+      if (!draftText) {
+        await dumpFail("no-text");
+        return null;
+      }
       const jsonText = draftText.slice(draftText.indexOf("{"), draftText.lastIndexOf("}") + 1);
       let parsed: unknown;
       try {
         parsed = JSON.parse(jsonText);
       } catch {
+        await dumpFail("json-parse");
         return null;
       }
       const program = parsePrimitiveProgram(parsed);
@@ -407,6 +446,7 @@ export async function interpretSketch(args: {
           const meanConfidence = verdicts.length
             ? verdicts.reduce((a, v) => a + v.confidence, 0) / verdicts.length
             : 0;
+          if (verdicts.length) judgedDraftCount++;
           return {
             strokes,
             png,
@@ -447,24 +487,40 @@ export async function interpretSketch(args: {
       if (mode === "compare") {
         resemblance = Number(meanConfidence.toFixed(1));
       } else if (hits >= 2) {
-        const resText = await vision(args.apiKey, [
-          img(args.imageBase64, args.mediaType),
-          img(png.toString("base64"), "image/png"),
-          {
-            type: "text",
-            text:
-              "The second image is a bold one-line redraw of the first. How recognizable is it as a simplified version of the first image — same composition, same identity? Reply in this exact format:\nSCORE: <1-10>\nWHY: <short phrase>",
-          },
-        ]);
-        const rm = resText?.match(/SCORE:\s*(\d+)/i);
-        if (rm) resemblance = Number(rm[1]);
+        const askResemblance = () =>
+          vision(args.apiKey, [
+            img(args.imageBase64, args.mediaType),
+            img(png.toString("base64"), "image/png"),
+            {
+              type: "text",
+              text:
+                "The second image is a bold one-line redraw of the first. How recognizable is it as a simplified version of the first image — same composition, same identity? Reply in this exact format:\nSCORE: <1-10>\nWHY: <short phrase>",
+            },
+          ]);
+        let rm = (await askResemblance())?.match(/SCORE:\s*(\d+)/i);
+        if (!rm) rm = (await askResemblance())?.match(/SCORE:\s*(\d+)/i);
+        // Unmeasurable (service failure after retries) must not read as
+        // "resemblance 0" — that fails the fallback floor and steers
+        // feedback at a non-existent problem. 3 = floor-neutral default.
+        resemblance = rm ? Number(rm[1]) : 3;
       }
 
+      // A draft that would be ACCEPTED downstream (hits >= 2 and above the
+      // fallback resemblance floor) must never be evicted from `best` by a
+      // higher-hits draft that would be REFUSED (e.g. a "musical note"
+      // rescue at hits 3, resemblance 2 displacing a hits-2/res-4 keeper).
+      const acceptable = (b: { hits: number; resemblance: number }) =>
+        b.hits >= 2 && b.resemblance >= 3;
+      const cand = { hits, resemblance };
       if (
         !best ||
-        hits > best.hits ||
-        (hits === best.hits && resemblance > best.resemblance) ||
-        (hits === best.hits && resemblance === best.resemblance && meanConfidence > best.meanConfidence)
+        (acceptable(cand) && !acceptable(best)) ||
+        (acceptable(cand) === acceptable(best) &&
+          (hits > best.hits ||
+            (hits === best.hits && resemblance > best.resemblance) ||
+            (hits === best.hits &&
+              resemblance === best.resemblance &&
+              meanConfidence > best.meanConfidence)))
       ) {
         best = {
           contour: strokesToContour(strokes),
@@ -477,10 +533,17 @@ export async function interpretSketch(args: {
       }
       // A dense drawing shrinks at placement until features melt — give the
       // drafter its measured number, or it just re-draws the same design.
+      // Strict < so the 2400 boundary agrees with budgetOk (>= 2400 is OK).
       const inkNote =
-        top.extentM <= 2400
+        top.extentM < 2400
           ? ` The drawing also uses too much total line: ${top.inkRatio.toFixed(1)}x its span, vs a budget of ~6.5x (the street-verified reference is ~5x). At a runnable distance it must shrink to about ${top.extentM} m across, melting every detail. Redraw with LESS total line — one clean closed outline per element, no doubled edges, at most one interior detail — so it can be placed larger.`
           : "";
+      // An all-judges-failed round is a service outage, not a verdict —
+      // garbage like `scored likeness /10 ()` must not steer the next draft.
+      if (!verdicts.length) {
+        feedback = "the judging service was unavailable for that attempt — draw a fresh, bolder variant.";
+        continue;
+      }
       // Don't settle: strong recognition AND real resemblance, or keep drawing.
       if (mode === "compare") {
         if (hits === 3 && verdicts.length === 3 && meanConfidence >= 7) break;
@@ -548,9 +611,22 @@ export async function interpretSketch(args: {
           `A bold one-line drawing of "${subject}" was NOT recognizable to blind judges. Name the TWO most iconic, simply-drawable OBJECTS visible in this image instead — objects whose silhouette alone a stranger names instantly, the way road-sign and emoji icons work (e.g. headphones, an umbrella, a musical note). NOT a person or full figure, NOT text or letters, and NEVER a box-shaped object (rectangles quantize to nothing on city streets — prefer curved, distinctive silhouettes). Most iconic first. Reply in this exact format:\nSUBJECT: <1-3 words, e.g. "headphones">\nFEATURES: <2-3 comma-separated silhouette features it must keep>\nALT: <1-3 words, a different object>\nALTFEATURES: <2-3 comma-separated silhouette features>`,
       },
     ]);
-    const fbm = fbText?.match(
-      /SUBJECT:\s*(.+?)\s*FEATURES:\s*(.+?)(?:\s*ALT:\s*(.+?)\s*ALTFEATURES:\s*(.+))?$/is,
-    );
+    const FB_RE = /SUBJECT:\s*(.+?)\s*FEATURES:\s*(.+?)(?:\s*ALT:\s*(.+?)\s*ALTFEATURES:\s*(.+))?$/is;
+    let fbm = fbText?.match(FB_RE);
+    if (!fbm) {
+      // The rescue path must not die on one malformed reply — a live run
+      // (July 30) skipped the whole fallback ladder because this single
+      // call failed, refusing without ever trying the iconic objects.
+      const retryText = await vision(args.apiKey, [
+        img(args.imageBase64, args.mediaType),
+        {
+          type: "text",
+          text:
+            'Name the TWO most iconic, simply-drawable OBJECTS visible in this image — objects whose silhouette alone a stranger names instantly. NOT a person, NOT text, NEVER box-shaped. Reply in this exact format:\nSUBJECT: <1-3 words>\nFEATURES: <2-3 comma-separated silhouette features>\nALT: <1-3 words>\nALTFEATURES: <2-3 comma-separated features>',
+        },
+      ]);
+      fbm = retryText?.match(FB_RE);
+    }
     const clean = (v: string | undefined, max: number) =>
       v?.trim().replace(/\s+/g, " ").slice(0, max) ?? "";
     const candidates = [
@@ -579,6 +655,19 @@ export async function interpretSketch(args: {
   }
 
   if (!best || best.hits < 2) {
+    // Total judging blackout = OUR outage, not the user's art. Refusing
+    // with "none passed" during an API 529 wave blames the artwork for a
+    // service failure (happened live, July 30).
+    if (judgedDraftCount === 0) {
+      return {
+        ...empty,
+        subject,
+        features,
+        rounds: roundsUsed,
+        message:
+          "Our drawing service is overloaded right now — this isn't about your art. Please try again in a few minutes.",
+      };
+    }
     return {
       ...empty,
       subject,
