@@ -217,6 +217,9 @@ COMPOSITE-ARTWORK OVERRIDE — this image is a composition of several elements, 
 - Keep at most ONE interior identity detail per element (a window, a label patch) as a single closed loop attached to the outline via a retrace; drop all other interior detail.
 - The whole composition is still ONE continuous line — reach separated parts via the connector or a retrace along already-drawn ink, never a floating part.
 - LINE BUDGET: keep the total drawn line under ~7x the drawing's span (the street-verified full-logo route runs 23 km of line across a 3.6 km canvas). Every extra wiggle and retrace forces the WHOLE drawing to be placed smaller on streets until its elements melt — sparse and huge beats dense and small.
+- SPEND THE LINE ON IDENTITY: the identity features listed above are MANDATORY, each drawn HUGE (at least 15% of the span, exaggerated beyond realism). Save ink by simplifying GENERIC outlines, never by dropping or shrinking an identity feature — a lean drawing that loses its identity reads as generic blobs (measured: the owner called it "way more simplistic").
+- CONNECTOR IDENTITY: a cord, hose, or leash connector must include ONE full 360-degree loop that visibly crosses itself — a plain curve between elements reads as nothing; the self-crossing loop is what says "cord" (street-verified trick).
+- WEARABLE IDENTITY: draw a wearable as an exaggerated part of the body outline itself — a headphone band is the head's own top arc drawn oversized, a hat is the head's silhouette — never as small separate marks; marks below feature scale melt on streets.
 
 Example of the expected level — a two-element composition (machine + figure joined by its connector), ink ratio ~6.5x span, one continuous line. Note the structure, not the subject: the machine is ONE closed rectangle whose interior detail is a single closed loop sharing the machine's edge (retraces along drawn ink are free); the connector leaves the machine's edge and doubles as the figure's raised arm; the figure is a closed outline with a round head and asymmetric legs; nothing is drawn twice except deliberate retraces on straight segments:
 {"strokes":[{"elements":[
@@ -416,10 +419,20 @@ export async function interpretSketch(args: {
           };
         }),
       );
-      // Leaner (larger implied canvas) wins ties: ink density is the measured
-      // ceiling on street quality, and judge scores tie at integers often.
+      // Tiebreak = budget-constrained RICHNESS (Ralph, July 29 live verdict:
+      // pure leaner-wins selected the most simplistic sibling every time and
+      // the output "looks way more simplistic" than the accepted demo). A
+      // draft must be lean enough to place at >= 2400 m; among those, the
+      // RICHER drawing (more ink = more identity detail) wins ties.
+      const budgetOk = (d: { extentM: number }) => (d.extentM >= 2400 ? 1 : 0);
       judged.sort(
-        (x, y) => y.hits - x.hits || y.meanConfidence - x.meanConfidence || y.extentM - x.extentM,
+        (x, y) =>
+          y.hits - x.hits ||
+          y.meanConfidence - x.meanConfidence ||
+          budgetOk(y) - budgetOk(x) ||
+          // within budget: richer wins; both over budget: leaner (closer to
+          // feasible) wins
+          (budgetOk(x) ? y.inkRatio - x.inkRatio : x.inkRatio - y.inkRatio),
       );
       const top = judged[0]!;
       const { strokes, png, verdicts, hits, meanConfidence } = top;
@@ -547,13 +560,21 @@ export async function interpretSketch(args: {
     for (const [ci, c] of candidates.entries()) {
       progress(`"${subject}" didn't survive as a one-line drawing — trying the ${c.subj} from your image instead…`);
       const fbBest = await runLadder(c.subj, c.feats, "", ci === 0 ? 3 : 2);
-      if (fbBest && fbBest.hits >= 2) {
+      // Resemblance floor (measured July 29): a "musical note" rescue from a
+      // gas-station logo passed blind judges at 9,9,9 with resemblance 2 —
+      // recognizable, but not the user's art. Element rescues that are
+      // genuinely part of the artwork measure resemblance 3-4; below 3 the
+      // rescue is a different drawing and an honest refusal serves better.
+      if (fbBest && fbBest.hits >= 2 && fbBest.resemblance >= 3) {
         best = fbBest;
         usedSubject = c.subj;
         usedFeatures = c.feats;
         break;
       }
-      if (fbBest && (!best || fbBest.hits > best.hits)) best = fbBest;
+      // Keep failed attempts only for the refusal message — never let a
+      // floor-rejected rescue (hits >= 2, resemblance < 3) into `best`, or
+      // the final hits-only acceptance check would ship it mislabeled.
+      if (fbBest && fbBest.hits < 2 && (!best || fbBest.hits > best.hits)) best = fbBest;
     }
   }
 
