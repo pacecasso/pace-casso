@@ -411,6 +411,49 @@ export function strokeInkLen(seg: Pt[]): number {
   return len;
 }
 
+/**
+ * Fraction of ink length lying within 15 degrees of the drawing's dominant
+ * pair of perpendicular axes. Rectilinear art (logos: boxes, bands, straight
+ * limbs) scores high; organic contours score low. Used to detect art that
+ * should be placed grid-aligned on the numbered grid — Ralph's July 29
+ * verdict on the gas logo: for a logo, CLEAN straight lines ARE the
+ * recognizability ("less squiggly lines and less bumps... you'd know for
+ * sure that is what it is trying to be"); staircase wobble on organic
+ * streets destroys it even when every element is present.
+ */
+export function strokesRectilinearity(strokes: Pt[][]): number {
+  const segs: { ang: number; len: number }[] = [];
+  let total = 0;
+  for (const seg of strokes) {
+    for (let i = 1; i < seg.length; i++) {
+      const dx = seg[i]![0] - seg[i - 1]![0];
+      const dy = seg[i]![1] - seg[i - 1]![1];
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-6) continue;
+      // Axis direction, period 90 degrees (perpendicular axes are one axis pair).
+      segs.push({ ang: (((Math.atan2(dy, dx) * 180) / Math.PI) % 90 + 90) % 90, len });
+      total += len;
+    }
+  }
+  if (!total) return 0;
+  // Dominant axis via length-weighted circular mean with period 90 degrees.
+  let sx = 0;
+  let sy = 0;
+  for (const s of segs) {
+    const a = (s.ang * 4 * Math.PI) / 180;
+    sx += Math.cos(a) * s.len;
+    sy += Math.sin(a) * s.len;
+  }
+  const dom = (((Math.atan2(sy, sx) * 180) / Math.PI / 4) % 90 + 90) % 90;
+  let aligned = 0;
+  for (const s of segs) {
+    let d = Math.abs(s.ang - dom) % 90;
+    if (d > 45) d = 90 - d;
+    if (d <= 15) aligned += s.len;
+  }
+  return aligned / total;
+}
+
 /** Total ink length divided by the larger bbox span, in shape units. */
 export function strokesInkRatio(strokes: Pt[][]): number {
   const all = strokes.flat();

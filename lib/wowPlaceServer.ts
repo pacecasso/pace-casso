@@ -34,12 +34,36 @@ import {
   chainsKm,
   contourToStrokes,
   strokesInkRatio,
+  strokesRectilinearity,
 } from "./wowFunnel";
 
 const JUDGE_MODEL = "claude-opus-4-8"; // measurement parity with the July series
 const PRIMED_KEEP_THRESHOLD = 6;
 const SCREEN_COUNT = 16;
 const MAX_PICKS = 5;
+
+// Rectilinear art placed on organic streets staircases into mush — Ralph's
+// July 29 verdict on a SoHo-placed logo: "just messy and less obvious...
+// I wouldn't know yours is the logo", vs the same composition hand-placed
+// on the Midtown grid: "no doubt it is". Art above this rectilinearity
+// (measured: logo drafts 0.79-0.89, robot 0.97, round map-pin 0.35) is
+// swept ONLY over numbered-grid centers at the grid-aligned rotation
+// (artwork verticals riding avenues, bearing ~29 deg east of north).
+const GRID_ART_RECTILINEARITY = 0.65;
+const GRID_ROTATION_DEG = -29;
+// MANHATTAN_CENTERS minus the organic downtown/Village areas (lat < 40.744
+// west side, plus the 40.715/40.722 rows) — Chelsea through UWS/UES grid.
+const GRID_CENTERS: LatLng[] = [
+  [40.7445, -73.997],
+  [40.7445, -73.984],
+  [40.751, -73.997],
+  [40.751, -73.984],
+  [40.758, -73.997],
+  [40.758, -73.984],
+  [40.744, -73.977],
+  [40.77, -73.955],
+  [40.787, -73.972],
+];
 
 export type WowPlaceProgress = (detail: string) => void;
 
@@ -330,23 +354,43 @@ export async function runWowPlacement(args: {
     };
   }
 
-  const candidates: WowCandidate[] = [];
-  for (let i = 0; i < MANHATTAN_CENTERS.length; i++) {
-    candidates.push(
-      ...sweepPlacements(g, strokes, {
-        centers: [MANHATTAN_CENTERS[i]!],
-        extentsM: extents,
-        mirrors: [false], // mirrored art can't round-trip through the manual editor
-        minKm,
-        maxKm,
-        avoidBox: CENTRAL_PARK_BOX,
-      }),
-    );
-    progress(`Testing placements across Manhattan… (${i + 1}/${MANHATTAN_CENTERS.length} areas)`);
-    // The sweep is synchronous CPU work; without yielding, every enqueued
-    // progress line buffers until the whole sweep finishes and the user
-    // stares at a dead button for a minute (observed with gas.png).
-    await new Promise((resolve) => setTimeout(resolve, 0));
+  const runSweep = async (centers: LatLng[], rotationsDeg?: number[]): Promise<WowCandidate[]> => {
+    const found: WowCandidate[] = [];
+    for (let i = 0; i < centers.length; i++) {
+      found.push(
+        ...sweepPlacements(g, strokes, {
+          centers: [centers[i]!],
+          extentsM: extents,
+          rotationsDeg,
+          mirrors: [false], // mirrored art can't round-trip through the manual editor
+          minKm,
+          maxKm,
+          avoidBox: CENTRAL_PARK_BOX,
+        }),
+      );
+      progress(`Testing placements across Manhattan… (${i + 1}/${centers.length} areas)`);
+      // The sweep is synchronous CPU work; without yielding, every enqueued
+      // progress line buffers until the whole sweep finishes and the user
+      // stares at a dead button for a minute (observed with gas.png).
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    return found;
+  };
+
+  // Straight-edged art must sit ON the numbered grid, aligned to it —
+  // organic-street placements staircase every clean line (Ralph: "messy and
+  // less obvious"). Fall back to the full sweep only if the grid has no fit.
+  const gridArt = strokesRectilinearity(strokes) >= GRID_ART_RECTILINEARITY;
+  let candidates: WowCandidate[];
+  if (gridArt) {
+    progress("Straight-edged art — placing on the street grid, aligned to the avenues…");
+    candidates = await runSweep(GRID_CENTERS, [GRID_ROTATION_DEG]);
+    if (!candidates.length) {
+      progress("No grid-aligned fit — widening the search…");
+      candidates = await runSweep(MANHATTAN_CENTERS);
+    }
+  } else {
+    candidates = await runSweep(MANHATTAN_CENTERS);
   }
   if (!candidates.length) {
     return {
@@ -399,7 +443,11 @@ export async function runWowPlacement(args: {
   );
   const keepers = scored
     .filter((s) => s.score >= PRIMED_KEEP_THRESHOLD)
-    .sort((a, b) => b.score - a.score || a.c.dev - b.c.dev)
+    // Cleanness breaks judge-score ties: the judge can't rank within its
+    // passing band (measured — it scores clean and wobbly the same 6-7),
+    // but low jitter is exactly what the owner reads as "obvious" vs
+    // "messy". dev breaks remaining ties toward shape fidelity.
+    .sort((a, b) => b.score - a.score || a.c.jitter - b.c.jitter || a.c.dev - b.c.dev)
     .slice(0, MAX_PICKS);
 
   if (!keepers.length) {
