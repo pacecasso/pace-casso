@@ -216,7 +216,17 @@ COMPOSITE-ARTWORK OVERRIDE — this image is a composition of several elements, 
 - Keep each element's size within ~2x of its proportion in the original: a tiny element beside a huge one reads as clutter, so grow the small one.
 - Keep at most ONE interior identity detail per element (a window, a label patch) as a single closed loop attached to the outline via a retrace; drop all other interior detail.
 - The whole composition is still ONE continuous line — reach separated parts via the connector or a retrace along already-drawn ink, never a floating part.
-- LINE BUDGET: keep the total drawn line under ~7x the drawing's span (the street-verified full-logo route runs 23 km of line across a 3.6 km canvas). Every extra wiggle and retrace forces the WHOLE drawing to be placed smaller on streets until its elements melt — sparse and huge beats dense and small.`;
+- LINE BUDGET: keep the total drawn line under ~7x the drawing's span (the street-verified full-logo route runs 23 km of line across a 3.6 km canvas). Every extra wiggle and retrace forces the WHOLE drawing to be placed smaller on streets until its elements melt — sparse and huge beats dense and small.
+
+Example of the expected level — a two-element composition (machine + figure joined by its connector), ink ratio ~6.5x span, one continuous line. Note the structure, not the subject: the machine is ONE closed rectangle whose interior detail is a single closed loop sharing the machine's edge (retraces along drawn ink are free); the connector leaves the machine's edge and doubles as the figure's raised arm; the figure is a closed outline with a round head and asymmetric legs; nothing is drawn twice except deliberate retraces on straight segments:
+{"strokes":[{"elements":[
+  {"type":"line","points":[[400,540],[400,780],[160,780],[160,640],[400,640],[400,860],[60,860],[60,60],[400,60],[400,540]]},
+  {"type":"bez","p0":[400,540],"c":[540,620],"p1":[610,480]},
+  {"type":"bez","p0":[610,480],"c":[650,380],"p1":[720,450]},
+  {"type":"line","points":[[720,450],[757,691]]},
+  {"type":"arc","cx":805,"cy":748,"r":75,"startDeg":230,"endDeg":-50},
+  {"type":"line","points":[[853,691],[880,500],[905,300],[930,60],[820,60],[800,250],[760,60],[650,60],[690,320],[720,450]]}
+]}]}`;
 
 export async function interpretSketch(args: {
   apiKey: string;
@@ -277,6 +287,7 @@ export async function interpretSketch(args: {
     "",
     "Make every element chunkier and simpler while keeping the arrangement identical to the original — the composition is what must survive.",
     "Exaggerate the connector and the single most distinctive element so the composition reads at a glance.",
+    "Cut the total line length by a third: keep at most one interior detail in the whole drawing, straighten every curve that isn't identity-critical, and draw each element as one clean closed outline with no doubled edges.",
   ];
 
   let roundsUsed = 0;
@@ -393,10 +404,23 @@ export async function interpretSketch(args: {
           const meanConfidence = verdicts.length
             ? verdicts.reduce((a, v) => a + v.confidence, 0) / verdicts.length
             : 0;
-          return { strokes, png, snappedPng, verdicts, hits, meanConfidence, extentM: simExtentM(strokes) };
+          return {
+            strokes,
+            png,
+            snappedPng,
+            verdicts,
+            hits,
+            meanConfidence,
+            extentM: simExtentM(strokes),
+            inkRatio: strokesInkRatio(strokes),
+          };
         }),
       );
-      judged.sort((x, y) => y.hits - x.hits || y.meanConfidence - x.meanConfidence);
+      // Leaner (larger implied canvas) wins ties: ink density is the measured
+      // ceiling on street quality, and judge scores tie at integers often.
+      judged.sort(
+        (x, y) => y.hits - x.hits || y.meanConfidence - x.meanConfidence || y.extentM - x.extentM,
+      );
       const top = judged[0]!;
       const { strokes, png, verdicts, hits, meanConfidence } = top;
       lastPng = top.snappedPng;
@@ -438,11 +462,11 @@ export async function interpretSketch(args: {
           resemblance,
         };
       }
-      // A dense drawing shrinks at placement until features melt — say so
-      // explicitly, or the drafter just re-draws the same ink-heavy design.
+      // A dense drawing shrinks at placement until features melt — give the
+      // drafter its measured number, or it just re-draws the same design.
       const inkNote =
         top.extentM <= 2400
-          ? ` The drawing also uses too much total line for its size: at a runnable distance it must shrink to about ${top.extentM} m across, melting every detail — redraw with substantially LESS ink (sparser lines, fewer retraces, simpler interiors) so it can be placed larger.`
+          ? ` The drawing also uses too much total line: ${top.inkRatio.toFixed(1)}x its span, vs a budget of ~6.5x (the street-verified reference is ~5x). At a runnable distance it must shrink to about ${top.extentM} m across, melting every detail. Redraw with LESS total line — one clean closed outline per element, no doubled edges, at most one interior detail — so it can be placed larger.`
           : "";
       // Don't settle: strong recognition AND real resemblance, or keep drawing.
       if (mode === "compare") {
