@@ -451,14 +451,24 @@ export async function interpretSketch(args: {
   // fails, fall through to the single-subject blind-naming ladders.
   let acceptedComposite = false;
   if (composite) {
-    const compBest = await runLadder(subject, features, layout, 3, "compare");
+    const compBest = await runLadder(subject, features, layout, MAX_ROUNDS, "compare");
     if (compBest && compBest.hits >= 2) {
       best = compBest;
       acceptedComposite = true;
+    } else if (compBest) {
+      // Keep the failing attempt so a refusal can report the likeness
+      // verdicts honestly; hits < 2 can never be accepted below.
+      best = compBest;
     }
+  } else {
+    best = await runLadder(subject, features, layout, MAX_ROUNDS);
   }
-
-  if (!best) best = await runLadder(subject, features, layout, MAX_ROUNDS);
+  // NO blind-naming ladder on a composite phrase: measured July 29, a judge
+  // guessing "headphones" token-matched the subject "a person wearing
+  // headphones", the mislabeled pass carried composite:false, and placement
+  // primed-judged the full logo back to 3/10 (Ralph hit this live). For
+  // composite art the only ladders are compare (above) and the
+  // fallback-object rescue (below).
 
   // Fallback ladder (July 28, learned from Ralph's gas logo): composite
   // subjects like "a person wearing headphones" draw as unrecognizable
@@ -506,7 +516,9 @@ export async function interpretSketch(args: {
       hits: best?.hits ?? 0,
       meanConfidence: best?.meanConfidence ?? 0,
       resemblance: best?.resemblance ?? 0,
-      message: `We tried ${roundsUsed} redraws of "${subject}"${usedSubject !== subject ? ` (and its ${usedSubject})` : ""}, but blind judges never reliably recognized any of them${best?.guesses.length ? ` (best attempt was seen as: ${best.guesses.join(", ")})` : ""}. This subject may need a simpler reference image.`,
+      message: composite
+        ? `We tried ${roundsUsed} redraws of your artwork, but none passed — the whole composition never looked enough like your original, and no single element from it was reliably recognized on its own${best?.guesses.length ? ` (closest attempt: ${best.guesses.join(", ")})` : ""}. A simpler or higher-contrast reference image may work better.`
+        : `We tried ${roundsUsed} redraws of "${subject}"${usedSubject !== subject ? ` (and its ${usedSubject})` : ""}, but blind judges never reliably recognized any of them${best?.guesses.length ? ` (best attempt was seen as: ${best.guesses.join(", ")})` : ""}. This subject may need a simpler reference image.`,
     };
   }
 
