@@ -50,19 +50,27 @@ const MAX_PICKS = 5;
 // swept ONLY over numbered-grid centers at the grid-aligned rotation
 // (artwork verticals riding avenues, bearing ~29 deg east of north).
 const GRID_ART_RECTILINEARITY = 0.65;
-const GRID_ROTATION_DEG = -29;
+// -29: artwork verticals ride the avenues (v5's grid frame). 61: verticals
+// ride the cross-streets instead — also grid-legal, doubles the pool.
+const GRID_ROTATIONS_DEG = [-29, 61];
 // MANHATTAN_CENTERS minus the organic downtown/Village areas (lat < 40.744
-// west side, plus the 40.715/40.722 rows) — Chelsea through UWS/UES grid.
+// west side, plus the 40.715/40.722 rows) — Chelsea through UWS/UES grid,
+// densified after a 21-candidate pool starved a live run into refusal.
 const GRID_CENTERS: LatLng[] = [
+  [40.7375, -73.99],
   [40.7445, -73.997],
   [40.7445, -73.984],
   [40.751, -73.997],
   [40.751, -73.984],
+  [40.755, -73.99],
   [40.758, -73.997],
   [40.758, -73.984],
   [40.744, -73.977],
+  [40.7635, -73.984],
   [40.77, -73.955],
+  [40.778, -73.958],
   [40.787, -73.972],
+  [40.794, -73.968],
 ];
 
 export type WowPlaceProgress = (detail: string) => void;
@@ -339,9 +347,14 @@ export async function runWowPlacement(args: {
   // of dying wholesale on the distance gate (gas.png: 2-piece dense contour
   // exceeded 26 km at EVERY fixed extent and returned zero candidates).
   const inkRatio = strokesInkRatio(strokes);
+  const gridArt = strokesRectilinearity(strokes) >= GRID_ART_RECTILINEARITY;
   const STREET_FACTOR = 1.25; // measured snap overhead vs straight-line ink
   const extentForKm = (km: number) => (km * 1000) / (inkRatio * STREET_FACTOR);
-  const extents = [0.15, 0.4, 0.65, 0.9]
+  // Grid art searches a restricted center/rotation set, so it gets more
+  // canvas sizes to keep the candidate pool healthy (measured July 30:
+  // 9 centers x 1 rotation x 4 extents left only 21 candidates and the
+  // whole run refused on one weak draft).
+  const extents = (gridArt ? [0.05, 0.25, 0.45, 0.65, 0.85, 1] : [0.15, 0.4, 0.65, 0.9])
     .map((t) => extentForKm(minKm + t * (maxKm - minKm)))
     .map((e) => Math.round(Math.min(4200, Math.max(1100, e))))
     .filter((e, i, arr) => arr.indexOf(e) === i);
@@ -380,11 +393,10 @@ export async function runWowPlacement(args: {
   // Straight-edged art must sit ON the numbered grid, aligned to it —
   // organic-street placements staircase every clean line (Ralph: "messy and
   // less obvious"). Fall back to the full sweep only if the grid has no fit.
-  const gridArt = strokesRectilinearity(strokes) >= GRID_ART_RECTILINEARITY;
   let candidates: WowCandidate[];
   if (gridArt) {
     progress("Straight-edged art — placing on the street grid, aligned to the avenues…");
-    candidates = await runSweep(GRID_CENTERS, [GRID_ROTATION_DEG]);
+    candidates = await runSweep(GRID_CENTERS, GRID_ROTATIONS_DEG);
     if (!candidates.length) {
       progress("No grid-aligned fit — widening the search…");
       candidates = await runSweep(MANHATTAN_CENTERS);
@@ -406,49 +418,68 @@ export async function runWowPlacement(args: {
   // placements, and orientation-bound subjects (mugs, houses) stop reading
   // when tilted — a paper-9 mug screened only ±29° placements and scored
   // 3/10. Upright candidates always get seats; the judge arbitrates.
-  const byRot = new Map<number, WowCandidate[]>();
-  for (const c of candidates) {
-    if (!byRot.has(c.rotDeg)) byRot.set(c.rotDeg, []);
-    byRot.get(c.rotDeg)!.push(c);
-  }
-  const rotGroups = [...byRot.entries()]
-    .sort((a, b) => Math.abs(a[0]) - Math.abs(b[0]))
-    .map(([, list]) => list.sort((a, b) => candidateScore(a) - candidateScore(b)));
-  const screenSet: WowCandidate[] = [];
-  for (let i = 0; screenSet.length < SCREEN_COUNT; i++) {
-    let added = false;
-    for (const group of rotGroups) {
-      if (i < group.length && screenSet.length < SCREEN_COUNT) {
-        screenSet.push(group[i]!);
-        added = true;
-      }
-    }
-    if (!added) break;
-  }
-  progress(`Asking the judge about the ${screenSet.length} tightest fits…`);
   const judgeOnce = (png: Buffer) =>
     args.originalImage
       ? comparativeScore(args.apiKey, png, args.originalImage)
       : primedScore(args.apiKey, png, subject);
-  const scored = await Promise.all(
-    screenSet.map(async (c) => {
-      const png = await renderChainsPng(c.segments);
-      let score = await judgeOnce(png);
-      if (score == null) {
-        // one retry — a transient judge failure must not read as "0/10"
-        score = await judgeOnce(png);
+  const screenAndJudge = async (pool: WowCandidate[]) => {
+    const byRot = new Map<number, WowCandidate[]>();
+    for (const c of pool) {
+      if (!byRot.has(c.rotDeg)) byRot.set(c.rotDeg, []);
+      byRot.get(c.rotDeg)!.push(c);
+    }
+    const rotGroups = [...byRot.entries()]
+      .sort((a, b) => Math.abs(a[0]) - Math.abs(b[0]))
+      .map(([, list]) => list.sort((a, b) => candidateScore(a) - candidateScore(b)));
+    const screenSet: WowCandidate[] = [];
+    for (let i = 0; screenSet.length < SCREEN_COUNT; i++) {
+      let added = false;
+      for (const group of rotGroups) {
+        if (i < group.length && screenSet.length < SCREEN_COUNT) {
+          screenSet.push(group[i]!);
+          added = true;
+        }
       }
-      return { c, png, score: score ?? 0 };
-    }),
-  );
-  const keepers = scored
-    .filter((s) => s.score >= PRIMED_KEEP_THRESHOLD)
-    // Cleanness breaks judge-score ties: the judge can't rank within its
-    // passing band (measured — it scores clean and wobbly the same 6-7),
-    // but low jitter is exactly what the owner reads as "obvious" vs
-    // "messy". dev breaks remaining ties toward shape fidelity.
-    .sort((a, b) => b.score - a.score || a.c.jitter - b.c.jitter || a.c.dev - b.c.dev)
-    .slice(0, MAX_PICKS);
+      if (!added) break;
+    }
+    progress(`Asking the judge about the ${screenSet.length} tightest fits…`);
+    return Promise.all(
+      screenSet.map(async (c) => {
+        const png = await renderChainsPng(c.segments);
+        let score = await judgeOnce(png);
+        if (score == null) {
+          // one retry — a transient judge failure must not read as "0/10"
+          score = await judgeOnce(png);
+        }
+        return { c, png, score: score ?? 0 };
+      }),
+    );
+  };
+  const pickKeepers = (scored: { c: WowCandidate; png: Buffer; score: number }[]) =>
+    scored
+      .filter((s) => s.score >= PRIMED_KEEP_THRESHOLD)
+      // Cleanness breaks judge-score ties: the judge can't rank within its
+      // passing band (measured — it scores clean and wobbly the same 6-7),
+      // but low jitter is exactly what the owner reads as "obvious" vs
+      // "messy". dev breaks remaining ties toward shape fidelity.
+      .sort((a, b) => b.score - a.score || a.c.jitter - b.c.jitter || a.c.dev - b.c.dev)
+      .slice(0, MAX_PICKS);
+
+  let scored = await screenAndJudge(candidates);
+  let keepers = pickKeepers(scored);
+  // Pool-starvation guard (live failure, July 30): a thin grid pool plus a
+  // weak draft refused at 4/10 without ever trying the rest of the island.
+  // The refusal only wins over organic-street placements when the island
+  // ALSO has nothing above the bar.
+  if (!keepers.length && gridArt) {
+    progress("Grid placements didn't clear the bar — trying the whole island…");
+    const widened = await runSweep(MANHATTAN_CENTERS);
+    if (widened.length) {
+      candidates = candidates.concat(widened);
+      scored = scored.concat(await screenAndJudge(widened));
+      keepers = pickKeepers(scored);
+    }
+  }
 
   if (!keepers.length) {
     const bestScored = scored.slice().sort((a, b) => b.score - a.score)[0];
