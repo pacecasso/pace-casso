@@ -1,6 +1,6 @@
 import { rateLimitAllow } from "../../../lib/mapboxRateLimit";
 import { shieldExpensiveRoute, trustedClientIp } from "../../../lib/apiShield";
-import { runWowPlacement } from "../../../lib/wowPlaceServer";
+import { runWowPlacement, type JudgeMedia } from "../../../lib/wowPlaceServer";
 import type { NormalizedPoint } from "../../../lib/streetGraphTrace";
 
 export const runtime = "nodejs";
@@ -9,6 +9,25 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const MAX_POINTS = 600;
+const MAX_IMAGE_B64 = 4_000_000; // same cap as interpret-sketch
+
+const ALLOWED_MEDIA = new Set<JudgeMedia>(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/** Accepts a raw base64 string or a data: URL (same shape interpret-sketch takes). */
+function parseOriginalImage(raw: unknown): { data: string; media: JudgeMedia } | null {
+  if (typeof raw !== "string" || !raw) return null;
+  let data = raw;
+  let media: JudgeMedia = "image/png";
+  if (raw.startsWith("data:")) {
+    const comma = raw.indexOf(",");
+    if (comma === -1) return null;
+    const mt = raw.slice(0, comma).split(":")[1]?.split(";")[0] ?? "image/png";
+    data = raw.slice(comma + 1);
+    if (ALLOWED_MEDIA.has(mt as JudgeMedia)) media = mt as JudgeMedia;
+  }
+  if (data.length > MAX_IMAGE_B64) return null;
+  return { data, media };
+}
 
 function cleanContour(raw: unknown): NormalizedPoint[] | null {
   if (!Array.isArray(raw)) return null;
@@ -46,7 +65,13 @@ export async function POST(req: Request) {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) return jsonError("ANTHROPIC_API_KEY not configured on server", 503);
 
-  let body: { contour?: unknown; cityId?: unknown; targetDistanceKm?: unknown; subject?: unknown };
+  let body: {
+    contour?: unknown;
+    cityId?: unknown;
+    targetDistanceKm?: unknown;
+    subject?: unknown;
+    imageBase64?: unknown;
+  };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -68,6 +93,10 @@ export async function POST(req: Request) {
     typeof body.subject === "string" && body.subject.trim()
       ? body.subject.trim().slice(0, 80)
       : undefined;
+  // Optional: for composite (multi-element logo) redraws, the original
+  // upload — placements are then judged on likeness to it instead of the
+  // primed single-subject question, matching the interpret step's gate.
+  const originalImage = parseOriginalImage(body.imageBase64) ?? undefined;
   const targetDistanceKm =
     typeof body.targetDistanceKm === "number" &&
     Number.isFinite(body.targetDistanceKm) &&
@@ -91,6 +120,7 @@ export async function POST(req: Request) {
           apiKey,
           contour,
           knownSubject,
+          originalImage,
           targetDistanceKm,
           onProgress: (detail) => send({ type: "progress", detail }),
         });

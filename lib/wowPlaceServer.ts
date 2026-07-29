@@ -132,7 +132,14 @@ export async function renderStrokesPng(strokes: Pt[][], w = 620, h = 620): Promi
 // ---------------------------------------------------------------------------
 // Vision calls
 // ---------------------------------------------------------------------------
-async function visionCall(apiKey: string, png: Buffer, prompt: string): Promise<string | null> {
+export type JudgeMedia = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+
+async function visionCall(
+  apiKey: string,
+  png: Buffer,
+  prompt: string,
+  leadImage?: { data: string; media: JudgeMedia },
+): Promise<string | null> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -147,6 +154,14 @@ async function visionCall(apiKey: string, png: Buffer, prompt: string): Promise<
         {
           role: "user",
           content: [
+            ...(leadImage
+              ? [
+                  {
+                    type: "image",
+                    source: { type: "base64", media_type: leadImage.media, data: leadImage.data },
+                  },
+                ]
+              : []),
             {
               type: "image",
               source: { type: "base64", media_type: "image/png", data: png.toString("base64") },
@@ -194,6 +209,30 @@ async function primedScore(apiKey: string, png: Buffer, subject: string): Promis
   return m ? Number(m[1]) : null;
 }
 
+/**
+ * Comparative judge for composite artwork: sees the user's ORIGINAL upload
+ * beside the candidate street render and scores likeness. Same prompt and
+ * calibrated scale as the interpret step (a Ralph-accepted full-logo street
+ * render scores 6-7; a wrong image scores 2). Used instead of primedScore
+ * when the contour is a whole-composition redraw — no short subject phrase
+ * describes a multi-element logo well enough for the primed question to be
+ * fair ("a person wearing headphones" scored a pump+figure+hose route 3/10).
+ */
+async function comparativeScore(
+  apiKey: string,
+  png: Buffer,
+  original: { data: string; media: JudgeMedia },
+): Promise<number | null> {
+  const text = await visionCall(
+    apiKey,
+    png,
+    "The second image is a bold one-line redraw of the first, quantized to a city street grid so a runner can draw it with a GPS route. Score how recognizable it is as a simplified version of the first image — same elements, same arrangement, same identity. Reply in this exact format:\nSCORE: <0-10>\nWHY: <short phrase>",
+    original,
+  );
+  const m = text?.match(/SCORE:\s*(\d+)/i);
+  return m ? Number(m[1]) : null;
+}
+
 // ---------------------------------------------------------------------------
 // Route assembly
 // ---------------------------------------------------------------------------
@@ -230,6 +269,12 @@ export async function runWowPlacement(args: {
    * re-read as "snail" and verified against that).
    */
   knownSubject?: string;
+  /**
+   * When the contour is a whole-composition (composite/logo) redraw, the
+   * original upload — candidates are then judged on LIKENESS to it
+   * (comparativeScore) instead of the primed single-subject question.
+   */
+  originalImage?: { data: string; media: JudgeMedia };
   targetDistanceKm?: number;
   onProgress?: WowPlaceProgress;
 }): Promise<WowPlaceResult> {
@@ -337,13 +382,17 @@ export async function runWowPlacement(args: {
     if (!added) break;
   }
   progress(`Asking the judge about the ${screenSet.length} tightest fits…`);
+  const judgeOnce = (png: Buffer) =>
+    args.originalImage
+      ? comparativeScore(args.apiKey, png, args.originalImage)
+      : primedScore(args.apiKey, png, subject);
   const scored = await Promise.all(
     screenSet.map(async (c) => {
       const png = await renderChainsPng(c.segments);
-      let score = await primedScore(args.apiKey, png, subject);
+      let score = await judgeOnce(png);
       if (score == null) {
         // one retry — a transient judge failure must not read as "0/10"
-        score = await primedScore(args.apiKey, png, subject);
+        score = await judgeOnce(png);
       }
       return { c, png, score: score ?? 0 };
     }),

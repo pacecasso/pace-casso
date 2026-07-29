@@ -228,7 +228,14 @@ async function fetchWowPlace(
 async function fetchInterpret(
   imageBase64: string,
   onProgress: (detail: string) => void,
-): Promise<{ contour: NormalizedPoint[] | null; subject: string | null; message?: string }> {
+): Promise<{
+  contour: NormalizedPoint[] | null;
+  subject: string | null;
+  /** true when the redraw is the whole multi-element composition (logo) —
+   * placement must then judge by likeness to the upload, not the subject */
+  composite: boolean;
+  message?: string;
+}> {
   const res = await fetch("/api/interpret-sketch", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -248,6 +255,7 @@ async function fetchInterpret(
   return {
     contour: contour && contour.length >= 8 ? contour : null,
     subject: typeof rec.subject === "string" ? rec.subject : null,
+    composite: rec.composite === true,
     message: typeof rec.message === "string" ? rec.message : undefined,
   };
 }
@@ -404,6 +412,11 @@ export default function Step2MapAnchor({
           cityId: cityPreset.id,
           targetDistanceKm: targetDistanceKm ?? undefined,
           subject: interp.subject ?? undefined,
+          // Composite (multi-element logo) redraws: send the upload so
+          // placement judges by likeness to it — the primed single-subject
+          // question scores a full logo unfairly (measured 3/10 on a
+          // pump+figure+hose route it was asked to read as one element).
+          imageBase64: interp.composite ? imageBase64 : undefined,
         },
         setAutoHint,
       );

@@ -19,6 +19,11 @@
  *     otherwise an honest refusal. The user then approves or rejects the
  *     redraw; their original trace is never overwritten silently.
  *
+ * Composite uploads (multi-element logos/scenes) get a different gate: the
+ * whole composition is drafted first and judged on LIKENESS to the upload
+ * (comparative judges who see both images), because blind strangers can't
+ * name a brand mark that its owner recognizes instantly.
+ *
  * Server-only: never import from client components.
  */
 import type { NormalizedPoint } from "./streetGraphTrace";
@@ -35,6 +40,12 @@ type Pt2 = [number, number];
 
 const MODEL = "claude-opus-4-8"; // measurement parity with the judge series
 const MAX_ROUNDS = 4;
+// Comparative-judge pass bar, calibrated July 29 against renders with known
+// Ralph verdicts vs gas.png: v5's compiled lattice render (his "OK, starting
+// point" bar) scored 6,6,7; a wrong-image control (elephant) scored 2,2,2.
+// A judge score >= 6 is a hit; acceptance needs 2 of 3 hits — the accepted
+// bar passes 3/3, the control 0/3.
+const COMPARE_PASS_SCORE = 6;
 
 export type InterpretProgress = (detail: string) => void;
 
@@ -47,6 +58,13 @@ export type InterpretResult = {
   meanConfidence: number;
   /** 1-10: how recognizable the redraw is as a simplified version of the ORIGINAL upload */
   resemblance: number;
+  /**
+   * True when the accepted redraw is the WHOLE multi-element composition,
+   * gated on likeness-to-upload. Downstream placement must then judge
+   * candidates the same way (comparative, vs the upload) — a primed judge
+   * asked about the single-element subject scores the full logo unfairly.
+   */
+  composite: boolean;
   rounds: number;
   previewPngBase64: string | null;
   message?: string;
@@ -106,6 +124,34 @@ async function blindJudge(
   return { guess: m[1]!.trim().replace(/\s+/g, " "), confidence: Number(m[2]) };
 }
 
+/**
+ * Comparative judge — sees the ORIGINAL upload beside the street-simulated
+ * redraw and scores likeness. The gate for composite/logo uploads (Ralph,
+ * July 29): a blind stranger can never NAME a multi-element brand mark, but
+ * its owner recognizes a faithful redraw instantly — "looks similar, good
+ * starting point" is the accepted bar, so acceptance is likeness to the
+ * upload, not blind naming.
+ */
+async function compareJudge(
+  apiKey: string,
+  originalBase64: string,
+  originalMedia: Media,
+  png: Buffer,
+): Promise<{ score: number; why: string } | null> {
+  const text = await vision(apiKey, [
+    img(originalBase64, originalMedia),
+    img(png.toString("base64"), "image/png"),
+    {
+      type: "text",
+      text:
+        "The second image is a bold one-line redraw of the first, quantized to a city street grid so a runner can draw it with a GPS route. Score how recognizable it is as a simplified version of the first image — same elements, same arrangement, same identity. Reply in this exact format:\nSCORE: <0-10>\nWHY: <short phrase>",
+    },
+  ]);
+  const m = text?.match(/SCORE:\s*(\d+)\s*WHY:\s*(.+)/is);
+  if (!m) return null;
+  return { score: Number(m[1]), why: m[2]!.trim().replace(/\s+/g, " ").slice(0, 120) };
+}
+
 const GRAMMAR = `Draw a BOLD one-line interpretation of the subject, the way champion GPS-artists do. Hard rules, each learned from measured failures:
 - Draw the subject as ONE CLOSED SILHOUETTE OUTLINE — as if tracing around a solid, filled shape. NEVER a thin stick figure: measured on real streets, skeletal line-drawings melt into scribble while chunky closed outlines survive. Limbs, ears, tails and handles are outline protrusions WITH WIDTH (at least 8% of the span across), like a bold logo silhouette. The pen ends where it started.
 - EXCEPTION — HUMAN FIGURES: closed-outline humans read as ROBOTS (measured: three blind judges called one "robot" at confidence 9). Draw a person as a bold ACTION FIGURE instead: one large round head (a circle ~13% of the span) on a body of thick out-and-back retraced limbs in a DYNAMIC ASYMMETRIC pose — mid-stride, arms at different angles, everything diagonal, nothing vertical-symmetric. Wearables (headphones, a hat) must be drawn HUGE, at least 20% of the span, or dropped.
@@ -140,6 +186,22 @@ Example for a HUMAN FIGURE — a sprinting runner, blind-verified on real street
   {"type":"line","points":[[485,780],[600,690],[700,750],[600,690],[485,780],[380,700],[300,760],[380,700],[485,780],[430,520],[560,400],[590,210],[660,195],[590,210],[560,400],[430,520],[310,390],[210,460]]}
 ]}]}`;
 
+/**
+ * Extra rules for composite artwork (multi-element logos/scenes), appended
+ * to GRAMMAR in compare mode. Generalized from the hand-designed routes
+ * that worked (a verified 23 km multi-element logo route, a letter lockup,
+ * an animal face) — none of it is specific to any one image.
+ */
+const COMPOSITE_GRAMMAR = `
+
+COMPOSITE-ARTWORK OVERRIDE — this image is a composition of several elements, and the redraw must keep ALL of its major elements (rules from a street-verified multi-element logo route):
+- Draw EVERY major element, each as its own bold closed silhouette, arranged exactly as in the original.
+- Elements that stand on the ground in the original share ONE ground line.
+- Travel between elements along the composition's natural connector (a hose, cord, strap, leash) exactly where it attaches in the original — if there is none, travel along the shared ground line.
+- Keep each element's size within ~2x of its proportion in the original: a tiny element beside a huge one reads as clutter, so grow the small one.
+- Keep at most ONE interior identity detail per element (a window, a label patch) as a single closed loop attached to the outline via a retrace; drop all other interior detail.
+- The whole composition is still ONE continuous line — reach separated parts via the connector or a retrace along already-drawn ink, never a floating part.`;
+
 export async function interpretSketch(args: {
   apiKey: string;
   imageBase64: string; // raw base64, no data: prefix
@@ -149,7 +211,8 @@ export async function interpretSketch(args: {
   const progress = args.onProgress ?? (() => {});
   const empty: InterpretResult = {
     contour: null, subject: null, features: null, guesses: [], hits: 0,
-    meanConfidence: 0, resemblance: 0, rounds: 0, previewPngBase64: null,
+    meanConfidence: 0, resemblance: 0, composite: false, rounds: 0,
+    previewPngBase64: null,
   };
 
   progress("Studying your image…");
@@ -158,7 +221,7 @@ export async function interpretSketch(args: {
     {
       type: "text",
       text:
-        'What does this image depict, and what are its 2-3 most visually distinctive features (the things a silhouette must keep for a stranger to recognize it)? If the image is a scene or logo with SEVERAL elements, pick the ONE element that would be most recognizable as a simple line drawing — living figures and distinctive silhouettes beat boxes, machines, and text. Reply in this exact format:\nSUBJECT: <the simplest common name a stranger would shout on seeing your line drawing — 1-4 words, e.g. "an elephant", "a person wearing headphones">\nFEATURES: <comma-separated, short>\nLAYOUT: <one sentence: the overall composition/pose/arrangement of the original, so a redraw can echo it>',
+        'What does this image depict, and what are its 2-3 most visually distinctive features (the things a silhouette must keep for a stranger to recognize it)? If the image is a scene or logo with SEVERAL elements, pick the ONE element that would be most recognizable as a simple line drawing — living figures and distinctive silhouettes beat boxes, machines, and text. Reply in this exact format:\nSUBJECT: <the simplest common name a stranger would shout on seeing your line drawing — 1-4 words, e.g. "an elephant", "a person wearing headphones">\nFEATURES: <comma-separated, short>\nLAYOUT: <one sentence: the overall composition/pose/arrangement of the original, so a redraw can echo it>\nCOMPOSITE: <yes if the artwork is a composition of TWO OR MORE distinct elements (e.g. a figure AND a machine joined by a hose), otherwise no>',
     },
   ]);
   const idm = idText?.match(/SUBJECT:\s*(.+?)\s*FEATURES:\s*(.+?)(?:\s*LAYOUT:\s*(.+))?$/is);
@@ -167,7 +230,13 @@ export async function interpretSketch(args: {
   }
   const subject = idm[1]!.trim().replace(/\s+/g, " ").slice(0, 80);
   const features = idm[2]!.trim().replace(/\s+/g, " ").slice(0, 200);
-  const layout = (idm[3] ?? "").trim().replace(/\s+/g, " ").slice(0, 240);
+  // LAYOUT is the last greedy capture — cut the trailing COMPOSITE line off it.
+  const layout = (idm[3] ?? "")
+    .replace(/COMPOSITE:[\s\S]*$/i, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 240);
+  const composite = /^y/i.test(idText?.match(/COMPOSITE:\s*(\w+)/i)?.[1] ?? "");
 
   type LadderBest = {
     contour: NormalizedPoint[];
@@ -186,6 +255,13 @@ export async function interpretSketch(args: {
     "CROP to a close-up: draw only the part of the subject that carries its identity, filling the whole frame (a head with headphones beats a full figure whose headphones are too small to see). Keep every part connected — one line.",
     "Ignore this photo's pose entirely: draw the most ICONIC, canonical view of the subject (the version a road-sign or emoji would use), close-up on its identity.",
   ];
+  // Compare-mode strategies keep the composition — cropping or going
+  // canonical would defeat "looks like MY artwork".
+  const COMPARE_STRATEGY = [
+    "",
+    "Make every element chunkier and simpler while keeping the arrangement identical to the original — the composition is what must survive.",
+    "Exaggerate the connector and the single most distinctive element so the composition reads at a glance.",
+  ];
 
   let roundsUsed = 0;
 
@@ -194,10 +270,12 @@ export async function interpretSketch(args: {
     feats: string,
     lay: string,
     maxRounds: number,
+    mode: "blind" | "compare" = "blind",
   ): Promise<LadderBest> => {
     let best: LadderBest = null;
     let feedback = "";
     let lastPng: Buffer | null = null;
+    const strategies = mode === "compare" ? COMPARE_STRATEGY : STRATEGY;
 
     const draftOnce = async (roundNum: number): Promise<Pt2[][] | null> => {
       const content: Parameters<typeof vision>[1] = [img(args.imageBase64, args.mediaType)];
@@ -205,12 +283,16 @@ export async function interpretSketch(args: {
       content.push({
         type: "text",
         text:
-          `Subject: ${subj}\nDistinctive features to preserve: ${feats}` +
-          (lay
-            ? `\nOriginal composition to ECHO wherever it doesn't cost recognition (the owner must see THEIR art in the redraw): ${lay}`
-            : "") +
-          `\n\n${GRAMMAR}` +
-          (STRATEGY[roundNum - 1] ? `\n\nThis attempt's strategy: ${STRATEGY[roundNum - 1]}` : "") +
+          (mode === "compare"
+            ? `Redraw the FIRST image as a whole — every major element it contains, arranged as in the original.\nIts most recognizable element: ${subj}\nDistinctive features to preserve: ${feats}` +
+              (lay ? `\nComposition: ${lay}` : "") +
+              `\n\n${GRAMMAR}${COMPOSITE_GRAMMAR}`
+            : `Subject: ${subj}\nDistinctive features to preserve: ${feats}` +
+              (lay
+                ? `\nOriginal composition to ECHO wherever it doesn't cost recognition (the owner must see THEIR art in the redraw): ${lay}`
+                : "") +
+              `\n\n${GRAMMAR}`) +
+          (strategies[roundNum - 1] ? `\n\nThis attempt's strategy: ${strategies[roundNum - 1]}` : "") +
           (feedback
             ? `\n\nThe second image is your previous attempt as the judges saw it. It failed: ${feedback} Redraw from scratch.`
             : ""),
@@ -237,7 +319,11 @@ export async function interpretSketch(args: {
 
     for (let round = 1; round <= maxRounds; round++) {
       roundsUsed++;
-      progress(`Drawing ${subj} — attempt ${round} of ${maxRounds}…`);
+      progress(
+        mode === "compare"
+          ? `Drawing your whole artwork — attempt ${round} of ${maxRounds}…`
+          : `Drawing ${subj} — attempt ${round} of ${maxRounds}…`,
+      );
       // Best-of-two, both judged: draw two candidates in parallel and blind-
       // judge BOTH street-simulated renders. A cheap selector used to pick
       // one candidate for judging, but it measurably picked wrong (July 28,
@@ -250,7 +336,11 @@ export async function interpretSketch(args: {
         feedback = "the drawing program was invalid.";
         continue;
       }
-      progress(`Blind-testing attempt ${round} on three judges (street-simulated)…`);
+      progress(
+        mode === "compare"
+          ? `Comparing attempt ${round} to your original (street-simulated)…`
+          : `Blind-testing attempt ${round} on three judges (street-simulated)…`,
+      );
       const judged = await Promise.all(
         drafts.map(async (strokes, di) => {
           const png = await renderStrokesPng(strokes);
@@ -265,10 +355,22 @@ export async function interpretSketch(args: {
             const tag = `${subj.replace(/\W+/g, "-").slice(0, 40)}-r${round}${di ? "b" : "a"}`;
             void writeFile(`${process.env.INTERPRET_DEBUG_DIR}/draft-${tag}.png`, snappedPng).catch(() => {});
           }
-          const verdicts = (
-            await Promise.all([1, 2, 3].map(() => blindJudge(args.apiKey, snappedPng)))
-          ).filter((v): v is { guess: string; confidence: number } => v !== null);
-          const hits = verdicts.filter((v) => guessMatchesSubject(subj, v.guess)).length;
+          let verdicts: { guess: string; confidence: number }[];
+          let hits: number;
+          if (mode === "compare") {
+            const scores = (
+              await Promise.all(
+                [1, 2, 3].map(() => compareJudge(args.apiKey, args.imageBase64, args.mediaType, snappedPng)),
+              )
+            ).filter((v): v is { score: number; why: string } => v !== null);
+            verdicts = scores.map((s) => ({ guess: `likeness ${s.score}/10 — ${s.why}`, confidence: s.score }));
+            hits = scores.filter((s) => s.score >= COMPARE_PASS_SCORE).length;
+          } else {
+            verdicts = (
+              await Promise.all([1, 2, 3].map(() => blindJudge(args.apiKey, snappedPng)))
+            ).filter((v): v is { guess: string; confidence: number } => v !== null);
+            hits = verdicts.filter((v) => guessMatchesSubject(subj, v.guess)).length;
+          }
           const meanConfidence = verdicts.length
             ? verdicts.reduce((a, v) => a + v.confidence, 0) / verdicts.length
             : 0;
@@ -284,8 +386,11 @@ export async function interpretSketch(args: {
       // Recognition alone is not the product — a passing draft that abandons
       // the user's composition is "recognizable but not YOUR logo". Score
       // resemblance to the original and prefer it among passing drafts.
+      // In compare mode the judges ALREADY scored likeness to the original.
       let resemblance = 0;
-      if (hits >= 2) {
+      if (mode === "compare") {
+        resemblance = Number(meanConfidence.toFixed(1));
+      } else if (hits >= 2) {
         const resText = await vision(args.apiKey, [
           img(args.imageBase64, args.mediaType),
           img(png.toString("base64"), "image/png"),
@@ -315,6 +420,13 @@ export async function interpretSketch(args: {
         };
       }
       // Don't settle: strong recognition AND real resemblance, or keep drawing.
+      if (mode === "compare") {
+        if (hits === 3 && verdicts.length === 3 && meanConfidence >= 7) break;
+        feedback = `judges comparing it to the ORIGINAL scored likeness ${verdicts
+          .map((v) => v.confidence)
+          .join(", ")}/10 (${verdicts.map((v) => v.guess).join("; ")}) — keep EVERY element and the original arrangement, and make each element bolder.`;
+        continue;
+      }
       if (hits === 3 && verdicts.length === 3 && meanConfidence >= 7 && resemblance >= 6) break;
       feedback =
         hits >= 2 && resemblance < 6
@@ -326,9 +438,27 @@ export async function interpretSketch(args: {
     return best;
   };
 
-  let best = await runLadder(subject, features, layout, MAX_ROUNDS);
+  let best: LadderBest = null;
   let usedSubject = subject;
   let usedFeatures = features;
+
+  // Composite/logo path (Ralph, July 29): a blind stranger can never NAME a
+  // multi-element brand mark ("person + pump + hose"), but its owner
+  // recognizes a faithful redraw instantly — and a hand-designed full-logo
+  // route already proved multi-element compositions draw as one runnable
+  // line. So for compositions, attempt the WHOLE artwork first, gated on
+  // likeness-to-upload (comparative judges) instead of blind naming. If it
+  // fails, fall through to the single-subject blind-naming ladders.
+  let acceptedComposite = false;
+  if (composite) {
+    const compBest = await runLadder(subject, features, layout, 3, "compare");
+    if (compBest && compBest.hits >= 2) {
+      best = compBest;
+      acceptedComposite = true;
+    }
+  }
+
+  if (!best) best = await runLadder(subject, features, layout, MAX_ROUNDS);
 
   // Fallback ladder (July 28, learned from Ralph's gas logo): composite
   // subjects like "a person wearing headphones" draw as unrecognizable
@@ -388,6 +518,7 @@ export async function interpretSketch(args: {
     hits: best.hits,
     meanConfidence: best.meanConfidence,
     resemblance: best.resemblance,
+    composite: acceptedComposite,
     rounds: roundsUsed,
     previewPngBase64: best.png.toString("base64"),
   };
