@@ -341,7 +341,7 @@ export default function Step2MapAnchor({
         ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }, 80);
 
-    const applyResult = (result: WowPlaceResultPayload, redrawn: boolean) => {
+    const applyResult = (result: WowPlaceResultPayload, redrawn: boolean, likenessJudged = false) => {
       const subjectLabel = result.subject ?? "your art";
       const mapped: Top5Pick[] = result.picks.map((p) => ({
         placement: {
@@ -364,7 +364,9 @@ export default function Step2MapAnchor({
         sourceMatchScore: Math.min(100, p.primed * 10),
         verifiedRoute: true,
         verificationLabel: `AI JUDGE ${p.primed}/10`,
-        reason: `A vision judge, told only "${subjectLabel}", scored this street route ${p.primed}/10 before we showed it to you.`,
+        reason: likenessJudged
+          ? `A vision judge compared this street route against your original image and scored the likeness ${p.primed}/10 before we showed it to you.`
+          : `A vision judge, told only "${subjectLabel}", scored this street route ${p.primed}/10 before we showed it to you.`,
       }));
       setPicks(mapped);
       setPicksVisionUsed(true);
@@ -435,7 +437,7 @@ export default function Step2MapAnchor({
         setAutoHint,
       );
       if (placed.picks.length) {
-        applyResult(placed, true);
+        applyResult(placed, true, interp.composite);
         return;
       }
       setAutoHint(

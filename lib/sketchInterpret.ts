@@ -109,6 +109,36 @@ function bezPts(p0: Pt, c: Pt, p1: Pt): Pt[] {
   return out;
 }
 
+/**
+ * Compile a validated program to per-element polylines (y-up 0..1000),
+ * preserving element boundaries — join handling needs to know where one
+ * element ends and the next begins.
+ */
+export function compileProgramElements(program: PrimitiveProgram): Pt[][] {
+  const elements: Pt[][] = [];
+  for (const stroke of program.strokes) {
+    for (const e of stroke.elements) {
+      const seg =
+        e.type === "line" ? e.points :
+        e.type === "arc" ? arcPts(e.cx, e.cy, e.r, e.startDeg, e.endDeg) :
+        bezPts(e.p0, e.c, e.p1);
+      const pts: Pt[] = [];
+      for (const p of seg) {
+        const clamped: Pt = [
+          Math.max(0, Math.min(1000, p[0])),
+          Math.max(0, Math.min(1000, p[1])),
+        ];
+        const last = pts[pts.length - 1];
+        if (!last || Math.hypot(clamped[0] - last[0], clamped[1] - last[1]) > 0.5) {
+          pts.push(clamped);
+        }
+      }
+      if (pts.length) elements.push(pts);
+    }
+  }
+  return elements;
+}
+
 /** Compile a validated program to y-up 0..1000 polyline strokes. */
 export function compilePrimitiveProgram(program: PrimitiveProgram): Pt[][] {
   const strokes: Pt[][] = [];
@@ -133,6 +163,64 @@ export function compilePrimitiveProgram(program: PrimitiveProgram): Pt[][] {
     if (pts.length >= 2) strokes.push(pts);
   }
   return strokes;
+}
+
+/**
+ * Join element polylines into one continuous stroke, rerouting long JOINS
+ * as RETRACES along already-drawn ink. When the model emits consecutive
+ * elements whose endpoints don't meet, a direct join is a straight line —
+ * VISIBLE ink that slashes diagonally across the drawing (measured July
+ * 30: a gas-pump element rendered with a giant diagonal through it). A
+ * retrace along the existing path adds distance but no new ink, exactly
+ * like a runner re-running a street. Only gaps BETWEEN elements are
+ * candidates — long segments inside an element are deliberate strokes (a
+ * first version treated any long segment as a jump and replaced closing
+ * edges of rectangles with drawing-length retraces, inflating ink 2-15x).
+ */
+export function joinElementsWithRetrace(elements: Pt[][], maxJump = 25): Pt[] {
+  const out: Pt[] = [];
+  // Growth guard: a draft whose elements never connect makes every join
+  // retrace an ever-growing prefix — quadratic blowup. Past the cap, joins
+  // stay direct; the caller's ink gate rejects the draft as disconnected.
+  const maxLen = elements.reduce((n, el) => n + el.length, 0) * 6 + 64;
+  for (const el of elements) {
+    const start = el[0]!;
+    const last = out[out.length - 1];
+    if (last && out.length < maxLen) {
+      const direct = Math.hypot(start[0] - last[0], start[1] - last[1]);
+      if (direct > maxJump) {
+        // Nearest already-drawn point to the join target.
+        let bi = out.length - 1;
+        let bd = direct;
+        for (let i = 0; i < out.length; i++) {
+          const d = Math.hypot(start[0] - out[i]![0], start[1] - out[i]![1]);
+          if (d < bd) {
+            bd = d;
+            bi = i;
+          }
+        }
+        // Walk back along the drawn path (invisible retrace) only when it
+        // lands meaningfully closer than jumping straight.
+        if (bd < direct - 1e-6) {
+          for (let i = out.length - 2; i >= bi; i--) out.push(out[i]!);
+        }
+      }
+    }
+    for (const p of el) {
+      const prev = out[out.length - 1];
+      if (!prev || Math.hypot(p[0] - prev[0], p[1] - prev[1]) > 0.5) out.push(p);
+    }
+  }
+  return out;
+}
+
+/** Total polyline length in shape units. */
+export function polylineInkLen(pts: Pt[]): number {
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) {
+    len += Math.hypot(pts[i]![0] - pts[i - 1]![0], pts[i]![1] - pts[i - 1]![1]);
+  }
+  return len;
 }
 
 /**

@@ -126,4 +126,55 @@ import {
   assert.ok(!tinyStroke || tinyStroke.length <= 2, "sub-cell feature melts, as on real streets");
 }
 
+// --- joinElementsWithRetrace ----------------------------------------------------
+{
+  const { joinElementsWithRetrace, polylineInkLen } = await import("./sketchInterpret");
+  // Two elements whose endpoints don't meet: a square outline, then an
+  // interior detail starting near a drawn corner. The direct join would be
+  // a visible diagonal slash across the square; the join must instead walk
+  // back along the drawn outline (retrace) and hop the short remainder.
+  const square: [number, number][] = [
+    [0, 0],
+    [1000, 0],
+    [1000, 1000],
+    [0, 1000],
+    [0, 0],
+  ];
+  const detail: [number, number][] = [
+    [950, 950],
+    [700, 950],
+    [700, 700],
+  ];
+  const routed = joinElementsWithRetrace([square, detail]);
+  // The retrace lands at the drawn corner nearest the detail (1000,1000),
+  // so the only NEW join ink is the short hop from there — never the
+  // 1345-unit diagonal from (0,0).
+  let maxSeg = 0;
+  for (let i = 1; i < routed.length; i++) {
+    const a = routed[i - 1]!;
+    const b = routed[i]!;
+    maxSeg = Math.max(maxSeg, Math.hypot(b[0] - a[0], b[1] - a[1]));
+  }
+  assert.ok(maxSeg <= 1000 + 1e-6, `no slash longer than a drawn edge (got ${maxSeg.toFixed(0)})`);
+  const hop = routed.findIndex((p) => p[0] === 950 && p[1] === 950);
+  const before = routed[hop - 1]!;
+  assert.deepStrictEqual(before, [1000, 1000], "join hops from the nearest drawn corner");
+  // Long segments INSIDE an element are deliberate strokes — untouched.
+  // (A first version replaced closing edges with drawing-length retraces.)
+  const alone = joinElementsWithRetrace([square]);
+  assert.strictEqual(polylineInkLen(alone), 4000, "a lone closed square keeps all 4 edges, no inflation");
+  // Elements that already connect join with zero added ink.
+  const connected = joinElementsWithRetrace([
+    [
+      [0, 0],
+      [100, 0],
+    ],
+    [
+      [100, 0],
+      [100, 100],
+    ],
+  ]);
+  assert.strictEqual(polylineInkLen(connected), 200, "connected elements add no join ink");
+}
+
 console.log("sketchInterpret tests passed");

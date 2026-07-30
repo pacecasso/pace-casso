@@ -33,6 +33,9 @@ import {
   strokesToContour,
   guessMatchesSubject,
   snapStrokesToLattice,
+  compileProgramElements,
+  joinElementsWithRetrace,
+  polylineInkLen,
 } from "./sketchInterpret";
 import { renderStrokesPng } from "./wowPlaceServer";
 import { strokesInkRatio } from "./wowFunnel";
@@ -334,6 +337,10 @@ export async function interpretSketch(args: {
     let best: LadderBest = null;
     let feedback = "";
     let lastPng: Buffer | null = null;
+    // Set by draftOnce when a draft is rejected pre-judging (e.g.
+    // disconnected elements) — turns "invalid program" into feedback the
+    // drafter can act on.
+    let draftFailNote = "";
     const strategies = mode === "compare" ? COMPARE_STRATEGY : STRATEGY;
 
     const draftOnce = async (roundNum: number): Promise<Pt2[][] | null> => {
@@ -379,13 +386,27 @@ export async function interpretSketch(args: {
       }
       const program = parsePrimitiveProgram(parsed);
       if (!program) return null;
-      let strokes = compilePrimitiveProgram(program);
-      if (!strokes.length) return null;
-      // Product rule (Ralph, July 27): NO pen lifts — one run, one line. Any
-      // extra strokes are joined head-to-tail so the connector ink is real,
-      // visible, and judged exactly as it will be run.
-      if (strokes.length > 1) strokes = [strokes.flat()];
-      return strokes;
+      // Product rule (Ralph, July 27): NO pen lifts — one run, one line.
+      // Elements are joined into one continuous stroke, and any join whose
+      // endpoints don't meet is rerouted as a retrace along drawn ink,
+      // never a diagonal slash (measured July 30: a direct join slashed
+      // diagonally across the pump; Ralph: "come on — it's SO BAD"). But a
+      // retrace is real route distance, so a badly DISCONNECTED draft
+      // (retraces inflating total line >35%) is rejected with targeted
+      // feedback rather than patched into a drawing that must shrink at
+      // placement until it melts.
+      const elements = compileProgramElements(program);
+      if (!elements.length) return null;
+      const directJoin = elements.flat();
+      if (directJoin.length < 2) return null;
+      const routed = joinElementsWithRetrace(elements);
+      if (polylineInkLen(routed) > polylineInkLen(directJoin) * 1.35) {
+        draftFailNote =
+          "its elements did not connect — every element must BEGIN exactly where the previous one ended, so the pen travels one continuous line with no jumps.";
+        await dumpFail("disconnected");
+        return null;
+      }
+      return [routed];
     };
 
     for (let round = 1; round <= maxRounds; round++) {
@@ -404,7 +425,8 @@ export async function interpretSketch(args: {
         (d): d is Pt2[][] => d !== null,
       );
       if (!drafts.length) {
-        feedback = "the drawing program was invalid.";
+        feedback = draftFailNote || "the drawing program was invalid.";
+        draftFailNote = "";
         continue;
       }
       progress(
