@@ -442,6 +442,12 @@ export async function traceShapeOnStreets(
     rots?: number[];
     /** False for open multi-piece sketches (no phantom closing chord). */
     closeLoop?: boolean;
+    /** Restrict the placement sweep, e.g. to the uniform-grid window for
+     * letter/box-bearing designs that mangle on organic streets. */
+    bounds?: { latMin?: number; latMax?: number; lngMin?: number; lngMax?: number };
+    /** Runnability gate override (default 0.95). Every dropped leg is a
+     * teleport — lower this only for offline design exploration. */
+    minCoverage?: number;
   } = {},
 ): Promise<StreetTraceCandidate[]> {
   const topK = Math.max(1, Math.min(4, options.topK ?? 3));
@@ -454,8 +460,12 @@ export async function traceShapeOnStreets(
   const scales = options.scales ?? [1400, 2000, 2700];
   const rots = options.rots ?? [0, 15, -15, 29];
   const cands: { center: LatLng; scale: number; rot: number; score: number }[] = [];
-  for (let lat = 40.71; lat <= 40.792; lat += 0.008) {
-    for (let lng = -74.012; lng <= -73.938; lng += 0.008) {
+  const latMin = options.bounds?.latMin ?? 40.71;
+  const latMax = options.bounds?.latMax ?? 40.792;
+  const lngMin = options.bounds?.lngMin ?? -74.012;
+  const lngMax = options.bounds?.lngMax ?? -73.938;
+  for (let lat = latMin; lat <= latMax; lat += 0.008) {
+    for (let lng = lngMin; lng <= lngMax; lng += 0.008) {
       for (const scale of scales) {
         for (const rot of rots) {
           const outline = place(unit, [lat, lng], scale, rot);
@@ -510,7 +520,7 @@ export async function traceShapeOnStreets(
     // RUNNABILITY GATE: every dropped leg is a teleport. If the streets
     // couldn't draw ≥95% of the shape connected, this placement is not a
     // route — reject it instead of shipping a floating fragment.
-    if (coverage < 0.95 || maxGapM > 180) continue;
+    if (coverage < (options.minCoverage ?? 0.95) || maxGapM > 180) continue;
     let dev = 0;
     for (const p of chain) {
       let m = Infinity;

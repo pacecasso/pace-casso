@@ -2,6 +2,13 @@ import type { CityPreset } from "./cityPresets";
 import type { ContourPoint, PlacementTransform } from "./placementFromContour";
 import { analyzeOneLinePath } from "./oneLinePathAnalysis";
 import { simplifyCartesian, type Point2D } from "./douglasPeucker";
+import { CURATED_MANHATTAN_RUNS, type CuratedRun } from "./curatedManhattanRuns";
+import { curatedSneakerManhattanMapNativeCandidate } from "./curatedSneakerManhattanRoute";
+import { curatedApple2ManhattanMapNativeCandidate } from "./curatedInterpretiveManhattanRoutes";
+import { curatedKeyManhattanMapNativeCandidate } from "./curatedKeyManhattanRoute";
+import { curatedMartiniDcMapNativeCandidate } from "./curatedDcMartiniRoute";
+import { curatedUmbrellaManhattanMapNativeCandidate } from "./curatedUmbrellaManhattanRoute";
+import { curatedTrophyManhattanMapNativeCandidate } from "./curatedTrophyManhattanRoute";
 
 const MARGIN = 0.012;
 const MIN_ROUTE_KM = 3;
@@ -1956,7 +1963,10 @@ export function streetGasLogoCandidates(
             family.yStepMeters * m,
             bearing,
           );
-          if (anchors.length < 2 || !candidateStaysInBounds(anchors, preset)) {
+          if (
+            anchors.length < 2 ||
+            !candidateStaysInBounds(anchors, preset)
+          ) {
             continue;
           }
           const km = routeLengthKm(anchors);
@@ -2021,13 +2031,151 @@ function routeLibraryCandidate({
   };
 }
 
+function verifiedRouteAllowsKm(
+  km: number,
+  targetDistanceKm?: number,
+): boolean {
+  if (km < MIN_ROUTE_KM || km > MAX_ROUTE_KM) return false;
+  if (targetDistanceKm == null || !Number.isFinite(targetDistanceKm)) {
+    return true;
+  }
+  return km >= targetDistanceKm * 0.35 && km <= targetDistanceKm * 2.4;
+}
+
+function curatedRunTags(run: CuratedRun): string[] {
+  switch (run.id) {
+    case "chelsea-turtle":
+      return ["turtle", "shell", "legs", "head", "tail", "animal"];
+    case "chelsea-robot":
+      return ["robot", "head", "antenna", "visor", "mouth", "face"];
+    case "midtown-sailboat":
+      return ["sailboat", "boat", "hull", "mast", "mainsail", "jib"];
+    case "east-village-tulip":
+      return ["tulip", "flower", "petals", "stem", "leaves"];
+    case "les-duck":
+      return ["duck", "bird", "beak", "head", "body", "tail"];
+    case "les-heart":
+      return ["heart", "love", "lobes", "bottom point"];
+    default:
+      return [run.title.toLowerCase()];
+  }
+}
+
+function textMatchesCuratedRun(text: string, run: CuratedRun): boolean {
+  switch (run.id) {
+    case "chelsea-turtle":
+      return /\b(turtle|tortoise|shell|reptile)\b/.test(text);
+    case "chelsea-robot":
+      return /\b(robot|android|bot|antenna|visor)\b/.test(text);
+    case "midtown-sailboat":
+      return /\b(sailboat|sail boat|sailing|sail|boat|yacht|ship)\b/.test(text);
+    case "east-village-tulip":
+      return /\b(tulip|flower|floral|petal|petals|stem|plant)\b/.test(text);
+    case "les-duck":
+      return /\b(duck|duckling|bird|beak)\b/.test(text);
+    case "les-heart":
+      return /\b(heart|love|valentine|lobes|lobe)\b/.test(text);
+    default:
+      return false;
+  }
+}
+
+function curatedManhattanRunCandidate(
+  run: CuratedRun,
+  targetDistanceKm?: number,
+): MapNativeCandidate | null {
+  const anchors = run.coords;
+  const km = routeLengthKm(anchors);
+  if (!verifiedRouteAllowsKm(km, targetDistanceKm)) return null;
+  return {
+    placement: placementFromAnchors(anchors, 29, 1),
+    anchors,
+    km,
+    designIntent: `Verified route-library Manhattan ${run.title}: ${run.blurb} Features: ${curatedRunTags(run).join(", ")}.`,
+    kind: "street-design",
+    routeMode: "direct-grid",
+  };
+}
+
+// The three verified-bank source routes, embedded verbatim when their
+// gallery entries were retired (July 28) — the bank must keep serving them.
+const LEGACY_VERIFIED_RUNS: CuratedRun[] = [
+  { id: "les-heart", title: "Lower East Side Heart", icon: "❤️", area: "Lower East Side · Canal St → E Houston St", blurb: "A pixel heart on the finest street grid in Manhattan — domed lobes, a V-dip, and a pointed tip. One closed loop, no retracing.", distanceKm: 4.47, coords: [[40.714676,-73.991128],[40.714697,-73.991200],[40.714886,-73.991831],[40.714903,-73.991887],[40.714979,-73.991849],[40.715565,-73.991549],[40.715983,-73.991336],[40.716032,-73.991312],[40.716050,-73.991373],[40.716153,-73.991715],[40.716176,-73.991792],[40.716231,-73.991763],[40.716836,-73.991444],[40.717016,-73.991349],[40.717110,-73.991299],[40.717196,-73.991254],[40.717275,-73.991212],[40.717297,-73.991283],[40.717305,-73.991310],[40.717381,-73.991272],[40.717434,-73.991246],[40.717455,-73.991235],[40.717468,-73.991279],[40.717479,-73.991316],[40.717484,-73.991330],[40.717509,-73.991415],[40.717526,-73.991467],[40.717533,-73.991491],[40.717722,-73.992118],[40.717729,-73.992140],[40.717740,-73.992180],[40.717753,-73.992228],[40.717761,-73.992251],[40.717972,-73.992963],[40.717953,-73.992972],[40.717905,-73.992998],[40.717927,-73.993073],[40.717960,-73.993056],[40.718002,-73.993034],[40.718745,-73.992655],[40.718793,-73.992631],[40.718845,-73.992604],[40.718865,-73.992670],[40.718899,-73.992779],[40.719026,-73.993196],[40.719046,-73.993261],[40.719049,-73.993272],[40.719080,-73.993373],[40.719121,-73.993491],[40.719134,-73.993526],[40.719349,-73.994241],[40.719359,-73.994272],[40.719467,-73.994395],[40.719532,-73.994365],[40.719591,-73.994341],[40.719822,-73.994246],[40.720079,-73.994218],[40.720254,-73.994148],[40.720343,-73.994113],[40.720465,-73.994065],[40.720522,-73.994042],[40.720807,-73.993932],[40.720930,-73.993884],[40.720975,-73.993865],[40.721030,-73.993842],[40.721075,-73.993822],[40.721607,-73.993611],[40.721656,-73.993595],[40.721703,-73.993577],[40.721747,-73.993561],[40.722341,-73.993341],[40.722383,-73.993326],[40.722442,-73.993305],[40.722490,-73.993287],[40.722831,-73.993165],[40.722806,-73.993034],[40.722783,-73.992926],[40.722473,-73.991850],[40.722455,-73.991786],[40.722421,-73.991670],[40.722471,-73.991645],[40.722517,-73.991622],[40.722682,-73.991537],[40.723129,-73.991306],[40.723425,-73.991155],[40.723472,-73.991130],[40.723516,-73.991108],[40.723602,-73.991075],[40.723727,-73.991032],[40.723682,-73.990890],[40.723663,-73.990827],[40.723518,-73.990364],[40.723479,-73.990243],[40.723450,-73.990150],[40.723428,-73.990079],[40.723353,-73.989840],[40.723202,-73.989347],[40.723039,-73.988814],[40.722984,-73.988627],[40.722929,-73.988440],[40.722919,-73.988404],[40.722906,-73.988357],[40.722847,-73.988159],[40.722785,-73.987954],[40.722758,-73.987861],[40.722644,-73.987918],[40.722557,-73.987961],[40.722503,-73.987990],[40.721831,-73.988327],[40.721512,-73.988490],[40.721463,-73.988516],[40.721444,-73.988453],[40.721422,-73.988381],[40.721254,-73.987829],[40.721235,-73.987764],[40.721183,-73.987791],[40.720133,-73.988332],[40.720079,-73.988360],[40.720060,-73.988299],[40.719867,-73.987661],[40.719831,-73.987544],[40.719887,-73.987514],[40.720937,-73.986974],[40.720988,-73.986948],[40.720954,-73.986834],[40.720770,-73.986229],[40.720748,-73.986157],[40.720802,-73.986128],[40.721790,-73.985612],[40.721850,-73.985580],[40.721921,-73.985545],[40.722036,-73.985484],[40.722013,-73.985407],[40.721984,-73.985306],[40.721943,-73.985167],[40.721811,-73.984729],[40.721785,-73.984644],[40.721757,-73.984547],[40.721751,-73.984528],[40.721734,-73.984475],[40.721678,-73.984296],[40.721561,-73.983903],[40.721529,-73.983799],[40.721500,-73.983701],[40.721437,-73.983487],[40.721278,-73.982968],[40.721163,-73.983027],[40.721137,-73.982939],[40.720906,-73.982181],[40.720825,-73.982223],[40.719768,-73.982775],[40.719724,-73.982797],[40.719706,-73.982735],[40.719633,-73.982501],[40.719487,-73.982025],[40.719462,-73.981942],[40.719414,-73.981964],[40.719180,-73.982082],[40.718676,-73.982334],[40.718356,-73.982499],[40.718314,-73.982521],[40.718260,-73.982548],[40.717427,-73.982978],[40.717219,-73.983103],[40.717168,-73.983141],[40.717126,-73.983170],[40.717097,-73.983178],[40.716690,-73.983389],[40.716580,-73.983365],[40.716524,-73.983390],[40.716292,-73.983548],[40.716172,-73.983618],[40.716138,-73.983639],[40.716180,-73.983789],[40.716196,-73.983847],[40.716287,-73.984172],[40.716397,-73.984535],[40.716630,-73.985309],[40.716698,-73.985531],[40.716881,-73.986137],[40.716898,-73.986194],[40.716841,-73.986223],[40.716045,-73.986627],[40.716038,-73.986633],[40.716002,-73.986666],[40.715975,-73.986694],[40.716008,-73.986787],[40.716092,-73.987071],[40.716107,-73.987122],[40.716132,-73.987232],[40.716186,-73.987481],[40.716200,-73.987530],[40.716218,-73.987592],[40.716434,-73.988307],[40.716455,-73.988377],[40.716477,-73.988450],[40.716552,-73.988676],[40.716673,-73.989041],[40.716712,-73.989149],[40.716623,-73.989196],[40.716568,-73.989224],[40.715598,-73.989729],[40.715561,-73.989748],[40.715494,-73.989782],[40.715100,-73.989987],[40.714774,-73.990155],[40.714594,-73.990220],[40.714497,-73.990232],[40.714421,-73.990228],[40.714447,-73.990373],[40.714533,-73.990663],[40.714656,-73.991064],[40.714676,-73.991128]] },
+  { id: "chelsea-turtle", title: "Chelsea Turtle", icon: "🐢", area: "Chelsea · 18th–28th St, 11th–5th Ave", blurb: "Top-down turtle: shell, four stubby legs, head poking east toward Fifth, tail to the Hudson. One continuous loop.", distanceKm: 6.08, coords: [[40.749611,-74.002775],[40.749657,-74.002741],[40.749744,-74.002678],[40.750155,-74.002369],[40.750229,-74.002314],[40.750273,-74.002282],[40.750776,-74.001919],[40.750828,-74.001882],[40.750772,-74.001748],[40.750343,-74.000723],[40.749723,-73.999240],[40.749697,-73.999178],[40.749644,-73.999217],[40.749600,-73.999107],[40.749123,-73.999454],[40.748951,-73.999577],[40.748789,-73.999696],[40.748518,-73.999893],[40.748474,-73.999925],[40.748430,-73.999957],[40.748370,-73.999791],[40.748128,-73.999217],[40.748063,-73.999059],[40.747880,-73.998629],[40.747686,-73.998172],[40.747663,-73.998116],[40.747619,-73.998008],[40.747599,-73.997963],[40.747344,-73.997356],[40.747304,-73.997273],[40.747279,-73.997222],[40.747217,-73.997085],[40.747154,-73.996952],[40.746466,-73.995315],[40.746203,-73.994694],[40.746068,-73.994372],[40.746018,-73.994253],[40.746065,-73.994217],[40.746205,-73.994115],[40.746562,-73.993854],[40.746618,-73.993813],[40.746688,-73.993762],[40.746880,-73.993622],[40.747180,-73.993403],[40.747236,-73.993362],[40.747185,-73.993240],[40.746094,-73.990651],[40.746038,-73.990518],[40.745979,-73.990561],[40.745846,-73.990657],[40.745483,-73.990923],[40.745421,-73.990968],[40.745363,-73.991010],[40.745233,-73.991108],[40.744871,-73.991369],[40.744819,-73.991409],[40.744753,-73.991456],[40.744253,-73.991822],[40.744186,-73.991871],[40.744137,-73.991907],[40.744039,-73.991978],[40.743642,-73.992266],[40.743568,-73.992318],[40.743518,-73.992199],[40.743444,-73.992022],[40.742454,-73.989658],[40.742345,-73.989403],[40.742323,-73.989353],[40.742271,-73.989356],[40.742252,-73.989358],[40.742044,-73.989391],[40.741966,-73.989447],[40.741701,-73.989637],[40.741672,-73.989659],[40.741600,-73.989712],[40.741531,-73.989763],[40.741506,-73.989782],[40.740994,-73.990154],[40.740984,-73.990131],[40.740945,-73.990042],[40.740886,-73.990083],[40.740934,-73.990197],[40.741428,-73.991375],[40.742177,-73.993158],[40.742233,-73.993292],[40.742181,-73.993329],[40.741680,-73.993694],[40.741629,-73.993732],[40.741562,-73.993780],[40.741528,-73.993805],[40.741461,-73.993854],[40.741090,-73.994124],[40.741031,-73.994167],[40.741087,-73.994300],[40.741115,-73.994366],[40.742179,-73.996888],[40.742234,-73.997002],[40.742174,-73.997046],[40.741709,-73.997385],[40.741642,-73.997434],[40.741592,-73.997470],[40.741246,-73.997720],[40.741117,-73.997817],[40.741056,-73.997862],[40.740997,-73.997721],[40.739919,-73.995157],[40.739860,-73.995018],[40.739920,-73.994974],[40.740292,-73.994703],[40.740394,-73.994628],[40.740442,-73.994593],[40.740502,-73.994550],[40.740939,-73.994233],[40.740980,-73.994203],[40.741031,-73.994167],[40.741087,-73.994300],[40.741115,-73.994366],[40.742179,-73.996888],[40.742234,-73.997002],[40.742295,-73.997125],[40.742321,-73.997185],[40.743379,-73.999713],[40.743429,-73.999850],[40.743483,-73.999993],[40.743508,-74.000052],[40.744568,-74.002563],[40.744639,-74.002732],[40.744583,-74.002774],[40.744112,-74.003113],[40.744056,-74.003155],[40.743991,-74.003204],[40.743850,-74.003301],[40.743527,-74.003543],[40.743476,-74.003581],[40.743517,-74.003678],[40.743736,-74.004204],[40.743770,-74.004286],[40.743957,-74.004733],[40.744000,-74.004837],[40.744597,-74.006266],[40.744646,-74.006385],[40.744717,-74.006332],[40.745173,-74.006002],[40.745231,-74.005960],[40.745297,-74.005912],[40.745642,-74.005662],[40.745724,-74.005602],[40.745753,-74.005581],[40.745817,-74.005534],[40.745880,-74.005487],[40.746309,-74.005170],[40.746346,-74.005142],[40.746410,-74.005098],[40.746465,-74.005059],[40.746971,-74.004690],[40.747023,-74.004653],[40.747088,-74.004609],[40.747611,-74.004229],[40.747703,-74.004164],[40.747761,-74.004303],[40.747935,-74.004719],[40.748809,-74.006807],[40.748837,-74.006873],[40.748891,-74.007003],[40.748941,-74.006979],[40.748961,-74.006967],[40.748991,-74.006947],[40.749043,-74.006911],[40.749238,-74.006770],[40.749429,-74.006631],[40.749471,-74.006599],[40.749531,-74.006576],[40.749471,-74.006599],[40.749438,-74.006474],[40.749428,-74.006444],[40.749083,-74.005568],[40.748557,-74.004303],[40.748515,-74.004206],[40.748366,-74.003862],[40.748301,-74.003724],[40.748355,-74.003684],[40.748426,-74.003632],[40.748921,-74.003274],[40.748974,-74.003236],[40.749044,-74.003185],[40.749499,-74.002859],[40.749533,-74.002833],[40.749611,-74.002775]] },
+  { id: "midtown-sailboat", title: "Midtown Sailboat", icon: "⛵", area: "Garment District · 34th–46th St, 10th–5th Ave", blurb: "Trapezoid hull, thin mast up Eighth Avenue, and a stair-stepped mainsail with a jib. Sails right past Times Square.", distanceKm: 8.51, coords: [[40.756480,-73.997767],[40.756427,-73.997639],[40.755988,-73.996593],[40.755893,-73.996339],[40.755869,-73.996280],[40.755767,-73.996033],[40.755732,-73.995950],[40.755720,-73.995921],[40.755534,-73.995479],[40.755355,-73.995064],[40.755325,-73.994994],[40.755297,-73.994930],[40.755233,-73.994781],[40.755108,-73.994492],[40.755060,-73.994378],[40.754149,-73.992216],[40.754143,-73.992202],[40.754091,-73.992079],[40.754036,-73.991948],[40.753886,-73.991593],[40.752948,-73.989369],[40.752895,-73.989243],[40.752843,-73.989118],[40.752229,-73.987626],[40.752198,-73.987557],[40.752190,-73.987537],[40.752169,-73.987488],[40.752110,-73.987350],[40.752096,-73.987318],[40.752042,-73.987192],[40.751759,-73.986537],[40.751700,-73.986399],[40.751642,-73.986267],[40.751554,-73.986065],[40.751512,-73.985969],[40.751376,-73.985644],[40.750395,-73.983303],[40.750341,-73.983175],[40.750270,-73.983226],[40.749786,-73.983575],[40.749728,-73.983617],[40.749662,-73.983665],[40.749163,-73.984028],[40.749105,-73.984071],[40.749154,-73.984188],[40.749454,-73.984909],[40.750351,-73.987036],[40.750412,-73.987177],[40.750457,-73.987287],[40.750405,-73.987326],[40.750283,-73.987414],[40.749882,-73.987699],[40.749801,-73.987746],[40.749846,-73.987852],[40.749863,-73.987892],[40.749934,-73.988060],[40.750029,-73.988286],[40.750394,-73.989151],[40.750424,-73.989224],[40.750456,-73.989300],[40.750961,-73.990498],[40.751009,-73.990612],[40.751068,-73.990753],[40.751540,-73.991868],[40.751577,-73.991957],[40.751611,-73.992040],[40.751884,-73.992686],[40.752148,-73.993330],[40.752199,-73.993458],[40.752257,-73.993607],[40.752634,-73.994522],[40.752666,-73.994600],[40.752700,-73.994682],[40.752899,-73.995155],[40.752932,-73.995229],[40.752964,-73.995299],[40.753126,-73.995641],[40.753161,-73.995724],[40.753192,-73.995796],[40.753344,-73.996159],[40.753408,-73.996318],[40.753495,-73.996256],[40.753705,-73.996103],[40.754010,-73.995887],[40.754071,-73.995843],[40.754119,-73.995954],[40.754335,-73.996464],[40.754533,-73.996923],[40.754589,-73.997063],[40.754630,-73.997161],[40.754660,-73.997229],[40.754733,-73.997406],[40.754880,-73.997766],[40.755200,-73.998525],[40.755257,-73.998659],[40.755315,-73.998616],[40.755464,-73.998508],[40.755535,-73.998454],[40.755809,-73.998256],[40.755874,-73.998209],[40.755933,-73.998165],[40.756010,-73.998110],[40.756115,-73.998033],[40.756189,-73.997979],[40.756430,-73.997804],[40.756480,-73.997767],[40.756427,-73.997639],[40.755988,-73.996593],[40.755893,-73.996339],[40.755869,-73.996280],[40.755767,-73.996033],[40.755732,-73.995950],[40.755720,-73.995921],[40.755534,-73.995479],[40.755355,-73.995064],[40.755325,-73.994994],[40.755297,-73.994930],[40.755233,-73.994781],[40.755108,-73.994492],[40.755060,-73.994378],[40.754149,-73.992216],[40.754143,-73.992202],[40.754091,-73.992079],[40.754157,-73.992031],[40.754650,-73.991674],[40.754707,-73.991633],[40.754772,-73.991585],[40.754940,-73.991462],[40.755267,-73.991223],[40.755330,-73.991177],[40.755390,-73.991134],[40.755346,-73.991009],[40.755837,-73.990622],[40.755889,-73.990586],[40.755958,-73.990540],[40.756451,-73.990180],[40.756508,-73.990137],[40.756568,-73.990093],[40.757083,-73.989719],[40.757177,-73.989658],[40.757264,-73.989601],[40.757279,-73.989603],[40.757331,-73.989720],[40.757721,-73.989435],[40.757852,-73.989340],[40.757912,-73.989296],[40.757977,-73.989249],[40.758482,-73.988880],[40.758532,-73.988843],[40.758592,-73.988800],[40.758820,-73.988633],[40.759103,-73.988427],[40.759160,-73.988386],[40.759223,-73.988339],[40.759508,-73.988132],[40.759731,-73.987969],[40.759787,-73.987928],[40.759732,-73.987797],[40.759572,-73.987420],[40.759501,-73.987252],[40.759197,-73.986516],[40.758886,-73.985770],[40.758767,-73.985492],[40.758743,-73.985435],[40.758640,-73.985185],[40.758597,-73.985079],[40.758524,-73.985132],[40.758367,-73.985244],[40.758035,-73.985482],[40.757963,-73.985534],[40.757892,-73.985589],[40.757419,-73.985952],[40.757342,-73.986012],[40.757279,-73.986056],[40.756845,-73.986363],[40.756795,-73.986398],[40.756710,-73.986458],[40.756667,-73.986356],[40.756639,-73.986288],[40.756585,-73.986159],[40.756532,-73.986034],[40.756516,-73.985996],[40.756502,-73.985963],[40.756425,-73.985781],[40.756246,-73.985356],[40.756139,-73.985102],[40.755572,-73.983758],[40.755516,-73.983624],[40.755455,-73.983669],[40.754960,-73.984031],[40.754938,-73.984047],[40.754842,-73.984118],[40.754757,-73.984179],[40.754407,-73.984432],[40.754236,-73.984554],[40.754177,-73.984596],[40.754119,-73.984637],[40.753691,-73.984945],[40.753619,-73.984996],[40.753558,-73.985040],[40.753503,-73.984909],[40.752259,-73.981951],[40.752205,-73.981824],[40.752143,-73.981868],[40.751693,-73.982195],[40.751649,-73.982226],[40.751581,-73.982276],[40.751526,-73.982316],[40.751032,-73.982674],[40.750960,-73.982726],[40.751009,-73.982844],[40.751209,-73.983318],[40.751335,-73.983617],[40.751361,-73.983678],[40.752080,-73.985384],[40.752262,-73.985816],[40.752317,-73.985947],[40.752375,-73.986084],[40.752818,-73.987182],[40.752887,-73.987344],[40.752934,-73.987458],[40.753450,-73.988673],[40.753503,-73.988798],[40.753557,-73.988923],[40.754647,-73.991488],[40.754707,-73.991633],[40.754772,-73.991585],[40.754940,-73.991462],[40.755267,-73.991223],[40.755330,-73.991177],[40.755390,-73.991134],[40.755346,-73.991009],[40.755837,-73.990622],[40.755889,-73.990586],[40.755958,-73.990540],[40.756451,-73.990180],[40.756508,-73.990137],[40.756568,-73.990093],[40.757083,-73.989719],[40.757177,-73.989658],[40.757264,-73.989601],[40.757279,-73.989603],[40.757331,-73.989720],[40.757721,-73.989435],[40.757852,-73.989340],[40.757912,-73.989296],[40.757977,-73.989249],[40.758482,-73.988880],[40.758532,-73.988843],[40.758594,-73.988989],[40.758799,-73.989475],[40.759167,-73.990351],[40.759284,-73.990628],[40.759673,-73.991552],[40.759728,-73.991684],[40.759673,-73.991724],[40.759165,-73.992094],[40.759104,-73.992138],[40.759054,-73.992018],[40.758992,-73.992062],[40.758475,-73.992422],[40.758373,-73.992496],[40.758285,-73.992561],[40.757843,-73.992881],[40.757756,-73.992944],[40.757663,-73.993012],[40.757646,-73.993045],[40.757380,-73.993241],[40.757158,-73.993404],[40.757099,-73.993449],[40.757039,-73.993495],[40.756540,-73.993853],[40.756483,-73.993893],[40.756532,-73.994018],[40.756473,-73.994061],[40.756105,-73.994330],[40.755972,-73.994428],[40.755904,-73.994475],[40.755855,-73.994341],[40.754910,-73.992112],[40.754766,-73.991771],[40.754756,-73.991748],[40.754707,-73.991633]] },
+];
+
+const VERIFIED_CURATED_RUN_IDS = new Set([
+  "les-heart",
+  "chelsea-turtle",
+  "midtown-sailboat",
+]);
+
+function verifiedRouteBankCandidatesFromText(
+  text: string,
+  preset: CityPreset,
+  targetDistanceKm?: number,
+): MapNativeCandidate[] {
+  const out: MapNativeCandidate[] = [];
+  if (preset.id === "manhattan" && /\b(sneaker|shoe|shoes|trainer|running shoe|footwear|puma|nike shoe)\b/.test(text)) {
+    const sneaker = curatedSneakerManhattanMapNativeCandidate();
+    if (verifiedRouteAllowsKm(sneaker.km, targetDistanceKm)) out.push(sneaker);
+  }
+  if (preset.id === "manhattan" && /\b(apple|fruit|bite|leaf|stem)\b/.test(text)) {
+    const apple = curatedApple2ManhattanMapNativeCandidate();
+    if (verifiedRouteAllowsKm(apple.km, targetDistanceKm)) out.push(apple);
+  }
+
+  if (preset.id === "manhattan" && /\b(key|keys|lock|unlock|security)\b/.test(text)) {
+    const key = curatedKeyManhattanMapNativeCandidate();
+    if (verifiedRouteAllowsKm(key.km, targetDistanceKm)) out.push(key);
+  }
+  if (
+    preset.id === "dc" &&
+    /\b(martini|cocktail|cocktail glass|drink glass|wine glass)\b/.test(text)
+  ) {
+    const martini = curatedMartiniDcMapNativeCandidate();
+    if (verifiedRouteAllowsKm(martini.km, targetDistanceKm)) out.push(martini);
+  }
+  if (preset.id === "manhattan" && /\b(umbrella|parasol|rain umbrella|canopy)\b/.test(text)) {
+    const umbrella = curatedUmbrellaManhattanMapNativeCandidate();
+    if (verifiedRouteAllowsKm(umbrella.km, targetDistanceKm)) out.push(umbrella);
+  }
+  if (preset.id === "manhattan" && /\b(trophy|award|prize|champion|winner)\b/.test(text)) {
+    const trophy = curatedTrophyManhattanMapNativeCandidate();
+    if (verifiedRouteAllowsKm(trophy.km, targetDistanceKm)) out.push(trophy);
+  }
+  if (preset.id === "manhattan") {
+    for (const run of [...CURATED_MANHATTAN_RUNS, ...LEGACY_VERIFIED_RUNS]) {
+      if (!VERIFIED_CURATED_RUN_IDS.has(run.id)) continue;
+      if (!textMatchesCuratedRun(text, run)) continue;
+      const candidate = curatedManhattanRunCandidate(run, targetDistanceKm);
+      if (candidate) out.push(candidate);
+    }
+  }
+  return out;
+}
+
+export function verifiedRouteBankCandidates(
+  drafts: MapNativeDesignDraft[],
+  preset: CityPreset,
+  targetDistanceKm?: number,
+): MapNativeCandidate[] {
+  return verifiedRouteBankCandidatesFromText(
+    draftSearchText(drafts),
+    preset,
+    targetDistanceKm,
+  );
+}
+
 export function manhattanRouteLibraryCandidates(
   drafts: MapNativeDesignDraft[],
   preset: CityPreset,
   targetDistanceKm?: number,
 ): MapNativeCandidate[] {
-  if (preset.id !== "manhattan") return [];
   const text = draftSearchText(drafts);
+  const verifiedRoutes = verifiedRouteBankCandidatesFromText(text, preset, targetDistanceKm);
+  if (preset.id !== "manhattan") return [];
   const wants = {
     star: /\b(star|five[-\s]?point|spark|asterisk)\b/.test(text),
     heart: /\b(heart|love|lobe|valentine)\b/.test(text),
@@ -2226,20 +2374,23 @@ export function manhattanRouteLibraryCandidates(
     },
   ];
 
-  return recipes
-    .filter((recipe) => recipe.enabled)
-    .map((recipe) =>
-      routeLibraryCandidate({
-        label: recipe.label,
-        anchors: recipe.anchors,
-        rotationDeg: recipe.rotationDeg,
-        scale: recipe.scale,
-        tags: recipe.tags,
-        preset,
-        targetDistanceKm,
-      }),
-    )
-    .filter((candidate): candidate is MapNativeCandidate => candidate != null);
+  return [
+    ...verifiedRoutes,
+    ...recipes
+      .filter((recipe) => recipe.enabled)
+      .map((recipe) =>
+        routeLibraryCandidate({
+          label: recipe.label,
+          anchors: recipe.anchors,
+          rotationDeg: recipe.rotationDeg,
+          scale: recipe.scale,
+          tags: recipe.tags,
+          preset,
+          targetDistanceKm,
+        }),
+      )
+      .filter((candidate): candidate is MapNativeCandidate => candidate != null),
+  ];
 }
 
 function diverseSubsample<T extends { placement: PlacementTransform }>(
@@ -2811,6 +2962,191 @@ function sketchAnchorsOnCityGrid(
   });
 }
 
+type LearnedGpsArtRecipe = {
+  id: string;
+  points: Array<[number, number]>;
+  stretch: { x: number; y: number };
+  intent: string;
+};
+
+const LEARNED_SWOOSH_GPS_ART_RECIPES: LearnedGpsArtRecipe[] = [
+  {
+    id: "broad-ribbon-heel",
+    points: [
+      [-1.18, -0.44],
+      [-1.12, -0.1],
+      [-0.96, 0.12],
+      [-0.66, 0.18],
+      [-0.2, 0.12],
+      [0.36, 0.24],
+      [1.08, 0.48],
+      [1.28, 0.6],
+      [0.62, 0.02],
+      [0.06, -0.28],
+      [-0.52, -0.46],
+      [-0.96, -0.54],
+      [-1.18, -0.44],
+    ],
+    stretch: { x: 1.38, y: 0.9 },
+    intent:
+      "broad heel, parallel lower return stroke, curved belly, and thin rising tip",
+  },
+  {
+    id: "long-low-ribbon",
+    points: [
+      [-1.22, -0.38],
+      [-1.04, -0.16],
+      [-0.74, -0.04],
+      [-0.34, 0.04],
+      [0.16, 0.18],
+      [0.78, 0.42],
+      [1.24, 0.66],
+      [0.86, 0.28],
+      [0.24, -0.1],
+      [-0.38, -0.32],
+      [-0.9, -0.46],
+      [-1.22, -0.38],
+    ],
+    stretch: { x: 1.55, y: 0.78 },
+    intent:
+      "long low street-scale sweep with a readable wide base and raised tail",
+  },
+  {
+    id: "open-tail-ribbon",
+    points: [
+      [-1.18, -0.42],
+      [-1.02, -0.18],
+      [-0.74, -0.04],
+      [-0.38, 0.04],
+      [0.08, 0.16],
+      [0.62, 0.34],
+      [1.2, 0.64],
+      [0.7, 0.18],
+      [0.08, -0.18],
+      [-0.58, -0.42],
+      [-0.98, -0.5],
+    ],
+    stretch: { x: 1.45, y: 0.82 },
+    intent:
+      "open GPS-art sweep using out-and-back thickness instead of a literal closed outline",
+  },
+];
+
+function routeUnitLength(points: Array<[number, number]>): number {
+  let length = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1]!;
+    const b = points[i]!;
+    length += Math.hypot(b[0] - a[0], b[1] - a[1]);
+  }
+  return length;
+}
+
+function localGpsArtRecipeAnchors(
+  recipe: LearnedGpsArtRecipe,
+  center: [number, number],
+  metersPerUnit: number,
+  xBearingDeg: number,
+): [number, number][] {
+  const xAxis = bearingUnitVector(xBearingDeg);
+  const yAxis = bearingUnitVector(xBearingDeg + 90);
+  return recipe.points.map(([x, y]) => {
+    const localX = x * metersPerUnit * recipe.stretch.x;
+    const localY = y * metersPerUnit * recipe.stretch.y;
+    const east = localX * xAxis.east + localY * yAxis.east;
+    const north = localX * xAxis.north + localY * yAxis.north;
+    return offsetLatLngMeters(center, east, north);
+  });
+}
+
+function isLearnedSwooshGpsArtDraft(drafts: MapNativeDesignDraft[]): boolean {
+  const text = draftSearchText(drafts);
+  return /\b(nike|swoosh|checkmark|check-mark|check mark|tick|wing|sweep|sweeping|ribbon|rising tail)\b/.test(
+    text,
+  );
+}
+
+function learnedSweepBearings(preset: CityPreset): number[] {
+  const bearings = preset.dominantGridBearingsDeg ?? [];
+  if (bearings.length <= 1) return bearings;
+  const ordered = bearings
+    .slice()
+    .sort(
+      (a, b) =>
+        Math.abs(bearingUnitVector(b).east) -
+        Math.abs(bearingUnitVector(a).east),
+    );
+  const best = Math.abs(bearingUnitVector(ordered[0]!).east);
+  const floor = Math.max(0.55, best * 0.72);
+  return ordered.filter((bearing) => Math.abs(bearingUnitVector(bearing).east) >= floor);
+}
+
+export function learnedGpsArtGrammarCandidates(
+  drafts: MapNativeDesignDraft[],
+  preset: CityPreset,
+  targetDistanceKm?: number,
+): MapNativeCandidate[] {
+  const bearings = learnedSweepBearings(preset);
+  if (drafts.length === 0 || bearings.length === 0) return [];
+  if (!isLearnedSwooshGpsArtDraft(drafts)) return [];
+
+  const targetKm =
+    targetDistanceKm != null && Number.isFinite(targetDistanceKm)
+      ? targetDistanceKm
+      : 10;
+  const centers = cityFocusCenters(preset).slice(
+    0,
+    preset.id === "manhattan" ? 8 : 10,
+  );
+  const boundsMargin = preset.id === "manhattan" ? 0.003 : MARGIN;
+  const out: MapNativeCandidate[] = [];
+
+  for (const recipe of LEARNED_SWOOSH_GPS_ART_RECIPES) {
+    const unitLength = routeUnitLength(recipe.points);
+    if (unitLength <= 0) continue;
+    const baseMeters = Math.max(
+      680,
+      Math.min(1900, (targetKm * 1000) / unitLength),
+    );
+    for (const center of centers) {
+      for (const bearing of bearings) {
+        for (const scale of [0.86, 1, 1.16]) {
+          const anchors = localGpsArtRecipeAnchors(
+            recipe,
+            center,
+            baseMeters * scale,
+            bearing,
+          );
+          if (
+            anchors.length < 2 ||
+            !candidateStaysInBounds(anchors, preset, boundsMargin)
+          ) {
+            continue;
+          }
+          const km = routeLengthKm(anchors);
+          if (km < MIN_ROUTE_KM || km > MAX_ROUTE_KM) continue;
+          if (
+            targetDistanceKm != null &&
+            Number.isFinite(targetDistanceKm) &&
+            (km < targetDistanceKm * 0.55 || km > targetDistanceKm * 1.95)
+          ) {
+            continue;
+          }
+          out.push({
+            placement: sourceAlignedPlacementFromAnchors(anchors, bearing),
+            anchors,
+            km,
+            designIntent: `Learned GPS-art swoosh grammar (${recipe.id}): ${recipe.intent}. Built as runnable street-scale art, then Mapbox-snapped; no direct-grid bypass.`,
+            kind: "street-design",
+          });
+        }
+      }
+    }
+  }
+
+  return diverseSubsample(out, Math.min(18, out.length), preset);
+}
+
 export function cityGridSketchCandidates(
   drafts: MapNativeDesignDraft[],
   preset: CityPreset,
@@ -2878,7 +3214,10 @@ export function cityGridSketchCandidates(
             bearing,
             stretch,
           );
-          if (anchors.length < 2 || !candidateStaysInBounds(anchors, preset)) {
+          if (
+            anchors.length < 2 ||
+            !candidateStaysInBounds(anchors, preset)
+          ) {
             continue;
           }
           const km = routeLengthKm(anchors);
@@ -2928,7 +3267,13 @@ export function generateMapNativeCandidates({
   const gasGridRoutes = gasLogo
     ? streetGasLogoCandidates(preset, targetDistanceKm)
     : [];
-  const routeLibraryRoutes = manhattanRouteLibraryCandidates(
+  const verifiedBankRoutes = preset.id === "manhattan"
+    ? []
+    : verifiedRouteBankCandidates(drafts, preset, targetDistanceKm);
+  const routeLibraryRoutes = preset.id === "manhattan"
+    ? manhattanRouteLibraryCandidates(drafts, preset, targetDistanceKm)
+    : [];
+  const learnedGrammarRoutes = learnedGpsArtGrammarCandidates(
     drafts,
     preset,
     targetDistanceKm,
@@ -2948,15 +3293,22 @@ export function generateMapNativeCandidates({
   }
   if (gasLogo && gasGridRoutes.length > 0) {
     return diverseSubsample(
-      [...gasGridRoutes, ...routeLibraryRoutes],
-      Math.min(32, gasGridRoutes.length + routeLibraryRoutes.length),
+      [...verifiedBankRoutes, ...gasGridRoutes, ...routeLibraryRoutes],
+      Math.min(32, verifiedBankRoutes.length + gasGridRoutes.length + routeLibraryRoutes.length),
       preset,
     );
   }
   return [
+    ...verifiedBankRoutes,
     ...routeLibraryRoutes,
+    ...learnedGrammarRoutes,
     ...monogramRoutes,
     ...wordmarkRoutes,
     ...cityGridSketchCandidates(drafts, preset, targetDistanceKm),
   ];
 }
+
+
+
+
+

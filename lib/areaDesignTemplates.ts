@@ -189,15 +189,68 @@ function zigZGridRaw(): AreaDesignContour[] {
 }
 
 function lightningRaw(): AreaDesignContour[] {
+  // Classic zig-zag bolt silhouette (the ⚡ shape): wide body, two notches,
+  // pointed tip. Every leg is long enough to survive street snapping.
   const pts: AreaDesignContour[] = [
-    { x: 40, y: 5 },
-    { x: 55, y: 40 },
-    { x: 48, y: 42 },
-    { x: 72, y: 88 },
-    { x: 52, y: 50 },
-    { x: 60, y: 46 },
-    { x: 35, y: 8 },
+    { x: 58, y: 0 },
+    { x: 16, y: 58 },
+    { x: 40, y: 58 },
+    { x: 30, y: 100 },
+    { x: 84, y: 38 },
+    { x: 56, y: 38 },
+    { x: 76, y: 0 },
+    { x: 58, y: 0 },
   ];
+  return normalizeContourToBox(pts);
+}
+
+function teardropRaw(): AreaDesignContour[] {
+  // Pointed apex + circular bottom, joined by the true tangent lines so the
+  // sides run dead straight into the curve (no kink at the join).
+  const apex = { x: 50, y: 2 };
+  const c = { x: 50, y: 58 };
+  const r = 34;
+  const d = c.y - apex.y;
+  const gamma = Math.PI / 2 - Math.asin(r / d);
+  const start = -Math.PI / 2 + gamma; // right tangent point, from center
+  const end = -Math.PI / 2 - gamma + Math.PI * 2; // left tangent point, long way round
+  const pts: AreaDesignContour[] = [{ ...apex }];
+  const steps = 44;
+  for (let i = 0; i <= steps; i++) {
+    const ang = start + ((end - start) * i) / steps;
+    pts.push({ x: c.x + r * Math.cos(ang), y: c.y + r * Math.sin(ang) });
+  }
+  pts.push({ ...apex });
+  return normalizeContourToBox(pts);
+}
+
+function crescentRaw(): AreaDesignContour[] {
+  // Big circle minus an offset smaller circle: outer arc between the two
+  // intersection tips, then back along the inner (concave) arc.
+  const c1 = { x: 50, y: 50 };
+  const R = 40;
+  const c2 = { x: 66, y: 50 };
+  const r = 34;
+  const d = c2.x - c1.x;
+  const a = (d * d + R * R - r * r) / (2 * d);
+  const h = Math.sqrt(R * R - a * a);
+  const pts: AreaDesignContour[] = [];
+  // Outer arc: lower tip → far side → upper tip.
+  const outStart = Math.atan2(h, a);
+  const outEnd = Math.PI * 2 + Math.atan2(-h, a);
+  const outSteps = 40;
+  for (let i = 0; i <= outSteps; i++) {
+    const ang = outStart + ((outEnd - outStart) * i) / outSteps;
+    pts.push({ x: c1.x + R * Math.cos(ang), y: c1.y + R * Math.sin(ang) });
+  }
+  // Inner arc: upper tip → concave side (toward c1) → lower tip.
+  const inStart = Math.atan2(-h, a - d);
+  const inEnd = Math.atan2(h, a - d) - Math.PI * 2;
+  const inSteps = 32;
+  for (let i = 1; i <= inSteps; i++) {
+    const ang = inStart + ((inEnd - inStart) * i) / inSteps;
+    pts.push({ x: c2.x + r * Math.cos(ang), y: c2.y + r * Math.sin(ang) });
+  }
   return normalizeContourToBox(pts);
 }
 
@@ -245,6 +298,22 @@ export const AREA_DESIGN_TEMPLATES: AreaDesignTemplate[] = [
     contour: heartRaw(),
     complexity: "simple",
     icon: "❤️",
+  },
+  {
+    id: "teardrop",
+    title: "Teardrop",
+    blurb: "One point, one curve — compact and forgiving to snap.",
+    contour: teardropRaw(),
+    complexity: "simple",
+    icon: "💧",
+  },
+  {
+    id: "crescent",
+    title: "Crescent moon",
+    blurb: "Two sweeping arcs meeting at sharp tips — dramatic and clean.",
+    contour: crescentRaw(),
+    complexity: "medium",
+    icon: "🌙",
   },
   {
     id: "arrow",
@@ -311,6 +380,10 @@ export const AREA_DESIGN_TEMPLATES: AreaDesignTemplate[] = [
     icon: "🌩️",
   },
 ];
+
+export function getAreaTemplate(id: string): AreaDesignTemplate | undefined {
+  return AREA_DESIGN_TEMPLATES.find((t) => t.id === id);
+}
 
 export const COMPLEXITY_ORDER: Record<AreaDesignComplexity, number> = {
   simple: 0,

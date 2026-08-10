@@ -47,6 +47,7 @@ import { compileContourToLattice } from "./latticeCompiler";
 import { getManhattanLatticeGraph } from "./manhattanLattice";
 import { splitSketchComponents } from "./sketchReview";
 import { simplifyLatLng } from "./douglasPeucker";
+import { VERIFIED_ROUTE_BANK_SUBJECTS } from "./verifiedRouteBankManifest";
 
 const MARGIN = 0.012;
 const MIN_PERIMETER_KM = 3;
@@ -1272,6 +1273,7 @@ function directGridRouteFromAnchors(
       coordinates: anchors,
       distanceMeters: meters,
       blockWaypoints: anchors,
+      preserveBlockWaypoints: true,
     },
   };
 }
@@ -1388,6 +1390,14 @@ function candidateSelectionScore(
  * Deliberately far below the normal display bar: this only catches routes
  * that cannot possibly read as the uploaded artwork.
  */
+const VERIFIED_ROUTE_BANK_INTENT_TEXT = VERIFIED_ROUTE_BANK_SUBJECTS.map((subject) =>
+  subject.expectedIntent.toLowerCase(),
+);
+
+function isVerifiedRouteLibraryIntent(intent: string | undefined): boolean {
+  const text = (intent ?? "").toLowerCase();
+  return VERIFIED_ROUTE_BANK_INTENT_TEXT.some((allowedIntent) => text.includes(allowedIntent));
+}
 export function meetsAbsoluteDisplayFloor(
   candidate: AutoFindPickSelectionCandidate,
 ): boolean {
@@ -1404,6 +1414,12 @@ export function meetsAbsoluteDisplayFloor(
   // A lockup adds the wordmark to the traced symbol on purpose, so it can
   // never score high on similarity to the contour. Judge it on cleanliness
   // and length only.
+  if (isVerifiedRouteLibraryIntent(candidate.designIntent)) {
+    return (
+      clean >= 7 &&
+      (distance == null || !Number.isFinite(distance) || distance <= 35)
+    );
+  }
   if (/lockup/i.test(candidate.designIntent ?? "")) {
     return (
       clean >= 15 &&
@@ -1431,6 +1447,12 @@ export function isDisplayWorthyAutoFindCandidate(
   const maxKm = gridWordmark ? 56 : 30;
   // See meetsAbsoluteDisplayFloor: lockups intentionally differ from the
   // traced contour, so contour similarity is the wrong test for them.
+  if (isVerifiedRouteLibraryIntent(candidate.designIntent)) {
+    return (
+      clean >= 7 &&
+      (distance == null || !Number.isFinite(distance) || distance <= 35)
+    );
+  }
   if (/lockup/i.test(candidate.designIntent ?? "")) {
     return (
       clean >= 20 &&
@@ -1474,9 +1496,9 @@ function finalRouteTruthFloors(
   const directGridWordmark =
     candidate.kind === "street-wordmark" && candidate.routeMode === "direct-grid";
   const needsSweep = requiresSweepStructure(requiredVisualFeatures);
-  const isCuratedNike = /\bcurated nike swoosh manhattan v1\b/.test(
-    (candidate.designIntent ?? "").toLowerCase(),
-  );
+  const intent = (candidate.designIntent ?? "").toLowerCase();
+  const isCuratedNike = /\bcurated nike swoosh manhattan v1\b/.test(intent);
+  const isVerifiedRouteLibrary = isVerifiedRouteLibraryIntent(intent);
   const needsStar = requiresStarStructure(requiredVisualFeatures);
   const needsBolt = requiresBoltStructure(requiredVisualFeatures);
 
@@ -1484,6 +1506,9 @@ function finalRouteTruthFloors(
   // its wordmark in block letters. Scoring it for similarity to the contour
   // (which is the symbol alone) punishes it for the letters that are the
   // whole point, so it was generated, gated out, and never shown.
+  if (isVerifiedRouteLibrary) {
+    return { minShape: 10, minSource: 0, minClean: 7, maxDistanceKm: 35 };
+  }
   if (/\blockup\b/i.test(candidate.designIntent ?? "")) {
     return { minShape: 12, minSource: 0, minClean: 7, maxDistanceKm: 56 };
   }
@@ -3771,6 +3796,97 @@ export function injectSwooshRepresentativeDrafts(
   ]);
 }
 
+export function inferVerifiedRouteSubjectFromSourceName(
+  sourceName: string | undefined,
+): VisionDesignDraft | null {
+  if (!sourceName) return null;
+  const base = sourceName
+    .replace(/\.[a-z0-9]{1,6}$/i, " ")
+    .replace(/[_\-]+/g, " ")
+    .toLowerCase();
+  const match = (
+    label: string,
+    description: string,
+    visualFeatures: string[],
+  ): VisionDesignDraft => ({
+    label,
+    description,
+    visualFeatures,
+    points: [],
+    designScore: 92,
+  });
+
+  if (/\b(sneaker|shoe|shoes|trainer|running shoe|footwear|puma)\b/.test(base)) {
+    return match(
+      "Uploaded sneaker mark",
+      "running shoe sneaker with laces, sole, toe panel, and heel",
+      ["sneaker", "shoe", "laces", "sole", "toe", "heel"],
+    );
+  }
+  if (/\b(sailboat|sail boat|sailing|boat|yacht|ship)\b/.test(base)) {
+    return match(
+      "Uploaded sailboat",
+      "sailboat with hull, mast, mainsail, and jib",
+      ["sailboat", "boat", "hull", "mast", "jib"],
+    );
+  }
+  if (/\b(turtle|tortoise|shell)\b/.test(base)) {
+    return match(
+      "Uploaded turtle",
+      "turtle with shell, four legs, head, and tail",
+      ["turtle", "shell", "legs", "head", "tail"],
+    );
+  }
+  if (/\b(apple|fruit|bite|leaf|stem)\b/.test(base)) {
+    return match(
+      "Uploaded apple mark",
+      "apple outline with bite notch, stem, and leaf",
+      ["apple", "bite", "stem", "leaf"],
+    );
+  }
+  if (/\b(key|keys|lock|unlock|security)\b/.test(base)) {
+    return match(
+      "Uploaded key icon",
+      "key with square bow, inner hole, long shaft, and two stepped teeth",
+      ["key", "bow", "hole", "shaft", "teeth"],
+    );
+  }
+  if (/\b(martini|cocktail|drink|wine glass)\b/.test(base)) {
+    return match(
+      "Uploaded martini glass",
+      "cocktail glass with wide rim, stepped bowl, stem, base, and olive pick",
+      ["martini", "cocktail", "glass", "rim", "stem", "base"],
+    );
+  }
+  if (/\b(umbrella|parasol|rain umbrella)\b/.test(base)) {
+    return match(
+      "Uploaded umbrella",
+      "umbrella with arched canopy, scalloped lower edge, shaft, and handle",
+      ["umbrella", "canopy", "scalloped edge", "shaft", "handle"],
+    );
+  }
+  if (/\b(trophy|award|prize|champion|winner)\b/.test(base)) {
+    return match(
+      "Uploaded trophy",
+      "trophy cup with broad bowl, side handles, central stem, and stepped base",
+      ["trophy", "award", "handles", "stem", "base"],
+    );
+  }
+  return null;
+}
+
+export function injectVerifiedRouteRepresentativeDrafts(
+  drafts: VisionDesignDraft[],
+  sourceName: string | undefined,
+): VisionDesignDraft[] {
+  const inferred = inferVerifiedRouteSubjectFromSourceName(sourceName);
+  if (!inferred) return drafts;
+  const text = collectDraftText(drafts).join(" ").toLowerCase();
+  if (inferred.visualFeatures?.some((feature) => text.includes(feature))) {
+    return drafts;
+  }
+  return [inferred, ...drafts];
+}
 type RepresentativeFeatureSet = {
   block: boolean;
   loop: boolean;
@@ -4845,25 +4961,13 @@ function makePicks(
     }
   }
   if (eligible.length === 0 && snapped.length > 0) {
-    // Last resort — never dead-end. Every gate above is a *quality* filter,
-    // and in production the combination could reject 100% of successfully
-    // snapped candidates, which surfaced to the user as a hard "no placements
-    // found" error even though placement worked. Showing the best-available
-    // routes (honestly scored — the UI displays the match numbers and the
-    // READY-TO-RUN verdict still gates later) always beats showing nothing.
-    relaxedQuality = true;
+    // Do not show best-available junk. A route-art candidate only counts after
+    // the final snapped geometry survives the visual gates above; otherwise
+    // the honest result is no automatic placement.
     console.warn(
-      "[autoFindTop5] all quality gates rejected every snapped candidate — falling back to best-available picks above the absolute floor",
+      "[autoFindTop5] all final-route gates rejected every snapped candidate - showing none rather than unreadable routes",
       { snappedCount: snapped.length, requiredVisualFeatures },
     );
-    eligible = snapped
-      .map((candidate, originalIndex) => ({ candidate, originalIndex }))
-      .filter(({ candidate }) => meetsAbsoluteDisplayFloor(candidate));
-    if (eligible.length === 0) {
-      console.warn(
-        "[autoFindTop5] every candidate is below the absolute display floor — showing none rather than unreadable routes",
-      );
-    }
   }
   if (eligible.length === 0) return { picks: [], relaxedQuality };
 
@@ -4954,6 +5058,7 @@ function makePicks(
   const out: Top5Pick[] = [];
   for (const i of indices) {
     const s = displaySnapped[i]!;
+    const verifiedRoute = isVerifiedRouteLibraryIntent(s.designIntent);
     out.push({
       placement: s.placement,
       anchorLatLngs: s.anchors,
@@ -4965,6 +5070,8 @@ function makePicks(
       qualityScore: s.qualityScore,
       shapeMatchScore: s.shapeMatchScore,
       sourceMatchScore: s.sourceMatchScore,
+      verifiedRoute,
+      verificationLabel: verifiedRoute ? "Verified route-library GPS art" : undefined,
       reason: displayReasons?.get(i),
     });
   }
@@ -5007,6 +5114,10 @@ export async function autoFindTop5(
       options.imageSourceName,
     );
     visionDesignDrafts = injectSwooshRepresentativeDrafts(
+      visionDesignDrafts,
+      options.imageSourceName,
+    );
+    visionDesignDrafts = injectVerifiedRouteRepresentativeDrafts(
       visionDesignDrafts,
       options.imageSourceName,
     );
@@ -5520,19 +5631,12 @@ export async function autoFindTop5(
     { tileSize: 224, cols: 5 },
   );
   if (!grid) {
-    const made = makePicks(
-      rankableSnapped,
-      null,
-      null,
-      topK,
-      hint,
-      true,
-      structuralRequirement,
-      requiredVisualFeatures,
+    console.warn(
+      "[autoFindTop5] no vision-rank grid for uploaded image - showing no automatic picks",
     );
     return {
-      picks: pinLockupFirst(made.picks, rankableSnapped, topK),
-      relaxedQuality: made.relaxedQuality,
+      picks: [],
+      relaxedQuality: false,
       visionUsed: false,
       snapFailures,
       hint: hint ?? undefined,
@@ -5556,19 +5660,12 @@ export async function autoFindTop5(
   );
 
   if (!ranked || ranked.length === 0) {
-    const made = makePicks(
-      rankableSnapped,
-      null,
-      null,
-      topK,
-      hint,
-      true,
-      structuralRequirement,
-      requiredVisualFeatures,
+    console.warn(
+      "[autoFindTop5] vision-rank returned no usable picks for uploaded image - showing no automatic picks",
     );
     return {
-      picks: pinLockupFirst(made.picks, rankableSnapped, topK),
-      relaxedQuality: made.relaxedQuality,
+      picks: [],
+      relaxedQuality: false,
       visionUsed: false,
       snapFailures,
       hint: hint ?? undefined,
@@ -5603,3 +5700,4 @@ export async function autoFindTop5(
     hint: hint ?? undefined,
   };
 }
+

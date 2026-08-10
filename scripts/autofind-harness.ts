@@ -358,7 +358,7 @@ async function main() {
     const p = result.picks[i];
     const coords = (p.snappedRoute?.coordinates ?? p.routeCoords ?? []) as [number, number][];
     console.log(
-      `  pick ${i + 1}: ${p.distanceKm?.toFixed(1)} km, quality=${p.qualityScore}, shape=${p.shapeMatchScore}, ${String(p.reason ?? "").slice(0, 70)}`,
+      `  pick ${i + 1}: ${p.distanceKm?.toFixed(1)} km, quality=${p.qualityScore}, shape=${p.shapeMatchScore}, ${String(p.designIntent ?? p.reason ?? "").slice(0, 110)}`,
     );
     summary.push({
       i,

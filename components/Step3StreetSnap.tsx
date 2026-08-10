@@ -110,12 +110,18 @@ export default function Step3StreetSnap({
         if (
           retryToken === 0 &&
           preferredSnappedRoute &&
+          (routeSource === "freehand" ||
+            preferredSnappedRoute.preserveBlockWaypoints === true) &&
           preferredSnappedRouteFitsAnchor(
             anchorLocation.anchorLatLngs,
             preferredSnappedRoute,
           )
         ) {
-          setRoute(cleanupRouteSpurs(preferredSnappedRoute).route);
+          setRoute(
+            preferredSnappedRoute.preserveBlockWaypoints
+              ? preferredSnappedRoute
+              : cleanupRouteSpurs(preferredSnappedRoute).route,
+          );
           return;
         }
         setRoute(null);
@@ -178,9 +184,17 @@ export default function Step3StreetSnap({
         cleanLineScore,
         interpretationScore: interpretationPct,
         routeSource,
+        verifiedRoute: route?.preserveBlockWaypoints === true,
       }),
     [cleanLineScore, interpretationPct, route, routeSource, streetForMatch.length],
   );
+
+  const canTuneRoute =
+    !!route &&
+    !snapping &&
+    (routeSource === "image"
+      ? snapVerdict.tone === "ready" || route.preserveBlockWaypoints === true
+      : snapVerdict.tone !== "blocked");
 
   const matchMeterLabel =
     routeSource === "freehand"
@@ -333,9 +347,9 @@ export default function Step3StreetSnap({
           </button>
           <button
             type="button"
-            disabled={!route || snapping}
+            disabled={!canTuneRoute}
             onClick={() => {
-              if (!route) return;
+              if (!canTuneRoute) return;
               onComplete(route);
             }}
             className="pace-toolbar-btn-primary font-bebas tracking-[0.08em] sm:shrink-0"

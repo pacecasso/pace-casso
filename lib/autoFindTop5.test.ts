@@ -14,7 +14,9 @@ import {
   inferGasLogoFromSourceName,
   injectGasRepresentativeDrafts,
   injectSwooshRepresentativeDrafts,
+  injectVerifiedRouteRepresentativeDrafts,
   inferSwooshFromSourceName,
+  inferVerifiedRouteSubjectFromSourceName,
   isDisplayWorthyAutoFindCandidate,
   meetsAbsoluteDisplayFloor,
   visionDescribesLettering,
@@ -31,15 +33,21 @@ import {
   visualStructureMatchPercent,
   type AutoFindPickSelectionCandidate,
 } from "./autoFindTop5";
-import { CHICAGO_PRESET, MANHATTAN_PRESET } from "./cityPresets";
+import { CHICAGO_PRESET, DC_PRESET, MANHATTAN_PRESET } from "./cityPresets";
 import {
   cityGridSketchCandidates,
   generateMapNativeCandidates,
   isGasLogoDraftSet,
+  learnedGpsArtGrammarCandidates,
   manhattanRouteLibraryCandidates,
+  verifiedRouteBankCandidates,
   streetMonogramCandidates,
   streetWordmarkCandidates,
 } from "./mapNativeDesigner";
+import {
+  REJECTED_ROUTE_BANK_SUBJECTS,
+  VERIFIED_ROUTE_BANK_SUBJECTS,
+} from "./verifiedRouteBankManifest";
 
 assert.equal(
   anchorSourceForAutoFindCandidate("direct-grid", "image"),
@@ -378,6 +386,28 @@ assert.equal(
   "the floor stays well below the normal bar — imperfect but readable routes still show",
 );
 
+assert.equal(
+  meetsAbsoluteDisplayFloor({
+    placement: { center: [40.75, -73.98], scale: 1, rotationDeg: 0 },
+    qualityScore: 8,
+    shapeMatchScore: 12,
+    distanceKm: 9,
+    designIntent: "Verified route-library Manhattan LES Duckling",
+  }),
+  false,
+  "a rejected duck intent string must not inherit the verified-route display exemption",
+);
+assert.equal(
+  isDisplayWorthyAutoFindCandidate({
+    placement: { center: [40.75, -73.98], scale: 1, rotationDeg: 0 },
+    qualityScore: 8,
+    shapeMatchScore: 12,
+    distanceKm: 9,
+    designIntent: "Verified route-library Manhattan East Village Tulip",
+  }),
+  false,
+  "a rejected tulip intent string must not inherit the verified-route top-pick exemption",
+);
 assert.equal(
   finalRouteTruthVerdict({
     placement: { center: [40.73, -74], scale: 1, rotationDeg: 0 },
@@ -1121,6 +1151,395 @@ assert(
   "generic street-sweep candidates should land in a runnable distance band",
 );
 
+const learnedChicagoSwoosh = learnedGpsArtGrammarCandidates(
+  swooshRepresentative,
+  CHICAGO_PRESET,
+  10,
+);
+assert(
+  learnedChicagoSwoosh.length > 0,
+  "swoosh uploads should produce learned GPS-art grammar candidates on non-Manhattan grids",
+);
+assert(
+  learnedChicagoSwoosh.some((candidate) =>
+    candidate.designIntent.includes("Learned GPS-art swoosh grammar"),
+  ),
+  "learned grammar candidates should make the route-art strategy explicit",
+);
+assert(
+  learnedChicagoSwoosh.every((candidate) => candidate.routeMode !== "direct-grid"),
+  "learned grammar candidates must be Mapbox-snapped instead of bypassing routing",
+);
+assert(
+  learnedChicagoSwoosh.some((candidate) => candidate.anchors.length >= 11),
+  "learned grammar candidates should include enough anchors for a broad heel, belly, and tip",
+);
+assert(
+  learnedChicagoSwoosh.some((candidate) => candidate.km >= 6 && candidate.km <= 16),
+  "learned grammar candidates should stay in a practical GPS-art running distance band",
+);
+const sneakerRouteLibrary = manhattanRouteLibraryCandidates(
+  [
+    {
+      label: "Uploaded sneaker mark",
+      description: "running shoe sneaker with laces, sole, toe, and heel",
+      visualFeatures: ["sneaker", "shoe", "laces", "sole", "toe", "heel"],
+      points: [],
+      designScore: 96,
+    },
+  ],
+  MANHATTAN_PRESET,
+  8,
+);
+assert(
+  sneakerRouteLibrary.some((candidate) =>
+    candidate.designIntent.includes("Verified sneaker Manhattan v1"),
+  ),
+  "sneaker/shoe uploads should receive the verified tuned sneaker route",
+);
+assert(
+  sneakerRouteLibrary.some((candidate) =>
+    candidate.designIntent.includes("Verified sneaker Manhattan v1") &&
+    candidate.routeMode === "direct-grid" &&
+    candidate.anchors.length >= 1000,
+  ),
+  "verified sneaker route should preserve the detailed runnable GPX polyline",
+);
+
+const sailboatRouteLibrary = manhattanRouteLibraryCandidates(
+  [
+    {
+      label: "Uploaded sailboat",
+      description: "sailboat with hull, mast, mainsail, and jib",
+      visualFeatures: ["sailboat", "boat", "hull", "mast", "jib"],
+      points: [],
+      designScore: 95,
+    },
+  ],
+  MANHATTAN_PRESET,
+  8,
+);
+assert(
+  sailboatRouteLibrary.some((candidate) =>
+    candidate.designIntent.includes("Verified route-library Manhattan Midtown Sailboat"),
+  ),
+  "sailboat uploads should receive the verified curated sailboat route",
+);
+
+
+
+const appleRouteLibrary = manhattanRouteLibraryCandidates(
+  [
+    {
+      label: "Uploaded apple mark",
+      description: "apple outline with bite notch, stem, and leaf",
+      visualFeatures: ["apple", "bite", "stem", "leaf"],
+      points: [],
+      designScore: 95,
+    },
+  ],
+  MANHATTAN_PRESET,
+  8,
+);
+assert(
+  appleRouteLibrary.some((candidate) =>
+    candidate.designIntent.includes("Verified apple Manhattan v1") &&
+    candidate.routeMode === "direct-grid" &&
+    candidate.anchors.length >= 120,
+  ),
+  "apple uploads should receive the verified leg-checked apple route",
+);
+
+
+const keyRouteLibrary = manhattanRouteLibraryCandidates(
+  [
+    {
+      label: "Uploaded key icon",
+      description: "key with square bow, inner hole, long shaft, and two stepped teeth",
+      visualFeatures: ["key", "bow", "hole", "shaft", "teeth"],
+      points: [],
+      designScore: 95,
+    },
+  ],
+  MANHATTAN_PRESET,
+  8,
+);
+assert(
+  keyRouteLibrary.some((candidate) =>
+    candidate.designIntent.includes("Verified key Manhattan v1") &&
+    candidate.routeMode === "direct-grid" &&
+    candidate.anchors.length >= 90,
+  ),
+  "key uploads should receive the verified lattice-compiled key route",
+);
+
+const martiniDraft = {
+  label: "Uploaded martini glass",
+  description: "cocktail glass with wide rim, stepped bowl, stem, base, and olive pick",
+  visualFeatures: ["martini", "cocktail", "glass", "rim", "stem", "base"],
+  points: [],
+  designScore: 95,
+};
+const manhattanMartiniRouteLibrary = manhattanRouteLibraryCandidates(
+  [martiniDraft],
+  MANHATTAN_PRESET,
+  8,
+);
+assert(
+  manhattanMartiniRouteLibrary.every((candidate) =>
+    !candidate.designIntent.includes("Verified martini Manhattan v1"),
+  ),
+  "weak Manhattan martini should not be promoted as a verified fallback",
+);
+
+const dcMartiniRouteLibrary = verifiedRouteBankCandidates(
+  [martiniDraft],
+  DC_PRESET,
+  8,
+);
+assert(
+  dcMartiniRouteLibrary.some((candidate) =>
+    candidate.designIntent.includes("Verified martini DC v1") &&
+    candidate.routeMode === "direct-grid" &&
+    candidate.anchors.length >= 150,
+  ),
+  "martini/cocktail uploads should receive the verified DC lattice-compiled martini route only in DC",
+);
+
+const dcMartiniManhattanLibrary = manhattanRouteLibraryCandidates(
+  [martiniDraft],
+  DC_PRESET,
+  8,
+);
+assert.equal(
+  dcMartiniManhattanLibrary.length,
+  0,
+  "Manhattan route-library helper should not return DC verified routes",
+);
+
+const dcGeneratedMartiniRoutes = generateMapNativeCandidates({
+  drafts: [martiniDraft],
+  preset: DC_PRESET,
+  targetDistanceKm: 8,
+});
+assert(
+  dcGeneratedMartiniRoutes.some((candidate) =>
+    candidate.designIntent.includes("Verified martini DC v1"),
+  ),
+  "production map-native generation should still include the DC verified martini through the route bank",
+);
+
+const manhattanMartiniRouteBank = verifiedRouteBankCandidates(
+  [martiniDraft],
+  MANHATTAN_PRESET,
+  8,
+);
+assert(
+  manhattanMartiniRouteBank.every((candidate) =>
+    !candidate.designIntent.includes("Verified martini DC v1"),
+  ),
+  "DC martini route must not leak into Manhattan verified route-bank results",
+);
+
+const dcSneakerRouteBank = verifiedRouteBankCandidates(
+  [
+    {
+      label: "Uploaded sneaker mark",
+      description: "running shoe sneaker with laces and sole",
+      visualFeatures: ["sneaker", "shoe", "laces", "sole"],
+      points: [],
+      designScore: 95,
+    },
+  ],
+  DC_PRESET,
+  8,
+);
+assert(
+  dcSneakerRouteBank.every((candidate) =>
+    !candidate.designIntent.includes("Verified sneaker Manhattan v1"),
+  ),
+  "Manhattan sneaker route must not leak into DC verified route-bank results",
+);
+
+const umbrellaRouteLibrary = manhattanRouteLibraryCandidates(
+  [
+    {
+      label: "Uploaded umbrella",
+      description: "umbrella with arched canopy, scalloped lower edge, shaft, and handle",
+      visualFeatures: ["umbrella", "canopy", "scalloped edge", "shaft", "handle"],
+      points: [],
+      designScore: 95,
+    },
+  ],
+  MANHATTAN_PRESET,
+  8,
+);
+assert(
+  umbrellaRouteLibrary.some((candidate) =>
+    candidate.designIntent.includes("Verified umbrella Manhattan v1") &&
+    candidate.routeMode === "direct-grid" &&
+    candidate.anchors.length >= 90,
+  ),
+  "umbrella uploads should receive the verified lattice-compiled umbrella route",
+);
+
+const trophyRouteLibrary = manhattanRouteLibraryCandidates(
+  [
+    {
+      label: "Uploaded trophy",
+      description: "trophy cup with broad bowl, side handles, central stem, and stepped base",
+      visualFeatures: ["trophy", "award", "handles", "stem", "base"],
+      points: [],
+      designScore: 95,
+    },
+  ],
+  MANHATTAN_PRESET,
+  8,
+);
+assert(
+  trophyRouteLibrary.some((candidate) =>
+    candidate.designIntent.includes("Verified trophy Manhattan v1") &&
+    candidate.routeMode === "direct-grid" &&
+    candidate.anchors.length >= 70,
+  ),
+  "trophy uploads should receive the verified lattice-compiled trophy route",
+);
+
+const glassesRouteLibrary = manhattanRouteLibraryCandidates(
+  [
+    {
+      label: "Uploaded eyeglasses",
+      description: "eyeglasses with two lenses, bridge, and side temple arms",
+      visualFeatures: ["eyeglasses", "glasses", "lenses", "bridge", "temple arms"],
+      points: [],
+      designScore: 95,
+    },
+  ],
+  MANHATTAN_PRESET,
+  8,
+);
+assert(
+  glassesRouteLibrary.every((candidate) =>
+    !candidate.designIntent.includes("Verified glasses Manhattan v1"),
+  ),
+  "weak glasses route should not be promoted as a verified fallback",
+);
+
+const heartRouteLibrary = manhattanRouteLibraryCandidates(
+  [
+    {
+      label: "Uploaded heart",
+      description: "heart with two lobes, center dip, and bottom point",
+      visualFeatures: ["heart", "lobes", "center dip", "bottom point"],
+      points: [],
+      designScore: 95,
+    },
+  ],
+  MANHATTAN_PRESET,
+  8,
+);
+assert(
+  heartRouteLibrary.some((candidate) =>
+    candidate.designIntent.includes("Verified route-library Manhattan Lower East Side Heart") &&
+    candidate.routeMode === "direct-grid" &&
+    candidate.anchors.length >= 200,
+  ),
+  "heart uploads should receive the verified Lower East Side heart route",
+);
+
+for (const auditCase of VERIFIED_ROUTE_BANK_SUBJECTS) {
+  const candidates = verifiedRouteBankCandidates(
+    [
+      {
+        label: "Uploaded " + auditCase.id + " icon",
+        description: "verified route bank audit for " + auditCase.id,
+        visualFeatures: auditCase.features,
+        points: [],
+        designScore: 95,
+      },
+    ],
+    auditCase.cityId === "dc" ? DC_PRESET : MANHATTAN_PRESET,
+    8,
+  );
+  assert(
+    candidates.some((candidate) =>
+      candidate.designIntent.includes(auditCase.expectedIntent) &&
+      candidate.routeMode === "direct-grid" &&
+      candidate.anchors.length >= auditCase.minAnchors,
+    ),
+    "verified route bank subject " + auditCase.id + " must remain explicitly promoted",
+  );
+}
+
+for (const auditCase of REJECTED_ROUTE_BANK_SUBJECTS) {
+  const candidates = manhattanRouteLibraryCandidates(
+    [
+      {
+        label: "Uploaded " + auditCase.id + " icon",
+        description: "rejected route bank audit for " + auditCase.id,
+        visualFeatures: auditCase.features,
+        points: [],
+        designScore: 95,
+      },
+    ],
+    MANHATTAN_PRESET,
+    18,
+  );
+  assert(
+    candidates.every((candidate) => !candidate.designIntent.includes(auditCase.rejectedIntent)),
+    "rejected route bank subject " + auditCase.id + " must not be promoted as verified",
+  );
+}
+const duckRouteLibrary = manhattanRouteLibraryCandidates(
+  [
+    {
+      label: "Uploaded duck icon",
+      description: "duckling bird with beak, head, body, and tail",
+      visualFeatures: ["duck", "bird", "beak", "body"],
+      points: [],
+      designScore: 95,
+    },
+  ],
+  MANHATTAN_PRESET,
+  8,
+);
+assert(
+  duckRouteLibrary.every((candidate) =>
+    !candidate.designIntent.includes("Verified route-library Manhattan LES Duckling"),
+  ),
+  "weak duck route should not be promoted as a verified fallback",
+);
+
+for (const weakSubject of [
+  {
+    label: "Uploaded robot face",
+    description: "robot android head with antenna, visor, eyes, and mouth",
+    visualFeatures: ["robot", "head", "antenna", "eyes", "mouth"],
+    rejectedIntent: "Verified robot Manhattan v2",
+  },
+  {
+    label: "Uploaded crown mark",
+    description: "royal crown with base band, three points, and jewel band",
+    visualFeatures: ["crown", "points", "base", "band", "jewel"],
+    rejectedIntent: "Verified crown Manhattan v1",
+  },
+  {
+    label: "Uploaded tiger mascot",
+    description: "tiger face with ears, eyes, nose, mouth, and stripes",
+    visualFeatures: ["tiger", "face", "ears", "eyes", "stripes"],
+    rejectedIntent: "Verified tiger Manhattan v1",
+  },
+]) {
+  const candidates = manhattanRouteLibraryCandidates(
+    [{ ...weakSubject, points: [], designScore: 95 }],
+    MANHATTAN_PRESET,
+    18,
+  );
+  assert(
+    candidates.every((candidate) => !candidate.designIntent.includes(weakSubject.rejectedIntent)),
+    `${weakSubject.label} should not get a weak verified-route fallback until it passes blind review`,
+  );
+}
 const starRouteLibrary = manhattanRouteLibraryCandidates(
   [
     {
@@ -1530,6 +1949,55 @@ assert(
 
 assert.equal(inferSwooshFromSourceName("nike.png"), true);
 assert.equal(inferSwooshFromSourceName("pace-logo.png"), false);
+assert.equal(
+  inferVerifiedRouteSubjectFromSourceName("puma-sneaker.png")?.label,
+  "Uploaded sneaker mark",
+);
+assert.equal(
+  inferVerifiedRouteSubjectFromSourceName("company-sailboat.svg")?.label,
+  "Uploaded sailboat",
+);
+
+assert.equal(
+  inferVerifiedRouteSubjectFromSourceName("apple-logo.png")?.label,
+  "Uploaded apple mark",
+);
+
+assert.equal(
+  inferVerifiedRouteSubjectFromSourceName("security-key.svg")?.label,
+  "Uploaded key icon",
+);
+assert.equal(
+  inferVerifiedRouteSubjectFromSourceName("cocktail-martini.png")?.label,
+  "Uploaded martini glass",
+);
+assert.equal(
+  inferVerifiedRouteSubjectFromSourceName("rain-umbrella.png")?.label,
+  "Uploaded umbrella",
+);
+assert.equal(
+  inferVerifiedRouteSubjectFromSourceName("award-trophy.png")?.label,
+  "Uploaded trophy",
+);
+assert.equal(inferVerifiedRouteSubjectFromSourceName("reading-glasses.svg"), null);
+assert.equal(inferVerifiedRouteSubjectFromSourceName("robot-head.svg"), null);
+assert.equal(inferVerifiedRouteSubjectFromSourceName("royal-crown.png"), null);
+assert.equal(inferVerifiedRouteSubjectFromSourceName("tiger-mascot.webp"), null);
+assert.equal(inferVerifiedRouteSubjectFromSourceName("duckling.webp"), null);
+assert.equal(inferVerifiedRouteSubjectFromSourceName("coffee-mug.png"), null);
+assert.equal(inferVerifiedRouteSubjectFromSourceName("music-note.svg"), null);
+assert.equal(inferVerifiedRouteSubjectFromSourceName("map-pin.svg"), null);
+assert.equal(inferVerifiedRouteSubjectFromSourceName("fish-logo.png"), null);
+assert.equal(inferVerifiedRouteSubjectFromSourceName("abstract-logo.png"), null);
+const filenameWinBankDrafts = injectVerifiedRouteRepresentativeDrafts(
+  [],
+  "puma-sneaker.png",
+);
+assert.equal(
+  filenameWinBankDrafts[0]?.label,
+  "Uploaded sneaker mark",
+  "clear filename subjects should seed the verified route library when vision is unavailable",
+);
 const swooshDrafts = injectSwooshRepresentativeDrafts([], "nike.png");
 assert(
   swooshDrafts.some((d) => d.label === "Representative swoosh mark"),
@@ -1556,5 +2024,18 @@ const swooshNative = generateMapNativeCandidates({
 assert(
   swooshNative.some((c) => /swoosh|checkmark|rising tail/i.test(c.designIntent)),
   "swoosh drafts should produce Manhattan sweep/check candidates",
+);
+assert(
+  swooshNative.some((c) =>
+    c.designIntent.includes("Learned GPS-art swoosh grammar"),
+  ),
+  "swoosh drafts should include learned GPS-art grammar candidates in auto-find",
+);
+assert(
+  swooshNative.some((c) =>
+    c.designIntent.includes("Learned GPS-art swoosh grammar") &&
+    c.routeMode !== "direct-grid",
+  ),
+  "learned GPS-art grammar candidates in auto-find must be routed candidates",
 );
 console.log("autoFindTop5 tests ok");
