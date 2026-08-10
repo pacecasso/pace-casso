@@ -388,18 +388,25 @@ async function renderJoinedRouteMapPng(joined: LatLng[]): Promise<Buffer | null>
   const token = getServerMapboxToken();
   if (!token || joined.length < 2) return null;
   // Static API URLs cap around 8 KB — simplify until the encoding fits.
+  // The encoding appears TWICE (casing + line), so each must stay small.
   let encoded: string | null = null;
-  for (const tolM of [4, 8, 14, 22, 35, 60]) {
+  for (const tolM of [4, 8, 14, 22, 35, 60, 90]) {
     const simplified = simplifyLatLng(joined as [number, number][], tolM);
     const enc = encodePolyline(simplified as [number, number][]);
-    if (enc.length <= 5800) {
+    if (enc.length <= 2700) {
       encoded = enc;
       break;
     }
   }
   if (!encoded) return null;
-  const path = `path-4+e60000(${encodeURIComponent(encoded)})`;
-  const url = `https://api.mapbox.com/styles/v1/mapbox/light-v11/static/${path}/auto/620x620?padding=40&access_token=${token}`;
+  // Instrument parity (Aug 10): judge the picture the calibrated external
+  // instrument judges — a BUSY street map (streets-v12, not the pale
+  // light-v11) with the blind-squint rig's thick dark-casing + red line.
+  // The pale/thin render measurably over-read: a bolt passed internally
+  // 3/3 as "lightning bolt" and externally blind-read "handgun" 3/3.
+  const enc = encodeURIComponent(encoded);
+  const path = `path-8+7f1024-0.95(${enc}),path-4+e8253f(${enc})`;
+  const url = `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/${path}/auto/620x620?padding=30&access_token=${token}`;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await fetch(url);

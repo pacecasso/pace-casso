@@ -457,14 +457,24 @@ export default function Step2MapAnchor({
        * outcome. Standards never drop: every round faces the same blind
        * acceptance gate.
        */
-      const MAX_REDRAW_ROUNDS = 3;
+      // 8 rounds with a wall-clock budget: the offline recipe's wins took
+      // up to ~12 rounds; each round is a fresh draw of the dice (tonight's
+      // runs verified DIFFERENT subjects per run). The time budget keeps
+      // the worst case bounded for the user — more rounds only while
+      // they're fast.
+      const MAX_REDRAW_ROUNDS = 8;
+      const REDRAW_BUDGET_MS = 7 * 60_000;
+      const cascadeStart = Date.now();
       let lastInterp: Awaited<ReturnType<typeof fetchInterpret>> | null = null;
       let lastPlaced: WowPlaceResultPayload | null = null;
+      let roundsTried = 0;
       for (let round = 1; round <= MAX_REDRAW_ROUNDS; round++) {
+        if (round > 1 && Date.now() - cascadeStart > REDRAW_BUDGET_MS) break;
+        roundsTried = round;
         setAutoHint(
           round === 1
             ? "Your art as-drawn didn't pass the street judges — redrawing it street-ready…"
-            : `Round ${round} of ${MAX_REDRAW_ROUNDS}: drawing a fresh street-ready version…`,
+            : `Attempt ${round}: drawing a fresh street-ready version…`,
         );
         const interp = await fetchInterpret(imageBase64, setAutoHint);
         if (!interp.contour) {
@@ -493,7 +503,7 @@ export default function Step2MapAnchor({
         }
       }
       setAutoHint(
-        `We tried your art as-drawn plus ${MAX_REDRAW_ROUNDS} fresh street-ready redraws${lastInterp?.subject ? ` (as ${lastInterp.subject})` : ""} — nothing cleared the blind judge's bar. ${lastPlaced?.message ?? lastInterp?.message ?? ""} You can place it yourself: drag the art where you want it and continue, and we'll fit it to the streets faithfully.`,
+        `We tried your art as-drawn plus ${roundsTried} fresh street-ready redraws${lastInterp?.subject ? ` (as ${lastInterp.subject})` : ""} — nothing cleared the blind judge's bar. ${lastPlaced?.message ?? lastInterp?.message ?? ""} You can place it yourself: drag the art where you want it and continue, and we'll fit it to the streets faithfully.`,
       );
       setShowOfframp(true);
       setOfframpRun(
