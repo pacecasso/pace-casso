@@ -14,10 +14,18 @@
  *     with blind recognition vs 0.142 for the numeric scorer (FINAL-TWO.md).
  *     Nothing that scored primed < 6 has ever gone blind 3/3, so picks
  *     below 6 are not shown — an honest "no strong route" beats a tangle.
+ *  4. BLIND-VERIFY the screened favorites (Aug 10, Ralph-approved): a
+ *     judge shown the route with ZERO context must name the subject, three
+ *     times out of three, before a pick is shown. The primed screen is only
+ *     the orderer — the Aug 10 audit measured it over-accepting (primed 9
+ *     routes blind-read as "dog"/"airplane"), while the July offline recipe
+ *     that hit 77.8% required exactly this blind name-match. Composite
+ *     (likeness-judged) runs keep the Ralph-calibrated comparative gate.
  *
  * Server-only: imports sharp (native) — never import from client components.
  */
 import sharp from "sharp";
+import { subjectLabelsMatchLoose } from "./subjectMatch";
 import { getStreetGraph, type LatLng, type NormalizedPoint } from "./streetGraphTrace";
 import {
   type Pt,
@@ -41,6 +49,14 @@ const JUDGE_MODEL = "claude-opus-4-8"; // measurement parity with the July serie
 const PRIMED_KEEP_THRESHOLD = 6;
 const SCREEN_COUNT = 16;
 const MAX_PICKS = 5;
+/** Blind gate: every shown pick needs this many zero-context name-matches. */
+const BLIND_RUNS = 3;
+/** Blind gate: stop after this many verified picks... */
+const BLIND_PICKS_TARGET = 3;
+/** ...or after burning this many candidates without enough passes. */
+const BLIND_VERIFY_MAX_CANDIDATES = 5;
+/** Stage-1 naming samples — majority wins; total disagreement refuses. */
+const NAMING_SAMPLES = 3;
 
 // Rectilinear art placed on organic streets staircases into mush — Ralph's
 // July 29 verdict on a SoHo-placed logo: "just messy and less obvious...
@@ -82,6 +98,12 @@ export type WowPlacePick = {
   km: number;
   dev: number;
   primed: number;
+  /**
+   * What a zero-context judge called this route, 3 runs out of 3, before it
+   * was shown. Absent on composite (likeness-judged) picks, which keep the
+   * Ralph-calibrated comparative gate instead.
+   */
+  blindGuess?: string;
   /** full route, strokes joined by real street connectors */
   coordinates: [number, number][];
   /** placed (pre-trace) contour, original point order — Step 2's anchor line */
@@ -244,6 +266,132 @@ export async function nameSubject(
   return { guess: m[1]!.trim().replace(/\s+/g, " "), confidence: Number(m[2]) };
 }
 
+/** Text-only call (no image) — used for label-equivalence checks. */
+async function textCall(apiKey: string, prompt: string): Promise<string | null> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1000 * attempt));
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: JUDGE_MODEL,
+          max_tokens: 64,
+          messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+        }),
+      });
+      if (!res.ok) {
+        if (res.status !== 429 && res.status < 500) return null;
+        continue;
+      }
+      const json = (await res.json()) as { content?: { type: string; text?: string }[] };
+      const text = (json.content ?? [])
+        .filter((b) => b.type === "text")
+        .map((b) => b.text ?? "")
+        .join(" ")
+        .trim();
+      return text || null;
+    } catch {
+      /* network failure — retry */
+    }
+  }
+  return null;
+}
+
+/**
+ * Do two free-text labels name the same visual subject? Deterministic word
+ * match first (free); a text-model yes/no only for the synonym gap ("cross"
+ * vs "plus sign"). This never shows the judge an image, so it cannot prime
+ * the blind naming calls — it only reconciles their vocabulary. Memoized:
+ * the same pair recurs across candidates within one placement run.
+ */
+const sameSubjectMemo = new Map<string, boolean>();
+async function sameSubject(apiKey: string, a: string, b: string): Promise<boolean> {
+  if (subjectLabelsMatchLoose(a, b)) return true;
+  const key = [a.toLowerCase().trim(), b.toLowerCase().trim()].sort().join("|");
+  const cached = sameSubjectMemo.get(key);
+  if (cached !== undefined) return cached;
+  const text = await textCall(
+    apiKey,
+    `Do "${a}" and "${b}" name the same visual subject (the same thing a person would say a simple line drawing depicts)? Reply with exactly YES or NO.`,
+  );
+  const verdict = /^\s*yes\b/i.test(text ?? "");
+  sameSubjectMemo.set(key, verdict);
+  return verdict;
+}
+
+/**
+ * Stage-1 naming, majority-of-N: single-sample naming measurably misreads
+ * multi-stroke marks (Aug 10 audit: a peace sign named "circle" was then
+ * VERIFIED as a circle and shipped wrong). Three samples; a guess must
+ * agree with at least one other to win. Total disagreement is an honest
+ * refusal — art that reads three different ways will not survive streets.
+ */
+async function nameSubjectMajority(
+  apiKey: string,
+  contourPng: Buffer,
+): Promise<
+  | { ok: true; guess: string; confidence: number }
+  | { ok: false; guesses: string[] }
+> {
+  const named = (
+    await Promise.all(
+      Array.from({ length: NAMING_SAMPLES }, () => nameSubject(apiKey, contourPng)),
+    )
+  ).filter((n): n is { guess: string; confidence: number } => n !== null);
+  const usable = named.filter(
+    (n) => !/nothing recognizable/i.test(n.guess) && n.confidence >= 3,
+  );
+  if (!usable.length) return { ok: false, guesses: named.map((n) => n.guess) };
+  for (let i = 0; i < usable.length; i++) {
+    let agree = 0;
+    let confidence = usable[i]!.confidence;
+    for (let j = 0; j < usable.length; j++) {
+      if (i === j) continue;
+      if (await sameSubject(apiKey, usable[i]!.guess, usable[j]!.guess)) {
+        agree++;
+        confidence = Math.max(confidence, usable[j]!.confidence);
+      }
+    }
+    if (agree >= 1) return { ok: true, guess: usable[i]!.guess, confidence };
+  }
+  // One usable sample and nothing to agree with: trust it only when the
+  // other samples failed outright (API), not when they disagreed.
+  if (usable.length === 1 && named.length === 1) {
+    return { ok: true, guess: usable[0]!.guess, confidence: usable[0]!.confidence };
+  }
+  return { ok: false, guesses: named.map((n) => n.guess) };
+}
+
+/**
+ * The acceptance gate (Aug 10): a judge shown ONLY the route render — no
+ * subject, no context — must name the subject on every one of BLIND_RUNS
+ * tries. This is the same instrument as scripts/blind-squint-test.mjs, the
+ * only judge that has ever predicted human recognition.
+ */
+async function blindVerify(
+  apiKey: string,
+  png: Buffer,
+  subject: string,
+): Promise<{ passed: boolean; guess: string | null }> {
+  const runs = await Promise.all(
+    Array.from({ length: BLIND_RUNS }, () => nameSubject(apiKey, png)),
+  );
+  let guess: string | null = null;
+  for (const run of runs) {
+    if (!run || /nothing recognizable/i.test(run.guess)) return { passed: false, guess: run?.guess ?? null };
+    if (!(await sameSubject(apiKey, run.guess, subject))) {
+      return { passed: false, guess: run.guess };
+    }
+    guess = run.guess;
+  }
+  return { passed: guess !== null, guess };
+}
+
 /** Primed judge: told the subject, scores how well a candidate reads (1-10). */
 async function primedScore(apiKey: string, png: Buffer, subject: string): Promise<number | null> {
   const text = await visionCall(
@@ -337,14 +485,16 @@ export async function runWowPlacement(args: {
   } else {
     progress("Reading your art…");
     const contourPng = await renderStrokesPng(strokes);
-    const named = await nameSubject(args.apiKey, contourPng);
-    if (!named || /nothing recognizable/i.test(named.guess) || named.confidence < 3) {
+    const named = await nameSubjectMajority(args.apiKey, contourPng);
+    if (!named.ok) {
+      const disagreement = named.guesses.filter(Boolean).join('", "');
       return {
         picks: [],
-        subject: named?.guess ?? null,
-        subjectConfidence: named?.confidence ?? null,
-        message:
-          "Honest check: your line art doesn't yet read as a clear subject on its own, so streets will only blur it further. Bold, simple, closed shapes work best — try the touch-up step.",
+        subject: named.guesses[0] ?? null,
+        subjectConfidence: null,
+        message: disagreement
+          ? `Honest check: independent judges read your line art as "${disagreement}" — it doesn't read as ONE clear subject yet, so streets will only blur it further. Bold, simple, closed shapes work best — try the touch-up step.`
+          : "Honest check: your line art doesn't yet read as a clear subject on its own, so streets will only blur it further. Bold, simple, closed shapes work best — try the touch-up step.",
       };
     }
     subject = named.guess;
@@ -531,9 +681,49 @@ export async function runWowPlacement(args: {
     };
   }
 
+  // THE ACCEPTANCE GATE (Aug 10, Ralph: "that's how it should be"): the
+  // primed screen above only ORDERS candidates — it measurably over-accepts
+  // (primed-9 routes blind-read as "dog"). Nothing ships unless a judge
+  // with zero context names the subject BLIND_RUNS times out of BLIND_RUNS.
+  // Composite runs keep the comparative-likeness gate: no short subject
+  // phrase describes a multi-element logo, so blind naming can't apply.
+  type Keeper = (typeof keepers)[number] & { blindGuess?: string };
+  let verified: Keeper[] = keepers;
+  if (!args.originalImage) {
+    progress("Final check: judges see your top routes with NO hints…");
+    verified = [];
+    const tried: { guess: string | null }[] = [];
+    for (const k of keepers.slice(0, BLIND_VERIFY_MAX_CANDIDATES)) {
+      const res = await blindVerify(args.apiKey, k.png, subject);
+      if (res.passed) {
+        verified.push({ ...k, blindGuess: res.guess ?? subject });
+        if (verified.length >= BLIND_PICKS_TARGET) break;
+      } else {
+        tried.push({ guess: res.guess });
+      }
+    }
+    if (!verified.length) {
+      const misreads = [...new Set(tried.map((t) => t.guess).filter(Boolean))].join('", "');
+      const bestScored = scored.slice().sort((a, b) => b.score - a.score)[0];
+      return {
+        picks: [],
+        subject,
+        subjectConfidence: namedConfidence,
+        message:
+          `We read your art as ${subject} and found ${keepers.length} promising street placements — but when judges saw them with no hints, ` +
+          (misreads
+            ? `they called the best ones "${misreads}" instead. `
+            : `none could name the subject. `) +
+          `Nothing ships unless a stranger can name it. Simpler/bolder shapes pass more often — or try the verified gallery.`,
+        refusedPreviewPngBase64: bestScored?.png.toString("base64"),
+        refusedPreviewScore: bestScored?.score,
+      };
+    }
+  }
+
   progress("Building your verified picks…");
   const picks: WowPlacePick[] = [];
-  for (const k of keepers) {
+  for (const k of verified) {
     const placedStrokes = placeSegments(strokes, k.c.center, k.c.extentM, k.c.rotDeg, false);
     const joined = joinChains(g, k.c.segments);
     picks.push({
@@ -543,6 +733,7 @@ export async function runWowPlacement(args: {
       km: Number(chainsKm([joined]).toFixed(2)),
       dev: k.c.dev,
       primed: k.score,
+      blindGuess: k.blindGuess,
       coordinates: joined.map(([lat, lng]) => [lat, lng]),
       anchorLatLngs: placedStrokes.flat().map(([lat, lng]) => [lat, lng]),
       previewPngBase64: k.png.toString("base64"),

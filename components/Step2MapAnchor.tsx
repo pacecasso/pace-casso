@@ -127,6 +127,8 @@ type WowPlacePickPayload = {
   km: number;
   dev: number;
   primed: number;
+  /** Present when a zero-context judge named this route 3/3 before display. */
+  blindGuess?: string;
   coordinates: [number, number][];
   anchorLatLngs: [number, number][];
   previewPngBase64: string;
@@ -148,7 +150,19 @@ function cleanWowPick(value: unknown): WowPlacePickPayload | null {
   const primed = num(rec.primed);
   if (rotDeg == null || extentM == null || km == null || dev == null || primed == null) return null;
   if (typeof rec.previewPngBase64 !== "string" || !rec.previewPngBase64) return null;
-  return { center, rotDeg, extentM, km, dev, primed, coordinates, anchorLatLngs, previewPngBase64: rec.previewPngBase64 };
+  return {
+    center,
+    rotDeg,
+    extentM,
+    km,
+    dev,
+    primed,
+    blindGuess:
+      typeof rec.blindGuess === "string" && rec.blindGuess ? rec.blindGuess : undefined,
+    coordinates,
+    anchorLatLngs,
+    previewPngBase64: rec.previewPngBase64,
+  };
 }
 
 type WowPlaceResultPayload = {
@@ -375,10 +389,14 @@ export default function Step2MapAnchor({
         shapeMatchScore: Math.max(1, Math.min(100, Math.round(100 - p.dev))),
         sourceMatchScore: Math.min(100, p.primed * 10),
         verifiedRoute: true,
-        verificationLabel: `AI JUDGE ${p.primed}/10`,
-        reason: likenessJudged
-          ? `A vision judge compared this street route against your original image and scored the likeness ${p.primed}/10 before we showed it to you.`
-          : `A vision judge, told only "${subjectLabel}", scored this street route ${p.primed}/10 before we showed it to you.`,
+        verificationLabel: p.blindGuess
+          ? "BLIND-VERIFIED 3/3"
+          : `AI JUDGE ${p.primed}/10`,
+        reason: p.blindGuess
+          ? `A judge shown this route with zero context named it "${p.blindGuess}" three times out of three — nothing ships unless a stranger can name it.`
+          : likenessJudged
+            ? `A vision judge compared this street route against your original image and scored the likeness ${p.primed}/10 before we showed it to you.`
+            : `A vision judge, told only "${subjectLabel}", scored this street route ${p.primed}/10 before we showed it to you.`,
       }));
       setPicks(mapped);
       setPicksVisionUsed(true);
