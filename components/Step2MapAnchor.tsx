@@ -448,49 +448,58 @@ export default function Step2MapAnchor({
         );
         return;
       }
-      setAutoHint("Your art as-drawn didn't pass the street judges — redrawing it street-ready…");
-      const interp = await fetchInterpret(imageBase64, setAutoHint);
-      if (!interp.contour) {
+      /**
+       * Stage 2+: automatic redraw-and-place ROUNDS. Each interpret draws
+       * fresh, so retrying genuinely explores new art — the old cascade ran
+       * one round and told the user to press the button again ("a system
+       * where an upload gets denied is not a system" — Ralph, Aug 10). The
+       * system is now its own retry loop; the user only ever sees the final
+       * outcome. Standards never drop: every round faces the same blind
+       * acceptance gate.
+       */
+      const MAX_REDRAW_ROUNDS = 3;
+      let lastInterp: Awaited<ReturnType<typeof fetchInterpret>> | null = null;
+      let lastPlaced: WowPlaceResultPayload | null = null;
+      for (let round = 1; round <= MAX_REDRAW_ROUNDS; round++) {
         setAutoHint(
-          `${literal.message ?? "Your art as-drawn didn't pass the street judges."} We also tried redrawing it automatically: ${interp.message ?? "no redraw was recognized by blind judges."} Each attempt draws fresh, so pressing "Find my route" again often succeeds — or drag the art where you want it and continue; we'll fit it to the streets faithfully.`,
+          round === 1
+            ? "Your art as-drawn didn't pass the street judges — redrawing it street-ready…"
+            : `Round ${round} of ${MAX_REDRAW_ROUNDS}: drawing a fresh street-ready version…`,
         );
-        setShowOfframp(true);
-        setOfframpRun(
-          matchVerifiedBankRun([
-            interp.subject,
-            literal.subject,
-            interpretedSubject,
-            imageSourceName,
-          ]),
+        const interp = await fetchInterpret(imageBase64, setAutoHint);
+        if (!interp.contour) {
+          lastInterp = lastInterp ?? interp;
+          continue;
+        }
+        lastInterp = interp;
+        const placed = await fetchWowPlace(
+          {
+            contour: interp.contour,
+            cityId: cityPreset.id,
+            targetDistanceKm: targetDistanceKm ?? undefined,
+            subject: interp.subject ?? undefined,
+            // Composite (multi-element logo) redraws: send the upload so
+            // placement judges by likeness to it — the primed single-subject
+            // question scores a full logo unfairly (measured 3/10 on a
+            // pump+figure+hose route it was asked to read as one element).
+            imageBase64: interp.composite ? imageBase64 : undefined,
+          },
+          setAutoHint,
         );
-        return;
-      }
-      const placed = await fetchWowPlace(
-        {
-          contour: interp.contour,
-          cityId: cityPreset.id,
-          targetDistanceKm: targetDistanceKm ?? undefined,
-          subject: interp.subject ?? undefined,
-          // Composite (multi-element logo) redraws: send the upload so
-          // placement judges by likeness to it — the primed single-subject
-          // question scores a full logo unfairly (measured 3/10 on a
-          // pump+figure+hose route it was asked to read as one element).
-          imageBase64: interp.composite ? imageBase64 : undefined,
-        },
-        setAutoHint,
-      );
-      if (placed.picks.length) {
-        applyResult(placed, true, interp.composite);
-        return;
+        lastPlaced = placed;
+        if (placed.picks.length) {
+          applyResult(placed, true, interp.composite);
+          return;
+        }
       }
       setAutoHint(
-        `We tried your art as-drawn and an automatic street-ready redraw (as ${interp.subject ?? "your subject"}) — neither cleared the judge's bar. ${placed.message ?? ""} Each attempt draws fresh, so pressing "Find my route" again often succeeds — or place it yourself: drag it where you want it and continue, and we'll fit it to the streets faithfully.`,
+        `We tried your art as-drawn plus ${MAX_REDRAW_ROUNDS} fresh street-ready redraws${lastInterp?.subject ? ` (as ${lastInterp.subject})` : ""} — nothing cleared the blind judge's bar. ${lastPlaced?.message ?? lastInterp?.message ?? ""} You can place it yourself: drag the art where you want it and continue, and we'll fit it to the streets faithfully.`,
       );
       setShowOfframp(true);
       setOfframpRun(
         matchVerifiedBankRun([
-          interp.subject,
-          placed.subject,
+          lastInterp?.subject,
+          lastPlaced?.subject,
           literal.subject,
           interpretedSubject,
           imageSourceName,

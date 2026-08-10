@@ -69,8 +69,10 @@ function jsonError(message: string, status: number): Response {
 export async function POST(req: Request) {
   const shield = shieldExpensiveRoute(req, "wow-place", 300);
   if (!shield.ok) return jsonError(shield.message, shield.status);
-  // ~13 Anthropic vision calls per run — keep the per-IP window tight.
-  if (!rateLimitAllow(`wow-place:${trustedClientIp(req)}`, 4)) {
+  // ~13-30 Anthropic vision calls per run — keep the per-IP window tight,
+  // but leave room for the Step-2 auto-retry cascade (literal + up to 3
+  // redraw rounds, each its own POST).
+  if (!rateLimitAllow(`wow-place:${trustedClientIp(req)}`, 6)) {
     return jsonError("Rate limit", 429);
   }
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();

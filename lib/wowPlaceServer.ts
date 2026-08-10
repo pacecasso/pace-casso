@@ -56,8 +56,14 @@ const MAX_PICKS = 5;
 const BLIND_RUNS = 3;
 /** Blind gate: stop after this many verified picks... */
 const BLIND_PICKS_TARGET = 3;
-/** ...or after burning this many candidates without enough passes. */
-const BLIND_VERIFY_MAX_CANDIDATES = 5;
+/**
+ * ...or after burning this many candidates without enough passes. Deeper
+ * than the primed keeper list (Aug 10, Ralph: "a system where a user
+ * uploads an image and it gets denied is not a system"): when the primed
+ * favorites fail blind, keep walking down the screened list before
+ * refusing — recall costs judge calls, never standards.
+ */
+const BLIND_VERIFY_MAX_CANDIDATES = 10;
 /** Stage-1 naming samples — majority wins; total disagreement refuses. */
 const NAMING_SAMPLES = 3;
 
@@ -742,7 +748,14 @@ export async function runWowPlacement(args: {
   if (!args.originalImage) {
     progress("Final check: judges see your top routes with NO hints…");
     const tried: { guess: string | null }[] = [];
-    for (const k of keepers.slice(0, BLIND_VERIFY_MAX_CANDIDATES)) {
+    // Walk BEYOND the shown-pick budget: every primed-passing candidate is
+    // a chance to succeed, and refusing while untried candidates remain is
+    // giving up early.
+    const verifyQueue = scored
+      .filter((s) => s.score >= PRIMED_KEEP_THRESHOLD)
+      .sort((a, b) => b.score - a.score || a.c.jitter - b.c.jitter || a.c.dev - b.c.dev)
+      .slice(0, BLIND_VERIFY_MAX_CANDIDATES);
+    for (const k of verifyQueue) {
       const joined = joinChains(g, k.c.segments);
       const shippedPng =
         (await renderJoinedRouteMapPng(joined)) ?? (await renderChainsPng([joined]));
@@ -762,7 +775,7 @@ export async function runWowPlacement(args: {
         subject,
         subjectConfidence: namedConfidence,
         message:
-          `We read your art as ${subject} and found ${keepers.length} promising street placements — but when judges saw the final street routes with no hints, ` +
+          `We read your art as ${subject} and found ${verifyQueue.length} promising street placements — but when judges saw the final street routes with no hints, ` +
           (misreads
             ? `they called the best ones "${misreads}" instead. `
             : `none could name the subject. `) +
