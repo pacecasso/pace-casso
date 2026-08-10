@@ -12,6 +12,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { CURATED_MANHATTAN_RUNS } from "../lib/curatedManhattanRuns.ts";
+import { VERIFIED_ROUTE_BANK_GALLERY_RUNS } from "../lib/verifiedRouteBankGallery.ts";
 
 const outDir = path.join(process.cwd(), "public", "curated");
 await fs.mkdir(outDir, { recursive: true });
@@ -142,7 +143,7 @@ async function renderRoute(coords, size, outPath, label) {
   );
 }
 
-for (const run of CURATED_MANHATTAN_RUNS) {
+for (const run of [...CURATED_MANHATTAN_RUNS, ...VERIFIED_ROUTE_BANK_GALLERY_RUNS]) {
   await renderRoute(
     run.coords,
     640,
