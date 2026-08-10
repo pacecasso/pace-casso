@@ -16,7 +16,7 @@
  *    removes one-block stubs without harming intended retraces >=440 m.
  */
 import type { LatLng, NormalizedPoint } from "./streetGraphTrace";
-import { splitSketchComponents } from "./sketchReview";
+import { analyzeOneLinePath } from "./oneLinePathAnalysis";
 
 export type Pt = [number, number]; // shape space, y-UP, ~0..1000
 export type WowGraph = {
@@ -494,7 +494,48 @@ export function strokesInkRatio(strokes: Pt[][]): number {
  *  - cap at MAX_STROKES pen lifts by merging the smallest remaining gaps.
  */
 export function contourToStrokes(contour: NormalizedPoint[]): Pt[][] {
-  const components = splitSketchComponents(contour);
+  if (contour.length < 2) return [];
+  /**
+   * Ink-preserving split (Aug 10). analyzeOneLinePath flags every LONG
+   * segment as a pen-jump "connector" — but an interior detail drawn as an
+   * out-and-back (a peace sign's spokes, a play button's triangle) is
+   * exactly such a segment. Cutting there left 1-point stubs that the ink
+   * filter dropped: the funnel placed a bare circle for a peace sign, and
+   * every judge downstream honestly called it "circle" (Aug 10 audit).
+   * Rule: a cut that isolates fewer than 3 points is not a pen lift — it's
+   * deliberate ink. Demote such cuts until every span is a real piece.
+   */
+  const { connectorSegmentIndices } = analyzeOneLinePath(contour);
+  const cuts = new Set(connectorSegmentIndices);
+  for (;;) {
+    const spans: { start: number; end: number }[] = [];
+    let spanStart = 0;
+    for (let i = 1; i < contour.length; i++) {
+      if (cuts.has(i - 1)) {
+        spans.push({ start: spanStart, end: i - 1 });
+        spanStart = i;
+      }
+    }
+    spans.push({ start: spanStart, end: contour.length - 1 });
+    if (!cuts.size) break;
+    const tiny = spans.find((s) => s.end - s.start + 1 < 3);
+    if (!tiny) break;
+    let removed = false;
+    if (tiny.start > 0 && cuts.delete(tiny.start - 1)) removed = true;
+    if (cuts.delete(tiny.end)) removed = true;
+    if (!removed) break;
+  }
+  const components: NormalizedPoint[][] = [];
+  let current: NormalizedPoint[] = [contour[0]!];
+  for (let i = 1; i < contour.length; i++) {
+    if (cuts.has(i - 1)) {
+      components.push(current);
+      current = [];
+    }
+    current.push(contour[i]!);
+  }
+  components.push(current);
+
   let strokes: Pt[][] = components
     .map((comp) => comp.map((p): Pt => [p.x * 1000, (1 - p.y) * 1000]))
     .filter((s) => s.length >= 1);

@@ -26,6 +26,9 @@
  */
 import sharp from "sharp";
 import { subjectLabelsMatchLoose } from "./subjectMatch";
+import { getServerMapboxToken } from "./mapboxServerToken";
+import { encodePolyline } from "./polylineEncode";
+import { simplifyLatLng } from "./douglasPeucker";
 import { getStreetGraph, type LatLng, type NormalizedPoint } from "./streetGraphTrace";
 import {
   type Pt,
@@ -368,6 +371,42 @@ async function nameSubjectMajority(
 }
 
 /**
+ * Render the JOINED route on a real map (Mapbox Static, light style) — the
+ * same kind of image the calibrated blind-squint instrument judges. The
+ * plain gray render measurably over-reads: a martini that passed 3/3 on
+ * plain gray blind-read as "dog" on the map crop (Aug 10). Falls back to
+ * the plain render when the static image can't be fetched, so an API
+ * hiccup degrades the instrument rather than crashing the funnel.
+ */
+async function renderJoinedRouteMapPng(joined: LatLng[]): Promise<Buffer | null> {
+  const token = getServerMapboxToken();
+  if (!token || joined.length < 2) return null;
+  // Static API URLs cap around 8 KB — simplify until the encoding fits.
+  let encoded: string | null = null;
+  for (const tolM of [4, 8, 14, 22, 35, 60]) {
+    const simplified = simplifyLatLng(joined as [number, number][], tolM);
+    const enc = encodePolyline(simplified as [number, number][]);
+    if (enc.length <= 5800) {
+      encoded = enc;
+      break;
+    }
+  }
+  if (!encoded) return null;
+  const path = `path-4+e60000(${encodeURIComponent(encoded)})`;
+  const url = `https://api.mapbox.com/styles/v1/mapbox/light-v11/static/${path}/auto/620x620?padding=40&access_token=${token}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return Buffer.from(await res.arrayBuffer());
+      if (res.status < 500 && res.status !== 429) return null;
+    } catch {
+      /* retry once */
+    }
+  }
+  return null;
+}
+
+/**
  * The acceptance gate (Aug 10): a judge shown ONLY the route render — no
  * subject, no context — must name the subject on every one of BLIND_RUNS
  * tries. This is the same instrument as scripts/blind-squint-test.mjs, the
@@ -685,18 +724,31 @@ export async function runWowPlacement(args: {
   // primed screen above only ORDERS candidates — it measurably over-accepts
   // (primed-9 routes blind-read as "dog"). Nothing ships unless a judge
   // with zero context names the subject BLIND_RUNS times out of BLIND_RUNS.
+  //
+  // The gate judges what SHIPS: the strokes JOINED into one continuous
+  // line (street connectors are drawn ink — a runner cannot lift the pen),
+  // rendered on a real map like the calibrated blind-squint instrument.
+  // Judging the per-stroke plain render passed routes whose shipped,
+  // connector-joined form read as "swastika"/"dog" (Aug 10 audit).
+  //
   // Composite runs keep the comparative-likeness gate: no short subject
   // phrase describes a multi-element logo, so blind naming can't apply.
-  type Keeper = (typeof keepers)[number] & { blindGuess?: string };
-  let verified: Keeper[] = keepers;
+  type Keeper = (typeof keepers)[number] & {
+    blindGuess?: string;
+    joined: LatLng[];
+    shippedPng: Buffer;
+  };
+  const verified: Keeper[] = [];
   if (!args.originalImage) {
     progress("Final check: judges see your top routes with NO hints…");
-    verified = [];
     const tried: { guess: string | null }[] = [];
     for (const k of keepers.slice(0, BLIND_VERIFY_MAX_CANDIDATES)) {
-      const res = await blindVerify(args.apiKey, k.png, subject);
+      const joined = joinChains(g, k.c.segments);
+      const shippedPng =
+        (await renderJoinedRouteMapPng(joined)) ?? (await renderChainsPng([joined]));
+      const res = await blindVerify(args.apiKey, shippedPng, subject);
       if (res.passed) {
-        verified.push({ ...k, blindGuess: res.guess ?? subject });
+        verified.push({ ...k, blindGuess: res.guess ?? subject, joined, shippedPng });
         if (verified.length >= BLIND_PICKS_TARGET) break;
       } else {
         tried.push({ guess: res.guess });
@@ -710,7 +762,7 @@ export async function runWowPlacement(args: {
         subject,
         subjectConfidence: namedConfidence,
         message:
-          `We read your art as ${subject} and found ${keepers.length} promising street placements — but when judges saw them with no hints, ` +
+          `We read your art as ${subject} and found ${keepers.length} promising street placements — but when judges saw the final street routes with no hints, ` +
           (misreads
             ? `they called the best ones "${misreads}" instead. `
             : `none could name the subject. `) +
@@ -719,24 +771,28 @@ export async function runWowPlacement(args: {
         refusedPreviewScore: bestScored?.score,
       };
     }
+  } else {
+    for (const k of keepers) {
+      const joined = joinChains(g, k.c.segments);
+      verified.push({ ...k, joined, shippedPng: k.png });
+    }
   }
 
   progress("Building your verified picks…");
   const picks: WowPlacePick[] = [];
   for (const k of verified) {
     const placedStrokes = placeSegments(strokes, k.c.center, k.c.extentM, k.c.rotDeg, false);
-    const joined = joinChains(g, k.c.segments);
     picks.push({
       center: k.c.center,
       rotDeg: k.c.rotDeg,
       extentM: k.c.extentM,
-      km: Number(chainsKm([joined]).toFixed(2)),
+      km: Number(chainsKm([k.joined]).toFixed(2)),
       dev: k.c.dev,
       primed: k.score,
       blindGuess: k.blindGuess,
-      coordinates: joined.map(([lat, lng]) => [lat, lng]),
+      coordinates: k.joined.map(([lat, lng]) => [lat, lng]),
       anchorLatLngs: placedStrokes.flat().map(([lat, lng]) => [lat, lng]),
-      previewPngBase64: k.png.toString("base64"),
+      previewPngBase64: k.shippedPng.toString("base64"),
     });
   }
   return { picks, subject, subjectConfidence: namedConfidence };
