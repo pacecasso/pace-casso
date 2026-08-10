@@ -19,6 +19,8 @@ import {
   useRunnerProfile,
 } from "../lib/runnerProfile";
 import { OSM_TILE_ATTRIBUTION, OSM_TILE_URL } from "../lib/mapAttribution";
+import { matchVerifiedBankRun } from "../lib/refusalOfframp";
+import type { CuratedRun } from "../lib/curatedManhattanRuns";
 import { useLeafletContainerId } from "../lib/useLeafletContainerId";
 import type { RouteLineString } from "../lib/routeTypes";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
@@ -293,6 +295,14 @@ export default function Step2MapAnchor({
   const [targetDistanceKm, setTargetDistanceKm] = useState<number | null>(null);
   const [picks, setPicks] = useState<Top5Pick[]>([]);
   const [picksVisionUsed, setPicksVisionUsed] = useState(false);
+  /**
+   * Refusal offramp: set only when the find-my-route cascade ends in an
+   * honest refusal. `offrampRun` is the closest blind-verified bank route
+   * (by subject-feature match) to OFFER — clearly labeled, never swapped in
+   * for the user's own art.
+   */
+  const [showOfframp, setShowOfframp] = useState(false);
+  const [offrampRun, setOfframpRun] = useState<CuratedRun | null>(null);
   const [selectedPickIdx, setSelectedPickIdx] = useState<number | null>(null);
   const [preferredSnappedRoute, setPreferredSnappedRoute] =
     useState<RouteLineString | null>(null);
@@ -332,6 +342,8 @@ export default function Step2MapAnchor({
     setAutoBusy(true);
     setAutoHint("Trying your art exactly as drawn…");
     setPicks([]);
+    setShowOfframp(false);
+    setOfframpRun(null);
     setSelectedPickIdx(null);
     setPreferredSnappedRoute(null);
     setSelectedAnchorLatLngs(null);
@@ -412,6 +424,10 @@ export default function Step2MapAnchor({
           literal.message ??
             "Nothing cleared the judge's bar. Bold, simple shapes work best — or drag the art where you want it and continue; we'll fit it to the streets.",
         );
+        setShowOfframp(true);
+        setOfframpRun(
+          matchVerifiedBankRun([literal.subject, interpretedSubject, imageSourceName]),
+        );
         return;
       }
       setAutoHint("Your art as-drawn didn't pass the street judges — redrawing it street-ready…");
@@ -419,6 +435,15 @@ export default function Step2MapAnchor({
       if (!interp.contour) {
         setAutoHint(
           `${literal.message ?? "Your art as-drawn didn't pass the street judges."} We also tried redrawing it automatically: ${interp.message ?? "no redraw was recognized by blind judges."} Each attempt draws fresh, so pressing "Find my route" again often succeeds — or drag the art where you want it and continue; we'll fit it to the streets faithfully.`,
+        );
+        setShowOfframp(true);
+        setOfframpRun(
+          matchVerifiedBankRun([
+            interp.subject,
+            literal.subject,
+            interpretedSubject,
+            imageSourceName,
+          ]),
         );
         return;
       }
@@ -443,6 +468,16 @@ export default function Step2MapAnchor({
       setAutoHint(
         `We tried your art as-drawn and an automatic street-ready redraw (as ${interp.subject ?? "your subject"}) — neither cleared the judge's bar. ${placed.message ?? ""} Each attempt draws fresh, so pressing "Find my route" again often succeeds — or place it yourself: drag it where you want it and continue, and we'll fit it to the streets faithfully.`,
       );
+      setShowOfframp(true);
+      setOfframpRun(
+        matchVerifiedBankRun([
+          interp.subject,
+          placed.subject,
+          literal.subject,
+          interpretedSubject,
+          imageSourceName,
+        ]),
+      );
     } catch (err) {
       console.warn("[Step2] find-my-route cascade failed:", err);
       setAutoHint(err instanceof Error ? err.message : "Route finding failed.");
@@ -450,7 +485,7 @@ export default function Step2MapAnchor({
     } finally {
       setAutoBusy(false);
     }
-  }, [contour, cityPreset.id, imageBase64, interpretedSubject, targetDistanceKm, routeFromPick, armHintClear]);
+  }, [contour, cityPreset.id, imageBase64, imageSourceName, interpretedSubject, targetDistanceKm, routeFromPick, armHintClear]);
 
   const applyPick = useCallback((pick: Top5Pick, idx: number) => {
     setCenter([...pick.placement.center] as [number, number]);
@@ -464,6 +499,8 @@ export default function Step2MapAnchor({
 
   const clearPicks = useCallback(() => {
     setPicks([]);
+    setShowOfframp(false);
+    setOfframpRun(null);
     setSelectedPickIdx(null);
     setPreferredSnappedRoute(null);
     setSelectedAnchorLatLngs(null);
@@ -667,6 +704,55 @@ export default function Step2MapAnchor({
             <div id="step2-status">
               {autoHint ? (
                 <p className="text-[11px] leading-snug text-pace-muted">{autoHint}</p>
+              ) : null}
+              {showOfframp && !autoBusy ? (
+                <div className="mt-2 rounded border border-pace-line bg-white p-2">
+                  {offrampRun ? (
+                    <div className="flex items-center gap-2.5">
+                      {/* eslint-disable-next-line @next/next/no-img-element -- small local thumbnail, plain img keeps the Leaflet-heavy step light */}
+                      <img
+                        src={`/curated/${offrampRun.id}.png`}
+                        alt={`${offrampRun.title} — verified route preview`}
+                        className="h-16 w-16 shrink-0 rounded border border-pace-line object-cover"
+                      />
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-semibold leading-snug text-pace-ink">
+                          Meanwhile: a blind-verified {offrampRun.title} already
+                          exists.
+                        </p>
+                        <p className="mt-0.5 truncate text-[10px] text-pace-muted">
+                          {offrampRun.area}
+                        </p>
+                        <p className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                          <a
+                            href={`/api/curated-gpx/${offrampRun.id}`}
+                            download
+                            className="text-[11px] font-semibold text-pace-blue hover:underline"
+                          >
+                            Download the GPX
+                          </a>
+                          <a
+                            href="/gallery"
+                            className="text-[11px] font-semibold text-pace-blue hover:underline"
+                          >
+                            All verified routes →
+                          </a>
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] leading-snug text-pace-muted">
+                      Meanwhile: the{" "}
+                      <a
+                        href="/gallery"
+                        className="font-semibold text-pace-blue hover:underline"
+                      >
+                        gallery
+                      </a>{" "}
+                      has 15 blind-verified routes ready to run today.
+                    </p>
+                  )}
+                </div>
               ) : null}
             </div>
           </div>
