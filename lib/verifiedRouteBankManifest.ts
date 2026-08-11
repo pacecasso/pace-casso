@@ -17,19 +17,27 @@ export type RejectedRouteBankSubject = {
   reason: string;
 };
 
+/**
+ * Aug 11 re-verification (positive-control-validated instrument: human
+ * reference sneaker.jpg passes 8/8/8): every bank route was re-judged
+ * blind 3x, twice. Only subjects passing BOTH rounds stay verified.
+ * Eight July "proofs" did not hold (judges read "dog"/"nothing") and were
+ * demoted below with honest reasons. Raw verdicts:
+ * tmp-gas-commission/reverify/results-round{1,2}.json.
+ */
 export const VERIFIED_ROUTE_BANK_SUBJECTS: VerifiedRouteBankSubject[] = [
-  { id: "sneaker", cityId: "manhattan", features: ["sneaker", "shoe", "laces", "sole"], expectedIntent: "Verified sneaker Manhattan v1", proofId: "sneaker", minAnchors: 1000 },
-  { id: "sailboat", cityId: "manhattan", features: ["sailboat", "hull", "mast", "jib"], expectedIntent: "Verified route-library Manhattan Midtown Sailboat", proofId: "sailboat", minAnchors: 250 },
-  { id: "heart", cityId: "manhattan", features: ["heart", "lobes", "center dip", "bottom point"], expectedIntent: "Verified route-library Manhattan Lower East Side Heart", proofId: "heart", minAnchors: 200 },
-  { id: "turtle", cityId: "manhattan", features: ["turtle", "shell", "legs", "head"], expectedIntent: "Verified route-library Manhattan Chelsea Turtle", proofId: "turtle", minAnchors: 180 },
   { id: "apple", cityId: "manhattan", features: ["apple", "bite", "stem", "leaf"], expectedIntent: "Verified apple Manhattan v1", proofId: "apple", minAnchors: 120 },
-  { id: "key", cityId: "manhattan", features: ["key", "bow", "hole", "shaft", "teeth"], expectedIntent: "Verified key Manhattan v1", proofId: "key", minAnchors: 90 },
-  { id: "martini", cityId: "dc", features: ["martini", "cocktail", "glass", "stem"], expectedIntent: "Verified martini DC v1", proofId: "martini-dc", minAnchors: 150 },
-  { id: "umbrella", cityId: "manhattan", features: ["umbrella", "canopy", "shaft", "handle"], expectedIntent: "Verified umbrella Manhattan v1", proofId: "umbrella", minAnchors: 90 },
-  { id: "trophy", cityId: "manhattan", features: ["trophy", "award", "handles", "stem", "base"], expectedIntent: "Verified trophy Manhattan v1", proofId: "trophy", minAnchors: 70 },
 ];
 
 export const REJECTED_ROUTE_BANK_SUBJECTS: RejectedRouteBankSubject[] = [
+  { id: "sneaker", cityId: "manhattan", features: ["sneaker", "shoe", "laces", "sole"], rejectedIntent: "Verified sneaker Manhattan v1", reason: "failed Aug 11 re-verification: blind judges read 'nothing recognizable' twice over (results-round1/2.json)" },
+  { id: "sailboat", cityId: "manhattan", features: ["sailboat", "hull", "mast", "jib"], rejectedIntent: "Verified route-library Manhattan Midtown Sailboat", reason: "failed Aug 11 re-verification: blind judges read 'dog' both rounds" },
+  { id: "heart-les", cityId: "manhattan", features: ["heart", "lobes", "center dip", "bottom point"], rejectedIntent: "Verified route-library Manhattan Lower East Side Heart", reason: "failed Aug 11 re-verification: blind judges read 'dog' 6 of 6 runs" },
+  { id: "turtle", cityId: "manhattan", features: ["turtle", "shell", "legs", "head"], rejectedIntent: "Verified route-library Manhattan Chelsea Turtle", reason: "failed Aug 11 re-verification: blind judges read 'dog' both rounds" },
+  { id: "key", cityId: "manhattan", features: ["key", "bow", "hole", "shaft", "teeth"], rejectedIntent: "Verified key Manhattan v1", reason: "failed Aug 11 re-verification tiebreak: cropped-render judges read 'dog' 3 of 3" },
+  { id: "martini", cityId: "dc", features: ["martini", "cocktail", "glass", "stem"], rejectedIntent: "Verified martini DC v1", reason: "failed Aug 11 re-verification: blind judges read 'dog' both rounds" },
+  { id: "umbrella", cityId: "manhattan", features: ["umbrella", "canopy", "shaft", "handle"], rejectedIntent: "Verified umbrella Manhattan v1", reason: "failed Aug 11 re-verification: blind judges read 'dog' both rounds" },
+  { id: "trophy", cityId: "manhattan", features: ["trophy", "award", "handles", "stem", "base"], rejectedIntent: "Verified trophy Manhattan v1", reason: "failed Aug 11 re-verification: blind judges read 'running figure'/'dog' both rounds" },
   { id: "robot", cityId: "manhattan", features: ["robot", "head", "antenna", "eyes"], rejectedIntent: "Verified robot Manhattan v2", reason: "label-free proof was too muddy to read as a robot" },
   { id: "crown", cityId: "manhattan", features: ["crown", "points", "jewel"], rejectedIntent: "Verified crown Manhattan v1", reason: "label-free proof was borderline and not strong enough for promotion" },
   { id: "tiger", cityId: "manhattan", features: ["tiger", "face", "stripes"], rejectedIntent: "Verified tiger Manhattan v1", reason: "long route was interesting but not clean in isolated blind view" },

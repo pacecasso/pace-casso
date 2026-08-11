@@ -83,13 +83,15 @@ assert.equal(
   0,
   "the Manhattan route library should stay off for DC presets",
 );
+// Aug 11 re-verification demoted the DC martini (blind judges read "dog"
+// both rounds) — it must NOT be reachable as a verified candidate anymore.
 assert(
-  generateMapNativeCandidates({
+  !generateMapNativeCandidates({
     drafts: [dcMartiniDraft],
     preset: presetByCity.dc,
     targetDistanceKm: 8,
   }).some((candidate) => candidate.designIntent.includes("Verified martini DC v1")),
-  "DC martini should still be reachable through the production candidate generator",
+  "the demoted DC martini must not surface as a verified candidate",
 );
 
 console.log("verifiedRouteBankCandidates tests ok");

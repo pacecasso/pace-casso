@@ -12,15 +12,21 @@ async function readGpx(id: string): Promise<{ status: number; body: string; disp
   };
 }
 
-for (const id of ["trophy", "martini-dc", "sneaker"]) {
-  const res = await readGpx(id);
-  assert.equal(res.status, 200, `${id} should export through curated GPX endpoint`);
-  assert(res.disposition?.includes(`${id}.gpx`), `${id} should set a GPX download filename`);
+// Aug 11 re-verification: only the apple remains an exportable verified
+// bank route; demoted subjects (trophy, martini-dc, sneaker, ...) 404.
+{
+  const res = await readGpx("apple");
+  assert.equal(res.status, 200, "apple should export through curated GPX endpoint");
+  assert(res.disposition?.includes("apple.gpx"), "apple should set a GPX download filename");
   assert(res.body.includes('creator="PaceCasso verified route bank"'));
   assert(
     (res.body.match(/<trkpt /g) ?? []).length >= 70,
-    `${id} should export a detailed real route`,
+    "apple should export a detailed real route",
   );
+}
+for (const id of ["trophy", "martini-dc", "sneaker"]) {
+  const res = await readGpx(id);
+  assert.equal(res.status, 404, `${id} failed re-verification and must no longer export as verified`);
 }
 
 // Gallery runs export through the curated endpoint (July 28: the original

@@ -1192,18 +1192,10 @@ const sneakerRouteLibrary = manhattanRouteLibraryCandidates(
   8,
 );
 assert(
-  sneakerRouteLibrary.some((candidate) =>
-    candidate.designIntent.includes("Verified sneaker Manhattan v1"),
+  sneakerRouteLibrary.every((candidate) =>
+    !candidate.designIntent.includes("Verified sneaker Manhattan v1"),
   ),
-  "sneaker/shoe uploads should receive the verified tuned sneaker route",
-);
-assert(
-  sneakerRouteLibrary.some((candidate) =>
-    candidate.designIntent.includes("Verified sneaker Manhattan v1") &&
-    candidate.routeMode === "direct-grid" &&
-    candidate.anchors.length >= 1000,
-  ),
-  "verified sneaker route should preserve the detailed runnable GPX polyline",
+  "the sneaker failed Aug 11 re-verification and must not surface as verified",
 );
 
 const sailboatRouteLibrary = manhattanRouteLibraryCandidates(
@@ -1220,10 +1212,10 @@ const sailboatRouteLibrary = manhattanRouteLibraryCandidates(
   8,
 );
 assert(
-  sailboatRouteLibrary.some((candidate) =>
-    candidate.designIntent.includes("Verified route-library Manhattan Midtown Sailboat"),
+  sailboatRouteLibrary.every((candidate) =>
+    !candidate.designIntent.includes("Verified route-library Manhattan Midtown Sailboat"),
   ),
-  "sailboat uploads should receive the verified curated sailboat route",
+  "the sailboat failed Aug 11 re-verification and must not surface as verified",
 );
 
 
@@ -1265,12 +1257,10 @@ const keyRouteLibrary = manhattanRouteLibraryCandidates(
   8,
 );
 assert(
-  keyRouteLibrary.some((candidate) =>
-    candidate.designIntent.includes("Verified key Manhattan v1") &&
-    candidate.routeMode === "direct-grid" &&
-    candidate.anchors.length >= 90,
+  keyRouteLibrary.every((candidate) =>
+    !candidate.designIntent.includes("Verified key Manhattan v1"),
   ),
-  "key uploads should receive the verified lattice-compiled key route",
+  "the key failed Aug 11 re-verification and must not surface as verified",
 );
 
 const martiniDraft = {
@@ -1298,12 +1288,10 @@ const dcMartiniRouteLibrary = verifiedRouteBankCandidates(
   8,
 );
 assert(
-  dcMartiniRouteLibrary.some((candidate) =>
-    candidate.designIntent.includes("Verified martini DC v1") &&
-    candidate.routeMode === "direct-grid" &&
-    candidate.anchors.length >= 150,
+  dcMartiniRouteLibrary.every((candidate) =>
+    !candidate.designIntent.includes("Verified martini DC v1"),
   ),
-  "martini/cocktail uploads should receive the verified DC lattice-compiled martini route only in DC",
+  "the DC martini failed Aug 11 re-verification and must not surface as verified",
 );
 
 const dcMartiniManhattanLibrary = manhattanRouteLibraryCandidates(
@@ -1323,10 +1311,10 @@ const dcGeneratedMartiniRoutes = generateMapNativeCandidates({
   targetDistanceKm: 8,
 });
 assert(
-  dcGeneratedMartiniRoutes.some((candidate) =>
-    candidate.designIntent.includes("Verified martini DC v1"),
+  dcGeneratedMartiniRoutes.every((candidate) =>
+    !candidate.designIntent.includes("Verified martini DC v1"),
   ),
-  "production map-native generation should still include the DC verified martini through the route bank",
+  "the demoted DC martini must not reach production candidates",
 );
 
 const manhattanMartiniRouteBank = verifiedRouteBankCandidates(
@@ -1375,12 +1363,10 @@ const umbrellaRouteLibrary = manhattanRouteLibraryCandidates(
   8,
 );
 assert(
-  umbrellaRouteLibrary.some((candidate) =>
-    candidate.designIntent.includes("Verified umbrella Manhattan v1") &&
-    candidate.routeMode === "direct-grid" &&
-    candidate.anchors.length >= 90,
+  umbrellaRouteLibrary.every((candidate) =>
+    !candidate.designIntent.includes("Verified umbrella Manhattan v1"),
   ),
-  "umbrella uploads should receive the verified lattice-compiled umbrella route",
+  "the umbrella failed Aug 11 re-verification and must not surface as verified",
 );
 
 const trophyRouteLibrary = manhattanRouteLibraryCandidates(
@@ -1397,12 +1383,10 @@ const trophyRouteLibrary = manhattanRouteLibraryCandidates(
   8,
 );
 assert(
-  trophyRouteLibrary.some((candidate) =>
-    candidate.designIntent.includes("Verified trophy Manhattan v1") &&
-    candidate.routeMode === "direct-grid" &&
-    candidate.anchors.length >= 70,
+  trophyRouteLibrary.every((candidate) =>
+    !candidate.designIntent.includes("Verified trophy Manhattan v1"),
   ),
-  "trophy uploads should receive the verified lattice-compiled trophy route",
+  "the trophy failed Aug 11 re-verification and must not surface as verified",
 );
 
 const glassesRouteLibrary = manhattanRouteLibraryCandidates(
@@ -1439,12 +1423,10 @@ const heartRouteLibrary = manhattanRouteLibraryCandidates(
   8,
 );
 assert(
-  heartRouteLibrary.some((candidate) =>
-    candidate.designIntent.includes("Verified route-library Manhattan Lower East Side Heart") &&
-    candidate.routeMode === "direct-grid" &&
-    candidate.anchors.length >= 200,
+  heartRouteLibrary.every((candidate) =>
+    !candidate.designIntent.includes("Verified route-library Manhattan Lower East Side Heart"),
   ),
-  "heart uploads should receive the verified Lower East Side heart route",
+  "the LES heart failed Aug 11 re-verification and must not surface as verified",
 );
 
 for (const auditCase of VERIFIED_ROUTE_BANK_SUBJECTS) {

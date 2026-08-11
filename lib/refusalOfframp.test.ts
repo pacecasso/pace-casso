@@ -1,27 +1,21 @@
 import assert from "node:assert";
 import { matchVerifiedBankRun } from "./refusalOfframp";
 
-// Subject text from the AI redraw matches the bank by feature words.
-assert.equal(matchVerifiedBankRun(["running shoe with laces"])?.id, "sneaker");
-assert.equal(matchVerifiedBankRun([null, "a sailboat at sea"])?.id, "sailboat");
-assert.equal(matchVerifiedBankRun(["heart"])?.id, "heart");
+// Aug 11 re-verification demoted every bank subject except the apple —
+// the offramp may only offer routes that currently pass the blind bar.
+assert.equal(matchVerifiedBankRun(["an apple with a bite"])?.id, "apple");
+assert.equal(matchVerifiedBankRun(["apple.png"])?.id, "apple");
 
-// Filenames normalize: extension and separators stripped.
-assert.equal(matchVerifiedBankRun(["my-trophy_v2.png"])?.id, "trophy");
-assert.equal(matchVerifiedBankRun(["umbrella.webp"])?.id, "umbrella");
+// Demoted subjects must no longer be offered as verified.
+assert.equal(matchVerifiedBankRun(["running shoe with laces"]), null);
+assert.equal(matchVerifiedBankRun(["a sailboat at sea"]), null);
+assert.equal(matchVerifiedBankRun(["my-trophy_v2.png"]), null);
+assert.equal(matchVerifiedBankRun(["umbrella.webp"]), null);
+assert.equal(matchVerifiedBankRun(["martini glass"], "dc"), null);
 
-// Word-boundary matching: "monkey" must not match "key".
+// Word-boundary matching still holds: "pineapple" must not match "apple".
 assert.equal(matchVerifiedBankRun(["a monkey drawing"]), null);
-
-// More feature hits wins over fewer.
-assert.equal(
-  matchVerifiedBankRun(["key with a bow, shaft and teeth"])?.id,
-  "key",
-);
-
-// DC subjects only match when asked for DC (martini lives in the DC bank).
-assert.equal(matchVerifiedBankRun(["martini glass"]), null);
-assert.equal(matchVerifiedBankRun(["martini glass"], "dc")?.id, "martini-dc");
+assert.equal(matchVerifiedBankRun(["pineapple"]), null);
 
 // No text, no match.
 assert.equal(matchVerifiedBankRun([]), null);

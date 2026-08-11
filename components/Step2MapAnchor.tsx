@@ -786,7 +786,7 @@ export default function Step2MapAnchor({
                       >
                         gallery
                       </a>{" "}
-                      has 15 blind-verified routes ready to run today.
+                      has blind-verified routes ready to run today.
                     </p>
                   )}
                 </div>
