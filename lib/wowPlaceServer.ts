@@ -764,14 +764,23 @@ export async function runWowPlacement(args: {
       .slice(0, BLIND_VERIFY_MAX_CANDIDATES);
     for (const k of verifyQueue) {
       const joined = joinChains(g, k.c.segments);
-      const shippedPng =
-        (await renderJoinedRouteMapPng(joined)) ?? (await renderChainsPng([joined]));
+      const mapPng = await renderJoinedRouteMapPng(joined);
+      const plainPng = await renderChainsPng([joined]);
+      const shippedPng = mapPng ?? plainPng;
+      // DUAL-RENDER gate (Aug 10 evening): a route must blind-name
+      // correctly on BOTH the map render and the plain render. The Aug 10
+      // run-5 audit split cleanly — every single-render pass that failed
+      // outside came from one render style reading generously (tree route
+      // passed the map render 3/3, external judges said "cat" 3/3). Two
+      // independent pictures agreeing is the cheapest robust instrument.
       const res = await blindVerify(args.apiKey, shippedPng, subject);
-      if (res.passed) {
+      const res2 =
+        res.passed && mapPng ? await blindVerify(args.apiKey, plainPng, subject) : null;
+      if (res.passed && (res2?.passed ?? true)) {
         verified.push({ ...k, blindGuess: res.guess ?? subject, joined, shippedPng });
         if (verified.length >= BLIND_PICKS_TARGET) break;
       } else {
-        tried.push({ guess: res.guess });
+        tried.push({ guess: res2 && !res2.passed ? res2.guess : res.guess });
       }
     }
     if (!verified.length) {
