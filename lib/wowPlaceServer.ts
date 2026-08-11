@@ -522,6 +522,23 @@ export async function runWowPlacement(args: {
    */
   originalImage?: { data: string; media: JudgeMedia };
   targetDistanceKm?: number;
+  /**
+   * "auto" (default): rectilinear art sweeps only the numbered grid at
+   * grid-aligned rotations. "island": always sweep the full island —
+   * for MIXED-geometry art (a boxy pump + a round head) the grid branch
+   * kills the curved features; measured Aug 11: the grid branch produced
+   * zero externally-verified winners across five audit runs while the
+   * full-island sweep produced all of them.
+   */
+  sweepMode?: "auto" | "island";
+  /**
+   * Orientation-bound subjects (standing/walking figures, houses,
+   * envelopes): sweep only near-upright rotations. PIPELINE-GAP measured
+   * free rotation as fatal for this class ("a plus sign rotated 45 deg
+   * stops being a plus sign"); the island sweep's geometric scoring
+   * otherwise prefers tilted grid-aligned placements.
+   */
+  uprightOnly?: boolean;
   onProgress?: WowPlaceProgress;
 }): Promise<WowPlaceResult> {
   const progress = args.onProgress ?? (() => {});
@@ -615,17 +632,18 @@ export async function runWowPlacement(args: {
   // organic-street placements staircase every clean line (Ralph: "messy and
   // less obvious"). Fall back to the full sweep only if the grid has no fit.
   let candidates: WowCandidate[];
-  let widenedAlready = !gridArt;
-  if (gridArt) {
+  const useGridBranch = gridArt && args.sweepMode !== "island";
+  let widenedAlready = !useGridBranch;
+  if (useGridBranch) {
     progress("Straight-edged art — placing on the street grid, aligned to the avenues…");
     candidates = await runSweep(GRID_CENTERS, gridRotations);
     if (!candidates.length) {
       progress("No grid-aligned fit — widening the search…");
-      candidates = await runSweep(MANHATTAN_CENTERS);
+      candidates = await runSweep(MANHATTAN_CENTERS, args.uprightOnly ? [-8, 0, 8] : undefined);
       widenedAlready = true;
     }
   } else {
-    candidates = await runSweep(MANHATTAN_CENTERS);
+    candidates = await runSweep(MANHATTAN_CENTERS, args.uprightOnly ? [-8, 0, 8] : undefined);
   }
   if (!candidates.length) {
     return {
@@ -700,7 +718,7 @@ export async function runWowPlacement(args: {
     // re-produces those (shared centers x rot -29) — drop the duplicates so
     // the same route isn't judged twice or shown as two identical picks.
     const seenPlacement = new Set(candidates.map((c) => `${c.center[0]},${c.center[1]}|${c.extentM}|${c.rotDeg}`));
-    const widened = (await runSweep(MANHATTAN_CENTERS)).filter(
+    const widened = (await runSweep(MANHATTAN_CENTERS, args.uprightOnly ? [-8, 0, 8] : undefined)).filter(
       (c) => !seenPlacement.has(`${c.center[0]},${c.center[1]}|${c.extentM}|${c.rotDeg}`),
     );
     if (widened.length) {
