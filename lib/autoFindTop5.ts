@@ -48,6 +48,11 @@ import { getManhattanLatticeGraph } from "./manhattanLattice";
 import { splitSketchComponents } from "./sketchReview";
 import { simplifyLatLng } from "./douglasPeucker";
 import { VERIFIED_ROUTE_BANK_SUBJECTS } from "./verifiedRouteBankManifest";
+import {
+  isRunnableRouteNativeCandidate,
+  orderRouteNativeCandidates,
+  scoreRouteNativeCandidate,
+} from "./routeNativeCompiler";
 
 const MARGIN = 0.012;
 const MIN_PERIMETER_KM = 3;
@@ -863,6 +868,8 @@ type ValidCandidate = {
    * backtracking mess and five separate gates then reject them.
    */
   compiledQuality?: number;
+  routeNativeScore?: number;
+  routeNativeReason?: string;
   kind?:
     | "generic"
     | "city-focus"
@@ -1324,6 +1331,8 @@ type SnappedCandidate = {
   shapeMatchScore: number;
   /** 0-100, rewards resemblance to the user's uploaded/approved source sketch. */
   sourceMatchScore: number;
+  routeNativeScore?: number;
+  routeNativeReason?: string;
 };
 
 type StructuralRequirement = "gas-pump-person";
@@ -1337,6 +1346,7 @@ export type AutoFindPickSelectionCandidate = {
   shapeMatchScore: number;
   sourceMatchScore?: number;
   distanceKm?: number;
+  routeNativeScore?: number;
 };
 
 export function scoreAutoPlacementCandidate(
@@ -1356,6 +1366,12 @@ function candidateDistancePenalty(distanceKm: number | undefined): number {
   return 4.55 + (distanceKm - 32) * 1.5;
 }
 
+function routeNativeSelectionBonus(score: number | undefined): number {
+  if (score == null || !Number.isFinite(score)) return 0;
+  const clamped = Math.max(0, Math.min(100, score));
+  if (clamped < 50) return (clamped - 50) * 0.08;
+  return Math.min(16, (clamped - 50) * 0.32);
+}
 function candidateSelectionScore(
   candidate: AutoFindPickSelectionCandidate,
   preferredRank: number | undefined,
@@ -1374,6 +1390,7 @@ function candidateSelectionScore(
       : preferredWeight * (1 - preferredRank / Math.max(1, preferredCount));
   return (
     base +
+    routeNativeSelectionBonus(candidate.routeNativeScore) +
     visionBonus -
     cleanPenalty -
     candidateDistancePenalty(candidate.distanceKm)
@@ -2416,6 +2433,8 @@ async function parallelSnap(
           designIntent: c.designIntent,
           kind: c.kind,
           routeMode: c.routeMode,
+          routeNativeScore: c.routeNativeScore,
+          routeNativeReason: c.routeNativeReason,
           coords: cleanedCoords,
           route: cleaned,
           km: cleanedKm,
@@ -2442,8 +2461,8 @@ async function parallelSnap(
   }
   out.sort(
     (a, b) =>
-      scoreAutoPlacementCandidate(b.qualityScore, b.shapeMatchScore) -
-      scoreAutoPlacementCandidate(a.qualityScore, a.shapeMatchScore),
+      candidateSelectionScore(b, undefined, 0, 0) -
+      candidateSelectionScore(a, undefined, 0, 0),
   );
   return { snapped: out, snapFailures };
 }
@@ -2838,6 +2857,49 @@ function featureMatchesText(tokens: string[], textTokens: Set<string>): boolean 
   return matched / tokens.length >= 0.5;
 }
 
+function annotateRouteNativeCandidate<T extends ValidCandidate>(
+  candidate: T,
+  requiredVisualFeatures: string[],
+): T {
+  const assessment = scoreRouteNativeCandidate(candidate, requiredVisualFeatures);
+  return {
+    ...candidate,
+    routeNativeScore: assessment.score,
+    routeNativeReason: assessment.reason,
+  };
+}
+
+function annotateRouteNativeCandidates<T extends ValidCandidate>(
+  candidates: T[],
+  requiredVisualFeatures: string[],
+): T[] {
+  return candidates.map((candidate) =>
+    annotateRouteNativeCandidate(candidate, requiredVisualFeatures),
+  );
+}
+
+function routeNativeOrdered<T extends ValidCandidate>(
+  candidates: T[],
+  requiredVisualFeatures: string[],
+): T[] {
+  return orderRouteNativeCandidates(
+    annotateRouteNativeCandidates(candidates, requiredVisualFeatures),
+    requiredVisualFeatures,
+  );
+}
+
+function runnableMapNativeRoutes(
+  candidates: ValidCandidate[],
+  requiredVisualFeatures: string[],
+  runnableOnly: boolean,
+): ValidCandidate[] {
+  const filtered = runnableOnly
+    ? candidates.filter((candidate) =>
+        isRunnableRouteNativeCandidate(candidate, requiredVisualFeatures),
+      )
+    : candidates;
+  return routeNativeOrdered(filtered, requiredVisualFeatures);
+}
 export function requiredFeatureCoverageScore(
   text: string,
   requiredVisualFeatures: string[],
@@ -5177,14 +5239,19 @@ export async function autoFindTop5(
       ? "gas-pump-person"
       : null;
 
-  const generatedMapNativeRoutes =
-    !RUNNABLE_ROUTES_ONLY && !options.anchorAround
-    ? generateMapNativeCandidates({
-        drafts: visionDesignDrafts,
-        preset,
-        targetDistanceKm: effectiveTargetDistanceKm,
-        wordmarkText,
-      })
+  const generatedMapNativeRoutes = !options.anchorAround
+    ? runnableMapNativeRoutes(
+        generateMapNativeCandidates({
+          drafts: visionDesignDrafts,
+          preset,
+          targetDistanceKm: effectiveTargetDistanceKm,
+          // Runnable-only mode may still use proven dense direct-grid routes
+          // such as the sneaker, but not raw wordmark/template geometry.
+          wordmarkText: RUNNABLE_ROUTES_ONLY ? null : wordmarkText,
+        }),
+        requiredVisualFeatures,
+        RUNNABLE_ROUTES_ONLY,
+      )
     : [];
   /**
    * The curated-swoosh short-circuit used to fire on ANY upload whose
@@ -5276,11 +5343,11 @@ export async function autoFindTop5(
         ])
       ).flat()
     : [];
-  const mapNativeRoutes = [
+  const mapNativeRoutes = routeNativeOrdered([
     ...lockupRoutes,
     ...curatedSourceRoutes,
     ...generatedMapNativeRoutes,
-  ];
+  ], requiredVisualFeatures);
   const useWordmarkOnly =
     wordmarkText != null &&
     mapNativeRoutes.some((candidate) => candidate.kind === "street-wordmark");
@@ -5288,7 +5355,7 @@ export async function autoFindTop5(
   // competing in diverseSubsample and the first-20 ranking cut — both have
   // silently squeezed this class out before. Biggest first: scale is what
   // makes the symbol-over-slogan arrangement read.
-  const lockupSubset = [...lockupRoutes]
+  const lockupSubset = routeNativeOrdered(lockupRoutes, requiredVisualFeatures)
     .sort((a, b) => b.km - a.km)
     .slice(0, 6);
   const streetWordmarkRoutes = mapNativeRoutes.filter(
@@ -5296,8 +5363,9 @@ export async function autoFindTop5(
       candidate.kind === "street-wordmark" &&
       !/lockup/i.test(candidate.designIntent ?? ""),
   );
-  const streetDesignRoutes = mapNativeRoutes.filter(
-    (candidate) => candidate.kind === "street-design",
+  const streetDesignRoutes = routeNativeOrdered(
+    mapNativeRoutes.filter((candidate) => candidate.kind === "street-design"),
+    requiredVisualFeatures,
   );
   const designedCityRoutes = !options.anchorAround && !useWordmarkOnly
     ? manhattanDesignedHeartCandidates(
@@ -5347,14 +5415,17 @@ export async function autoFindTop5(
     if (v) validGeneric.push(v);
   }
   const validVisionDesign = !options.anchorAround && !useWordmarkOnly
-    ? designDraftCandidates(
-        visionDesignDrafts,
-        preset,
-        hint,
-        effectiveTargetDistanceKm,
+    ? routeNativeOrdered(
+        designDraftCandidates(
+          visionDesignDrafts,
+          preset,
+          hint,
+          effectiveTargetDistanceKm,
+        ),
+        requiredVisualFeatures,
       )
     : [];
-  const streetTracedSubset = streetTracedRoutes.slice(0, 4);
+  const streetTracedSubset = routeNativeOrdered(streetTracedRoutes, requiredVisualFeatures).slice(0, 4);
   const valid = [
     ...lockupSubset,
     ...streetTracedSubset,
@@ -5439,7 +5510,11 @@ export async function autoFindTop5(
       : 0;
   const designedSubset =
     designedBudget > 0
-      ? diverseSubsample(designedCityRoutes, designedBudget, preset)
+      ? diverseSubsample(
+          routeNativeOrdered(designedCityRoutes, requiredVisualFeatures),
+          designedBudget,
+          preset,
+        )
       : [];
   const cityFirstBudget =
     validCityFirst.length > 0
@@ -5460,7 +5535,11 @@ export async function autoFindTop5(
       : 0;
   const cityFirstSubset =
     cityFirstBudget > 0
-      ? diverseSubsample(validCityFirst, cityFirstBudget, preset)
+      ? diverseSubsample(
+          routeNativeOrdered(validCityFirst, requiredVisualFeatures),
+          cityFirstBudget,
+          preset,
+        )
       : [];
   const cityFocusBudget =
     validCityFocus.length > 0
@@ -5482,7 +5561,11 @@ export async function autoFindTop5(
       : 0;
   const cityFocusSubset =
     cityFocusBudget > 0
-      ? diverseSubsample(validCityFocus, cityFocusBudget, preset)
+      ? diverseSubsample(
+          routeNativeOrdered(validCityFocus, requiredVisualFeatures),
+          cityFocusBudget,
+          preset,
+        )
       : [];
   const sourceReserveBudget =
     validGeneric.length > 0
@@ -5516,7 +5599,7 @@ export async function autoFindTop5(
           cityFocusSubset.length,
       );
   const genericSubset = diverseSubsample(
-    validGeneric,
+    routeNativeOrdered(validGeneric, requiredVisualFeatures),
     genericBudget,
     preset,
   );

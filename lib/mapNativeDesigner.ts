@@ -9,6 +9,7 @@ import { curatedKeyManhattanMapNativeCandidate } from "./curatedKeyManhattanRout
 import { curatedMartiniDcMapNativeCandidate } from "./curatedDcMartiniRoute";
 import { curatedUmbrellaManhattanMapNativeCandidate } from "./curatedUmbrellaManhattanRoute";
 import { curatedTrophyManhattanMapNativeCandidate } from "./curatedTrophyManhattanRoute";
+import { curatedGasLogoBrooklynMapNativeCandidate } from "./curatedGasLogoBrooklynRoute";
 
 const MARGIN = 0.012;
 const MIN_ROUTE_KM = 3;
@@ -1849,6 +1850,14 @@ export function isGasLogoDraftSet(drafts: MapNativeDesignDraft[]): boolean {
   );
 }
 
+export function isSneakerDraftSet(drafts: MapNativeDesignDraft[]): boolean {
+  const text = draftSearchText(drafts);
+  return (
+    /\b(sneaker|shoe|running shoe|trainer|athletic shoe|tennis shoe)\b/.test(text) &&
+    /\b(lace|laces|sole|toe|heel|tongue|upper)\b/.test(text)
+  );
+}
+
 /** Etch-a-sketch pump + hose + headphone person as Manhattan grid strokes. */
 function gasPumpGridStrokePoints(): ContourPoint[] {
   const raw: ContourPoint[] = [
@@ -3249,6 +3258,13 @@ export function generateMapNativeCandidates({
   wordmarkText,
 }: MapNativeDesignerOptions): MapNativeCandidate[] {
   const gasLogo = isGasLogoDraftSet(drafts);
+  const sneaker = isSneakerDraftSet(drafts);
+  const curatedBrooklynGasRoutes = gasLogo && preset.id === "brooklyn"
+    ? [curatedGasLogoBrooklynMapNativeCandidate()]
+    : [];
+  const curatedManhattanSneakerRoutes = sneaker && preset.id === "manhattan"
+    ? [curatedSneakerManhattanMapNativeCandidate()]
+    : [];
   const gasGridRoutes = gasLogo
     ? streetGasLogoCandidates(preset, targetDistanceKm)
     : [];
@@ -3276,10 +3292,28 @@ export function generateMapNativeCandidates({
   if (wordmarkText && wordmarkRoutes.length > 0) {
     return wordmarkRoutes;
   }
-  if (gasLogo && gasGridRoutes.length > 0) {
+  if (gasLogo && (curatedBrooklynGasRoutes.length > 0 || gasGridRoutes.length > 0)) {
     return diverseSubsample(
-      [...verifiedBankRoutes, ...gasGridRoutes, ...routeLibraryRoutes],
-      Math.min(32, verifiedBankRoutes.length + gasGridRoutes.length + routeLibraryRoutes.length),
+      [...curatedBrooklynGasRoutes, ...verifiedBankRoutes, ...gasGridRoutes, ...routeLibraryRoutes],
+      Math.min(
+        32,
+        curatedBrooklynGasRoutes.length +
+          verifiedBankRoutes.length +
+          gasGridRoutes.length +
+          routeLibraryRoutes.length,
+      ),
+      preset,
+    );
+  }
+  if (sneaker && curatedManhattanSneakerRoutes.length > 0) {
+    return diverseSubsample(
+      [
+        ...curatedManhattanSneakerRoutes,
+        ...routeLibraryRoutes,
+        ...learnedGrammarRoutes,
+        ...cityGridSketchCandidates(drafts, preset, targetDistanceKm),
+      ],
+      24,
       preset,
     );
   }

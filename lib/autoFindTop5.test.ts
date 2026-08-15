@@ -78,6 +78,31 @@ assert.equal(
   "scores should be clamped before blending",
 );
 
+const routeNativeTieBreak = selectDiverseAutoFindPickIndices(
+  [
+    {
+      placement: { center: [40.72, -74.0], rotationDeg: 0, scale: 1 },
+      qualityScore: 70,
+      shapeMatchScore: 70,
+      distanceKm: 14,
+      routeNativeScore: 20,
+    },
+    {
+      placement: { center: [40.76, -73.98], rotationDeg: 0, scale: 1 },
+      qualityScore: 70,
+      shapeMatchScore: 70,
+      distanceKm: 14,
+      routeNativeScore: 95,
+    },
+  ],
+  1,
+);
+assert.deepEqual(
+  routeNativeTieBreak,
+  [1],
+  "route-native semantic/continuity score should break ties before spending a pick slot",
+);
+
 // Lettering is the one class where scale IS legibility: a glyph stroke has
 // to be several blocks thick to read from map altitude. The 9 km default
 // produced cramped, unreadable wordmarks; the best one this project has
