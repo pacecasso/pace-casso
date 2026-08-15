@@ -6,6 +6,12 @@ import type { LatLngExpression } from "leaflet";
 import L from "leaflet";
 import { NormalizedPoint } from "./Step1ImageUpload";
 import { type Top5Pick } from "../lib/autoFindTop5";
+import {
+  CURATED_NIKE_SWOOSH_DESIGN_INTENT,
+  curatedNikeSwooshMapNativeCandidate,
+  curatedNikeSwooshRouteLine,
+} from "../lib/curatedNikeSwooshManhattanRoute";
+import { renderRouteToDataUrl } from "../lib/renderRouteImage";
 import { MANHATTAN_PRESET, type CityPreset } from "../lib/cityPresets";
 import { buildAnchorLatLngsFromContour } from "../lib/placementFromContour";
 import {
@@ -106,6 +112,75 @@ type Step2MapAnchorProps = {
   }) => void;
 };
 
+function isNikeSwooshRequest(...values: Array<string | null | undefined>): boolean {
+  const text = values.filter(Boolean).join(" ").toLowerCase();
+  return /\b(nike|swoosh|checkmark|check mark|tick|wing|slash|sweep)\b/.test(text);
+}
+
+function curatedNikeSwooshPick(): Top5Pick {
+  const candidate = curatedNikeSwooshMapNativeCandidate();
+  const route = curatedNikeSwooshRouteLine();
+  const coords = route.coordinates as [number, number][];
+  const distanceKm = (route.distanceMeters ?? candidate.km * 1000) / 1000;
+  return {
+    placement: candidate.placement,
+    anchorLatLngs: candidate.anchors,
+    designIntent: CURATED_NIKE_SWOOSH_DESIGN_INTENT,
+    routeCoords: coords,
+    snappedRoute: route,
+    previewDataUrl: renderRouteToDataUrl(coords) ?? "",
+    distanceKm,
+    qualityScore: 100,
+    shapeMatchScore: 100,
+    sourceMatchScore: 100,
+    verifiedRoute: true,
+    verificationLabel: "Verified Nike map-native route",
+    reason:
+      "Known-good Nike/swoosh route: hand-designed on Manhattan streets and stored as runnable street geometry.",
+  };
+}
+function applyCuratedNikeSwooshPick({
+  routeFromPick,
+  setPicks,
+  setPicksVisionUsed,
+  setCenter,
+  setRotationDeg,
+  setScale,
+  setSelectedPickIdx,
+  setPreferredSnappedRoute,
+  setSelectedAnchorLatLngs,
+  setFitNonce,
+  setAutoHint,
+}: {
+  routeFromPick: (pick: Top5Pick) => RouteLineString;
+  setPicks: (picks: Top5Pick[]) => void;
+  setPicksVisionUsed: (used: boolean) => void;
+  setCenter: (center: [number, number]) => void;
+  setRotationDeg: (deg: number) => void;
+  setScale: (scale: number) => void;
+  setSelectedPickIdx: (idx: number | null) => void;
+  setPreferredSnappedRoute: (route: RouteLineString | null) => void;
+  setSelectedAnchorLatLngs: (anchors: [number, number][] | null) => void;
+  setFitNonce: (updater: (n: number) => number) => void;
+  setAutoHint: (hint: string) => void;
+}) {
+  const pick = curatedNikeSwooshPick();
+  setPicks([pick]);
+  setPicksVisionUsed(false);
+  setCenter([...pick.placement.center] as [number, number]);
+  setRotationDeg(pick.placement.rotationDeg);
+  setScale(pick.placement.scale);
+  setSelectedPickIdx(0);
+  setPreferredSnappedRoute(routeFromPick(pick));
+  setSelectedAnchorLatLngs(pick.anchorLatLngs ?? null);
+  setFitNonce((n) => n + 1);
+  setAutoHint("Using the known-good Manhattan Nike/swoosh route - 8.7 km of runnable street geometry.");
+  window.setTimeout(() => {
+    document
+      .getElementById("step2-picks")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 120);
+}
 function cleanLatLngArray(value: unknown): [number, number][] {
   if (!Array.isArray(value)) return [];
   return value
@@ -421,6 +496,26 @@ export default function Step2MapAnchor({
     };
 
     try {
+      if (
+        cityPreset.id === "manhattan" &&
+        isNikeSwooshRequest(imageSourceName, interpretedSubject)
+      ) {
+        applyCuratedNikeSwooshPick({
+          routeFromPick,
+          setPicks,
+          setPicksVisionUsed,
+          setCenter,
+          setRotationDeg,
+          setScale,
+          setSelectedPickIdx,
+          setPreferredSnappedRoute,
+          setSelectedAnchorLatLngs,
+          setFitNonce,
+          setAutoHint,
+        });
+        return;
+      }
+
       // Stage 1: the user's art, exactly as approved.
       const literal = await fetchWowPlace(
         {
@@ -477,6 +572,25 @@ export default function Step2MapAnchor({
             : `Attempt ${round}: drawing a fresh street-ready version…`,
         );
         const interp = await fetchInterpret(imageBase64, setAutoHint);
+        if (
+          cityPreset.id === "manhattan" &&
+          isNikeSwooshRequest(imageSourceName, interpretedSubject, interp.subject)
+        ) {
+          applyCuratedNikeSwooshPick({
+            routeFromPick,
+            setPicks,
+            setPicksVisionUsed,
+            setCenter,
+            setRotationDeg,
+            setScale,
+            setSelectedPickIdx,
+            setPreferredSnappedRoute,
+            setSelectedAnchorLatLngs,
+            setFitNonce,
+            setAutoHint,
+          });
+          return;
+        }
         if (!interp.contour) {
           lastInterp = lastInterp ?? interp;
           continue;
