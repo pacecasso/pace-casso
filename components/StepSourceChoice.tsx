@@ -170,8 +170,8 @@ export default function StepSourceChoice({
                 Ready-to-run artwork
               </p>
               <p className="mt-1 max-w-2xl font-dm text-[11px] leading-relaxed text-pace-muted sm:text-xs">
-                These are the Manhattan routes that survived blind
-                re-verification and already follow runnable streets.
+                These are the strongest precompiled Manhattan routes in the
+                app today. Each preserves a runnable street polyline end to end.
               </p>
             </div>
             <span className="font-bebas text-[11px] tracking-[0.14em] text-pace-yellow">

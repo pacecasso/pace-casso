@@ -1,9 +1,10 @@
-﻿import assert from "node:assert";
+import assert from "node:assert";
 import { READY_TO_RUN_ROUTE_LIBRARY, readyRouteToLine } from "./readyToRunRouteLibrary";
 
 const ids = READY_TO_RUN_ROUTE_LIBRARY.map((run) => run.id);
 
 assert.deepEqual(ids, [
+  "sneaker",
   "catalog-heart",
   "catalog-elephant",
   "catalog-runner",
@@ -12,6 +13,7 @@ assert.deepEqual(ids, [
 ]);
 assert.ok(!ids.includes("catalog-smiley-face"));
 assert.ok(!ids.includes("catalog-giraffe"));
+assert.equal(READY_TO_RUN_ROUTE_LIBRARY[0]?.id, "sneaker");
 
 for (const run of READY_TO_RUN_ROUTE_LIBRARY) {
   const route = readyRouteToLine(run);

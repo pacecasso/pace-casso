@@ -1245,5 +1245,6 @@ export function curatedSneakerRouteLine(): RouteLineString {
     coordinates: coords,
     distanceMeters: curatedSneakerRouteKm() * 1000,
     blockWaypoints: coords,
+    preserveBlockWaypoints: true,
   };
 }
