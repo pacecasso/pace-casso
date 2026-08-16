@@ -16,7 +16,7 @@ const reverifiedIds = new Set<string>(REVERIFIED_CATALOG_IDS);
 
 const tunedSneakerRun: CuratedRun = {
   id: "sneaker",
-  title: "PUMA Sneaker",
+  title: "Sneaker",
   icon: "shoe",
   area: "Lower Manhattan - tuned street-native benchmark",
   blurb:
