@@ -5702,6 +5702,32 @@ export async function autoFindTop5(
     ? prioritizeSweepRankable(snapped).slice(0, Math.min(snapped.length, 20))
     : snapped.slice(0, Math.min(snapped.length, 20));
 
+  const unrankedRouteNativeFallback = (reason: string): AutoFindTop5Result | null => {
+    const made = makePicks(
+      rankableSnapped,
+      null,
+      null,
+      topK,
+      hint,
+      false,
+      structuralRequirement,
+      requiredVisualFeatures,
+    );
+    const picks = pinLockupFirst(made.picks, rankableSnapped, topK);
+    if (picks.length === 0) return null;
+    console.warn(reason, {
+      picks: picks.length,
+      routeNative: picks.filter((pick) => pick.designIntent || pick.verifiedRoute).length,
+      requiredVisualFeatures,
+    });
+    return {
+      picks,
+      relaxedQuality: made.relaxedQuality,
+      visionUsed: false,
+      snapFailures,
+      hint: hint ?? undefined,
+    };
+  };
   const mapImages = await Promise.all(
     rankableSnapped.map((s) => loadRouteStaticMapImage(s.coords, { size: 224 })),
   );
@@ -5714,6 +5740,10 @@ export async function autoFindTop5(
     { tileSize: 224, cols: 5 },
   );
   if (!grid) {
+    const fallback = unrankedRouteNativeFallback(
+      "[autoFindTop5] no vision-rank grid for uploaded image - using best unranked route-native picks",
+    );
+    if (fallback) return fallback;
     console.warn(
       "[autoFindTop5] no vision-rank grid for uploaded image - showing no automatic picks",
     );
@@ -5743,6 +5773,10 @@ export async function autoFindTop5(
   );
 
   if (!ranked || ranked.length === 0) {
+    const fallback = unrankedRouteNativeFallback(
+      "[autoFindTop5] vision-rank returned no usable picks for uploaded image - using best unranked route-native picks",
+    );
+    if (fallback) return fallback;
     console.warn(
       "[autoFindTop5] vision-rank returned no usable picks for uploaded image - showing no automatic picks",
     );
