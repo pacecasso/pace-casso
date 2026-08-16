@@ -30,6 +30,7 @@ import { getServerMapboxToken } from "./mapboxServerToken";
 import { encodePolyline } from "./polylineEncode";
 import { simplifyLatLng } from "./douglasPeucker";
 import { getStreetGraph, type LatLng, type NormalizedPoint } from "./streetGraphTrace";
+import { isOnManhattanWalkable } from "./manhattanWalkableEnvelope";
 import {
   type Pt,
   type WowCandidate,
@@ -98,6 +99,40 @@ const GRID_CENTERS: LatLng[] = [
   [40.794, -73.968],
 ];
 
+const DEEP_ROTATIONS_DEG = [-45, -29, -15, -8, 0, 8, 15, 29, 45, 61];
+const DEEP_UPRIGHT_ROTATIONS_DEG = [-12, -6, 0, 6, 12];
+
+function centerDistanceM(a: LatLng, b: LatLng): number {
+  const latM = (a[0] - b[0]) * 111_320;
+  const lngM =
+    (a[1] - b[1]) *
+    111_320 *
+    Math.cos((((a[0] + b[0]) / 2) * Math.PI) / 180);
+  return Math.hypot(latM, lngM);
+}
+
+function buildDeepManhattanCenters(): LatLng[] {
+  const centers: LatLng[] = [];
+  const push = (center: LatLng) => {
+    if (centers.some((existing) => centerDistanceM(existing, center) < 420)) return;
+    centers.push(center);
+  };
+  for (const center of MANHATTAN_CENTERS) push(center);
+
+  // Roughly 650-700 m spacing: dense enough to beat a hand-picked placement,
+  // still small enough for a fallback CPU sweep inside the API timeout.
+  for (let lat = 40.712; lat <= 40.804; lat += 0.006) {
+    for (let lng = -74.012; lng <= -73.952; lng += 0.006) {
+      if (isOnManhattanWalkable(lat, lng)) {
+        push([Number(lat.toFixed(5)), Number(lng.toFixed(5))]);
+      }
+    }
+  }
+  return centers;
+}
+
+const DEEP_MANHATTAN_CENTERS = buildDeepManhattanCenters();
+
 export type WowPlaceProgress = (detail: string) => void;
 
 export type WowPlacePick = {
@@ -113,6 +148,10 @@ export type WowPlacePick = {
    * Ralph-calibrated comparative gate instead.
    */
   blindGuess?: string;
+  /** true when strict verification failed but this is the best runnable street draft */
+  fallbackDraft?: boolean;
+  /** one-line explanation for a fallback draft */
+  fallbackReason?: string;
   /** full route, strokes joined by real street connectors */
   coordinates: [number, number][];
   /** placed (pre-trace) contour, original point order — Step 2's anchor line */
@@ -708,6 +747,26 @@ export async function runWowPlacement(args: {
 
   let scored = await screenAndJudge(candidates);
   let keepers = pickKeepers(scored);
+  let deepAlready = false;
+  const placementKey = (c: WowCandidate) =>
+    `${c.center[0]},${c.center[1]}|${c.extentM}|${c.rotDeg}`;
+  const addDeepSweep = async (detail: string): Promise<boolean> => {
+    if (deepAlready) return false;
+    deepAlready = true;
+    progress(detail);
+    const seenPlacement = new Set(candidates.map(placementKey));
+    const deepRotations = args.uprightOnly
+      ? DEEP_UPRIGHT_ROTATIONS_DEG
+      : DEEP_ROTATIONS_DEG;
+    const deep = (await runSweep(DEEP_MANHATTAN_CENTERS, deepRotations)).filter(
+      (c) => !seenPlacement.has(placementKey(c)),
+    );
+    if (!deep.length) return false;
+    candidates = candidates.concat(deep);
+    scored = scored.concat(await screenAndJudge(deep));
+    keepers = pickKeepers(scored);
+    return true;
+  };
   // Pool-starvation guard (live failure, July 30): a thin grid pool plus a
   // weak draft refused at 4/10 without ever trying the rest of the island.
   // The refusal only wins over organic-street placements when the island
@@ -729,26 +788,14 @@ export async function runWowPlacement(args: {
   }
 
   if (!keepers.length) {
+    await addDeepSweep("No first-pass route cleared the judge bar - widening the search grid...");
+  }
+
+  if (!keepers.length && scored.length && scored.every((s) => s.judgeFailed)) {
     // Every judge call failing is OUR outage (API 529 wave), not a verdict
-    // on the art — refusing with "scored 0/10" blames the user wrongly.
-    if (scored.length && scored.every((s) => s.judgeFailed)) {
-      return {
-        picks: [],
-        subject,
-        subjectConfidence: namedConfidence,
-        message:
-          "Our route-judging service is overloaded right now — this isn't about your art. Please try again in a few minutes.",
-      };
-    }
-    const bestScored = scored.slice().sort((a, b) => b.score - a.score)[0];
-    return {
-      picks: [],
-      subject,
-      subjectConfidence: namedConfidence,
-      message: `We read your art as ${subject} and traced ${candidates.length} street placements, but the judge scored the best only ${bestScored?.score ?? 0}/10 — below the bar where routes reliably read. We'd rather say so than show you a tangle. Simpler/bolder shapes score higher.`,
-      refusedPreviewPngBase64: bestScored?.png.toString("base64"),
-      refusedPreviewScore: bestScored?.score,
-    };
+    // on the art. Keep going to the best-runnable fallback below instead of
+    // returning zero picks.
+    progress("Route judge is overloaded - showing the best runnable street draft instead...");
   }
 
   // THE ACCEPTANCE GATE (Aug 10, Ralph: "that's how it should be"): the
@@ -766,20 +813,49 @@ export async function runWowPlacement(args: {
   // phrase describes a multi-element logo, so blind naming can't apply.
   type Keeper = (typeof keepers)[number] & {
     blindGuess?: string;
+    fallbackDraft?: boolean;
+    fallbackReason?: string;
     joined: LatLng[];
     shippedPng: Buffer;
   };
   const verified: Keeper[] = [];
-  if (!args.originalImage) {
-    progress("Final check: judges see your top routes with NO hints…");
-    const tried: { guess: string | null }[] = [];
+  const blindRejectedIds = new Set<string>();
+  const blindTried: { guess: string | null }[] = [];
+  let blindQueueCount = 0;
+
+  const promoteBestRunnableDraft = async (fallbackReason: string): Promise<boolean> => {
+    const best =
+      scored
+        .slice()
+        .filter((s) => !s.judgeFailed)
+        .sort((a, b) => b.score - a.score || a.c.jitter - b.c.jitter || a.c.dev - b.c.dev)[0] ??
+      scored.slice().sort((a, b) => candidateScore(a.c) - candidateScore(b.c))[0];
+    if (!best) return false;
+    const joined = joinChains(g, best.c.segments);
+    if (joined.length < 2) return false;
+    const mapPng = await renderJoinedRouteMapPng(joined);
+    const plainPng = await renderChainsPng([joined]);
+    verified.push({
+      ...best,
+      joined,
+      shippedPng: mapPng ?? plainPng,
+      fallbackDraft: true,
+      fallbackReason,
+    });
+    return true;
+  };
+  const runBlindVerification = async () => {
     // Walk BEYOND the shown-pick budget: every primed-passing candidate is
     // a chance to succeed, and refusing while untried candidates remain is
     // giving up early.
     const verifyQueue = scored
-      .filter((s) => s.score >= PRIMED_KEEP_THRESHOLD)
+      .filter(
+        (s) =>
+          s.score >= PRIMED_KEEP_THRESHOLD && !blindRejectedIds.has(s.c.id),
+      )
       .sort((a, b) => b.score - a.score || a.c.jitter - b.c.jitter || a.c.dev - b.c.dev)
       .slice(0, BLIND_VERIFY_MAX_CANDIDATES);
+    blindQueueCount += verifyQueue.length;
     for (const k of verifyQueue) {
       const joined = joinChains(g, k.c.segments);
       const mapPng = await renderJoinedRouteMapPng(joined);
@@ -787,9 +863,8 @@ export async function runWowPlacement(args: {
       const shippedPng = mapPng ?? plainPng;
       // DUAL-RENDER gate (Aug 10 evening): a route must blind-name
       // correctly on BOTH the map render and the plain render. The Aug 10
-      // run-5 audit split cleanly — every single-render pass that failed
-      // outside came from one render style reading generously (tree route
-      // passed the map render 3/3, external judges said "cat" 3/3). Two
+      // run-5 audit split cleanly: every single-render pass that failed
+      // outside came from one render style reading generously. Two
       // independent pictures agreeing is the cheapest robust instrument.
       const res = await blindVerify(args.apiKey, shippedPng, subject);
       const res2 =
@@ -798,34 +873,58 @@ export async function runWowPlacement(args: {
         verified.push({ ...k, blindGuess: res.guess ?? subject, joined, shippedPng });
         if (verified.length >= BLIND_PICKS_TARGET) break;
       } else {
-        tried.push({ guess: res2 && !res2.passed ? res2.guess : res.guess });
+        blindRejectedIds.add(k.c.id);
+        blindTried.push({ guess: res2 && !res2.passed ? res2.guess : res.guess });
       }
     }
+  };
+
+  if (!args.originalImage) {
+    progress("Final check: judges see your top routes with NO hints...");
+    await runBlindVerification();
+    if (
+      !verified.length &&
+      (await addDeepSweep(
+        "The first promising routes misread blind - widening the search grid...",
+      ))
+    ) {
+      progress("Final check: judges see the wider-search routes with NO hints...");
+      await runBlindVerification();
+    }
     if (!verified.length) {
-      const misreads = [...new Set(tried.map((t) => t.guess).filter(Boolean))].join('", "');
-      const bestScored = scored.slice().sort((a, b) => b.score - a.score)[0];
-      return {
-        picks: [],
-        subject,
-        subjectConfidence: namedConfidence,
-        message:
-          `We read your art as ${subject} and found ${verifyQueue.length} promising street placements — but when judges saw the final street routes with no hints, ` +
-          (misreads
-            ? `they called the best ones "${misreads}" instead. `
-            : `none could name the subject. `) +
-          `Nothing ships unless a stranger can name it. Simpler/bolder shapes pass more often — or try the verified gallery.`,
-        refusedPreviewPngBase64: bestScored?.png.toString("base64"),
-        refusedPreviewScore: bestScored?.score,
-      };
+      const misreads = [...new Set(blindTried.map((t) => t.guess).filter(Boolean))].join('", "');
+      const reason =
+        `Strict blind verification did not pass: ` +
+        (misreads
+          ? `judges called the closest routes "${misreads}" instead of ${subject}.`
+          : `no zero-context judge could name ${subject}.`);
+      if (await promoteBestRunnableDraft(reason)) {
+        progress("No strict pass - showing the best runnable draft instead...");
+      } else {
+        return {
+          picks: [],
+          subject,
+          subjectConfidence: namedConfidence,
+          message:
+            `We read your art as ${subject}, but could not build a usable street route from the candidates. Simpler/bolder shapes pass more often - or try the verified gallery.`,
+        };
+      }
     }
   } else {
     for (const k of keepers) {
       const joined = joinChains(g, k.c.segments);
       verified.push({ ...k, joined, shippedPng: k.png });
     }
+    if (!verified.length) {
+      const bestScored = scored.slice().sort((a, b) => b.score - a.score)[0];
+      const reason = `The likeness judge scored the closest route ${bestScored?.score ?? 0}/10, below the normal pass bar.`;
+      if (await promoteBestRunnableDraft(reason)) {
+        progress("No strict likeness pass - showing the best runnable draft instead...");
+      }
+    }
   }
 
-  progress("Building your verified picks…");
+  progress(verified.some((p) => p.fallbackDraft) ? "Building your best runnable draft..." : "Building your verified picks...");
   const picks: WowPlacePick[] = [];
   for (const k of verified) {
     const placedStrokes = placeSegments(strokes, k.c.center, k.c.extentM, k.c.rotDeg, false);
@@ -837,6 +936,8 @@ export async function runWowPlacement(args: {
       dev: k.c.dev,
       primed: k.score,
       blindGuess: k.blindGuess,
+      fallbackDraft: k.fallbackDraft,
+      fallbackReason: k.fallbackReason,
       coordinates: k.joined.map(([lat, lng]) => [lat, lng]),
       anchorLatLngs: placedStrokes.flat().map(([lat, lng]) => [lat, lng]),
       previewPngBase64: k.shippedPng.toString("base64"),

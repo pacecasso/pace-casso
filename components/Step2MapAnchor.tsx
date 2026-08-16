@@ -129,6 +129,9 @@ type WowPlacePickPayload = {
   primed: number;
   /** Present when a zero-context judge named this route 3/3 before display. */
   blindGuess?: string;
+  /** True when strict judging failed but the server returned the best runnable route. */
+  fallbackDraft?: boolean;
+  fallbackReason?: string;
   coordinates: [number, number][];
   anchorLatLngs: [number, number][];
   previewPngBase64: string;
@@ -159,6 +162,11 @@ function cleanWowPick(value: unknown): WowPlacePickPayload | null {
     primed,
     blindGuess:
       typeof rec.blindGuess === "string" && rec.blindGuess ? rec.blindGuess : undefined,
+    fallbackDraft: rec.fallbackDraft === true,
+    fallbackReason:
+      typeof rec.fallbackReason === "string" && rec.fallbackReason
+        ? rec.fallbackReason
+        : undefined,
     coordinates,
     anchorLatLngs,
     previewPngBase64: rec.previewPngBase64,
@@ -388,15 +396,19 @@ export default function Step2MapAnchor({
         qualityScore: Math.min(100, p.primed * 10),
         shapeMatchScore: Math.max(1, Math.min(100, Math.round(100 - p.dev))),
         sourceMatchScore: Math.min(100, p.primed * 10),
-        verifiedRoute: true,
-        verificationLabel: p.blindGuess
-          ? "BLIND-VERIFIED 3/3"
-          : `AI JUDGE ${p.primed}/10`,
-        reason: p.blindGuess
-          ? `A judge shown this route with zero context named it "${p.blindGuess}" three times out of three — nothing ships unless a stranger can name it.`
-          : likenessJudged
-            ? `A vision judge compared this street route against your original image and scored the likeness ${p.primed}/10 before we showed it to you.`
-            : `A vision judge, told only "${subjectLabel}", scored this street route ${p.primed}/10 before we showed it to you.`,
+        verifiedRoute: !p.fallbackDraft,
+        verificationLabel: p.fallbackDraft
+          ? "BEST RUNNABLE DRAFT"
+          : p.blindGuess
+            ? "BLIND-VERIFIED 3/3"
+            : `AI JUDGE ${p.primed}/10`,
+        reason: p.fallbackDraft
+          ? `${p.fallbackReason ?? "Strict judging did not pass."} This is the best real-street draft we found, so you can inspect and edit it instead of getting a dead end.`
+          : p.blindGuess
+            ? `A judge shown this route with zero context named it "${p.blindGuess}" three times out of three.`
+            : likenessJudged
+              ? `A vision judge compared this street route against your original image and scored the likeness ${p.primed}/10 before we showed it to you.`
+              : `A vision judge, told only "${subjectLabel}", scored this street route ${p.primed}/10 before we showed it to you.`,
       }));
       setPicks(mapped);
       setPicksVisionUsed(true);
@@ -408,10 +420,13 @@ export default function Step2MapAnchor({
       setPreferredSnappedRoute(routeFromPick(first));
       setSelectedAnchorLatLngs(first.anchorLatLngs ?? null);
       setFitNonce((n) => n + 1);
+      const hasFallbackDraft = result.picks.some((p) => p.fallbackDraft);
       setAutoHint(
-        redrawn
-          ? `Your art as-drawn didn't survive the streets, so we redrew it as ${subjectLabel} — ${mapped.length} judge-checked placements. Tap one to try it.`
-          : `We read your art as ${subjectLabel} — here are ${mapped.length} judge-checked placements. Tap one to try it.`,
+        hasFallbackDraft
+          ? `We read your art as ${subjectLabel}. No strict route passed, so here is the best runnable street draft to inspect and edit.`
+          : redrawn
+            ? `Your art as-drawn didn't survive the streets, so we redrew it as ${subjectLabel} - ${mapped.length} judge-checked placements. Tap one to try it.`
+            : `We read your art as ${subjectLabel} - here are ${mapped.length} judge-checked placements. Tap one to try it.`,
       );
       window.setTimeout(() => {
         document
