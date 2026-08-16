@@ -1,6 +1,7 @@
 "use client";
 
-import { ImageIcon, PencilLine } from "lucide-react";
+import Image from "next/image";
+import { ImageIcon, MapPinned, PencilLine } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   AREA_DESIGN_TEMPLATES,
@@ -16,6 +17,8 @@ import {
 } from "../lib/autoFindPlacement";
 import type { CityPreset } from "../lib/cityPresets";
 import type { ContourPoint } from "../lib/placementFromContour";
+import { READY_TO_RUN_ROUTE_LIBRARY } from "../lib/readyToRunRouteLibrary";
+import type { CuratedRun } from "../lib/curatedManhattanRuns";
 import CreateStepIntro from "./CreateStepIntro";
 
 type TemplateSnapRow =
@@ -33,6 +36,8 @@ type Props = {
   onChooseFreehand: () => void;
   /** Skip trace and jump to placement with a preset contour. */
   onPickAreaTemplate?: (contour: AreaDesignContour[]) => void;
+  /** Jump straight into the route workflow with a verified street route. */
+  onPickReadyRoute?: (run: CuratedRun) => void;
   cityPreset?: CityPreset;
 };
 
@@ -41,11 +46,16 @@ export default function StepSourceChoice({
   onChooseImage,
   onChooseFreehand,
   onPickAreaTemplate,
+  onPickReadyRoute,
   cityPreset,
 }: Props) {
   const showTemplates =
     Boolean(onPickAreaTemplate) &&
     Boolean(cityPreset?.dominantGridBearingsDeg?.length);
+  const showReadyRoutes =
+    Boolean(onPickReadyRoute) &&
+    cityPreset?.id === "manhattan" &&
+    READY_TO_RUN_ROUTE_LIBRARY.length > 0;
 
   const [templateSnap, setTemplateSnap] = useState<
     Partial<Record<string, TemplateSnapRow>>
@@ -151,6 +161,58 @@ export default function StepSourceChoice({
         </button>
       </div>
 
+
+      {showReadyRoutes ? (
+        <div className="mt-6 w-full max-w-5xl border-t border-pace-line pt-5">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="font-bebas text-[11px] tracking-[0.14em] text-pace-muted">
+                Ready-to-run artwork
+              </p>
+              <p className="mt-1 max-w-2xl font-dm text-[11px] leading-relaxed text-pace-muted sm:text-xs">
+                These are the Manhattan routes that survived blind
+                re-verification and already follow runnable streets.
+              </p>
+            </div>
+            <span className="font-bebas text-[11px] tracking-[0.14em] text-pace-yellow">
+              Best current path
+            </span>
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 lg:grid-cols-5">
+            {READY_TO_RUN_ROUTE_LIBRARY.map((run) => (
+              <button
+                key={run.id}
+                type="button"
+                onClick={() => onPickReadyRoute?.(run)}
+                className="pace-card-editorial group flex flex-col overflow-hidden text-left shadow-sm transition hover:border-pace-yellow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2 active:scale-[0.99]"
+              >
+                <div className="relative aspect-square w-full overflow-hidden bg-pace-white">
+                  <Image
+                    src={`/curated/${run.id}.png`}
+                    alt={`${run.title} route preview`}
+                    fill
+                    sizes="(min-width: 1024px) 20vw, (min-width: 640px) 33vw, 50vw"
+                    className="object-cover transition group-hover:scale-[1.03]"
+                  />
+                </div>
+                <div className="flex flex-1 flex-col gap-1 p-2.5 sm:p-3">
+                  <span className="font-bebas text-sm tracking-[0.08em] text-pace-ink">
+                    {run.title}
+                  </span>
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-pace-yellow">
+                    {run.distanceKm.toFixed(1)} km
+                  </span>
+                  <span className="mt-auto inline-flex items-center gap-1 text-[10px] font-semibold text-pace-blue">
+                    <MapPinned className="h-3 w-3" aria-hidden />
+                    Open route
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {showTemplates ? (
         <div className="mt-6 w-full max-w-4xl border-t border-pace-line pt-5">
           <p className="font-bebas text-[11px] tracking-[0.14em] text-pace-muted">

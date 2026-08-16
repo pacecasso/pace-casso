@@ -14,6 +14,8 @@ import { emojiToContour } from "../lib/emojiToContour";
 
 const CREATE_INTRO_STORAGE_KEY = "pacecasso-create-intro-dismissed-v1";
 import type { RouteLineString } from "../lib/routeTypes";
+import type { CuratedRun } from "../lib/curatedManhattanRuns";
+import { readyRouteToLine } from "../lib/readyToRunRouteLibrary";
 import { safeRouteDistanceMeters } from "../lib/routeExport";
 import {
   clearCreateDraft,
@@ -52,6 +54,43 @@ export type AnchorLocation = {
 } | null;
 
 export type { RouteLineString };
+function routeCenter(coords: [number, number][]): [number, number] {
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+  for (const [lat, lng] of coords) {
+    minLat = Math.min(minLat, lat);
+    maxLat = Math.max(maxLat, lat);
+    minLng = Math.min(minLng, lng);
+    maxLng = Math.max(maxLng, lng);
+  }
+  if (!Number.isFinite(minLat) || !Number.isFinite(minLng)) {
+    return CITY_PRESETS.manhattan.defaultCenter;
+  }
+  return [(minLat + maxLat) / 2, (minLng + maxLng) / 2];
+}
+
+function normalizedContourFromRoute(
+  coords: [number, number][],
+): NormalizedPoint[] {
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+  for (const [lat, lng] of coords) {
+    minLat = Math.min(minLat, lat);
+    maxLat = Math.max(maxLat, lat);
+    minLng = Math.min(minLng, lng);
+    maxLng = Math.max(maxLng, lng);
+  }
+  const latSpan = Math.max(maxLat - minLat, 1e-6);
+  const lngSpan = Math.max(maxLng - minLng, 1e-6);
+  return coords.map(([lat, lng]) => ({
+    x: (lng - minLng) / lngSpan,
+    y: 1 - (lat - minLat) / latSpan,
+  }));
+}
 
 export default function WorkflowController() {
   const [currentStep, setCurrentStep] = useState<StepNum>(0);
@@ -292,6 +331,32 @@ export default function WorkflowController() {
     const p = CITY_PRESETS[id];
     if (p) setCityPreset(p);
   }, []);
+  const handlePickReadyRoute = useCallback(
+    (run: CuratedRun) => {
+      const route = readyRouteToLine(run);
+      const coords = route.coordinates;
+      setSelectedCityId("manhattan");
+      setCityPreset(CITY_PRESETS.manhattan);
+      setSourceKind("image");
+      setContourCoordinates(normalizedContourFromRoute(coords));
+      setUploadedImageBase64(null);
+      setUploadedImageName(run.title);
+      setSketchApproved(true);
+      setInterpretedSubject(run.title);
+      setSnappedRoute(null);
+      setEditedRoute(null);
+      setFinalRoute(null);
+      setAnchorLocation({
+        anchorLatLngs: coords,
+        center: routeCenter(coords),
+        rotationDeg: 0,
+        scale: 1,
+        preferredSnappedRoute: route,
+      });
+      setCurrentStep(4);
+    },
+    [],
+  );
 
   const goBackToSourcePicker = useCallback(() => {
     setContourCoordinates(null);
@@ -324,7 +389,13 @@ export default function WorkflowController() {
   const stepRecap = useMemo(() => {
     if (currentStep < 1) return null;
     const parts: string[] = [cityPreset.label];
-    if (sourceKind === "image") parts.push("Photo");
+    if (
+      sourceKind === "image" &&
+      anchorLocation?.preferredSnappedRoute?.preserveBlockWaypoints === true &&
+      !uploadedImageBase64
+    ) {
+      parts.push("Ready-made");
+    } else if (sourceKind === "image") parts.push("Photo");
     else if (sourceKind === "freehand") parts.push("Freehand");
     const routeForDistance = finalRoute ?? editedRoute ?? snappedRoute;
     const dm = routeForDistance ? safeRouteDistanceMeters(routeForDistance) : null;
@@ -336,6 +407,8 @@ export default function WorkflowController() {
     currentStep,
     cityPreset.label,
     sourceKind,
+    anchorLocation?.preferredSnappedRoute?.preserveBlockWaypoints,
+    uploadedImageBase64,
     finalRoute,
     editedRoute,
     snappedRoute,
@@ -575,6 +648,7 @@ export default function WorkflowController() {
               setCurrentStep(2);
             }}
             cityPreset={cityPreset}
+            onPickReadyRoute={handlePickReadyRoute}
             onPickAreaTemplate={(contour) => {
               setSourceKind("image");
               setContourCoordinates(contour as NormalizedPoint[]);
