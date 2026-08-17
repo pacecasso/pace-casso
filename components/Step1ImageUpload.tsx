@@ -1551,40 +1551,7 @@ export default function Step1ImageUpload({
                   )}
                 </p>
               ) : null}
-              {interpretations.length > 1 ? (
-                <div className="mt-2 flex w-full max-w-[min(100vw-1rem,280px)] flex-col gap-1.5 rounded border border-pace-line bg-pace-white px-2 py-2 text-left">
-                  <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted">
-                    Style
-                  </span>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {interpretations.map((variant) => {
-                      const selected = selectedInterpretation?.id === variant.id;
-                      return (
-                        <button
-                          key={variant.id}
-                          type="button"
-                          onClick={() => setSelectedInterpretationId(variant.id)}
-                          className={`rounded border px-2 py-1.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow ${
-                            selected
-                              ? "border-pace-yellow bg-pace-yellow/15 text-pace-ink"
-                              : "border-pace-line bg-pace-panel text-pace-muted hover:border-pace-yellow/60 hover:text-pace-ink"
-                          }`}
-                          title={variant.description}
-                        >
-                          <span className="block font-bebas text-[11px] tracking-[0.08em]">
-                            {variant.label}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {selectedInterpretation ? (
-                    <span className="font-dm text-[10px] leading-snug text-pace-muted">
-                      {selectedInterpretation.description}
-                    </span>
-                  ) : null}
-                </div>
-              ) : null}
+
             </div>
           </div>
 

@@ -37,7 +37,6 @@ import Step4RouteEditor from "./Step4RouteEditor";
 import Step5RouteComplete from "./Step5RouteComplete";
 import StepCityGate from "./StepCityGate";
 import StepFreehandMapDraw from "./StepFreehandMapDraw";
-import StepSketchReview from "./StepSketchReview";
 import StepSourceChoice from "./StepSourceChoice";
 import BrandLogo from "./BrandLogo";
 import SocialLinks from "./SocialLinks";
@@ -368,13 +367,8 @@ export default function WorkflowController() {
     setCurrentStep(1);
   }, [clearPlacedRouteData]);
 
-  const isSketchReviewStep =
-    currentStep === 3 &&
-    sourceKind === "image" &&
-    contourCoordinates != null &&
-    !sketchApproved;
   const { stepNum, total, label } = getStepDisplay(currentStep, sourceKind);
-  const displayLabel = isSketchReviewStep ? "Approve sketch" : label;
+  const displayLabel = label;
 
   const showHeaderStartOver =
     currentStep > 0 ||
@@ -673,7 +667,7 @@ export default function WorkflowController() {
               setContourCoordinates(normalizedContour);
               setUploadedImageBase64(imageBase64);
               setUploadedImageName(sourceName ?? null);
-              setSketchApproved(false);
+              setSketchApproved(true);
               setInterpretedSubject(null);
               clearPlacedRouteData();
               setCurrentStep(3);
@@ -704,25 +698,9 @@ export default function WorkflowController() {
           />
         )}
 
-        {isSketchReviewStep && contourCoordinates && (
-          <StepSketchReview
-            contour={contourCoordinates}
-            imageBase64={uploadedImageBase64}
-            sourceName={uploadedImageName}
-            onBack={() => setCurrentStep(2)}
-            onApprove={(approvedContour, meta) => {
-              setContourCoordinates(approvedContour);
-              setSketchApproved(true);
-              setInterpretedSubject(meta?.aiSubject ?? null);
-              clearPlacedRouteData();
-            }}
-          />
-        )}
-
         {currentStep === 3 &&
           contourCoordinates &&
-          sourceKind === "image" &&
-          sketchApproved && (
+          sourceKind === "image" && (
           <Step2MapAnchor
             // Remount on city change: the component seeds its map center from
             // defaultCenter once, so a gallery hand-off that switches city
@@ -737,6 +715,7 @@ export default function WorkflowController() {
             onBack={() => {
               setSketchApproved(false);
               clearPlacedRouteData();
+              setCurrentStep(2);
             }}
             onComplete={({
               anchorLatLngs,

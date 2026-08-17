@@ -314,7 +314,6 @@ export default function Step2MapAnchor({
     [],
   );
   const leafletId = useLeafletContainerId();
-  const [targetDistanceKm, setTargetDistanceKm] = useState<number | null>(null);
   const [picks, setPicks] = useState<Top5Pick[]>([]);
   const [picksVisionUsed, setPicksVisionUsed] = useState(false);
   /**
@@ -436,7 +435,7 @@ export default function Step2MapAnchor({
     };
 
     const applyAutoFindResult = (result: Awaited<ReturnType<typeof autoFindTop5>>) => {
-      if (!result.picks.length) return false;
+      if (!result.picks.length || result.relaxedQuality) return false;
       setPicks(result.picks);
       setPicksVisionUsed(result.visionUsed);
       const first = result.picks[0]!;
@@ -467,7 +466,6 @@ export default function Step2MapAnchor({
           anchorSource: "image",
           imageBase64,
           imageSourceName: imageSourceName ?? undefined,
-          targetDistanceKm: targetDistanceKm ?? undefined,
           topK: 5,
         });
         if (applyAutoFindResult(routeNative)) return;
@@ -479,7 +477,6 @@ export default function Step2MapAnchor({
         {
           contour,
           cityId: cityPreset.id,
-          targetDistanceKm: targetDistanceKm ?? undefined,
           subject: interpretedSubject ?? undefined,
         },
         setAutoHint,
@@ -540,7 +537,6 @@ export default function Step2MapAnchor({
           {
             contour: interp.contour,
             cityId: cityPreset.id,
-            targetDistanceKm: targetDistanceKm ?? undefined,
             subject: interp.subject ?? undefined,
             // Composite (multi-element logo) redraws: send the upload so
             // placement judges by likeness to it — the primed single-subject
@@ -576,7 +572,7 @@ export default function Step2MapAnchor({
     } finally {
       setAutoBusy(false);
     }
-  }, [contour, cityPreset, imageBase64, imageSourceName, interpretedSubject, targetDistanceKm, routeFromPick, armHintClear]);
+  }, [contour, cityPreset, imageBase64, imageSourceName, interpretedSubject, routeFromPick, armHintClear]);
 
   const applyPick = useCallback((pick: Top5Pick, idx: number) => {
     setCenter([...pick.placement.center] as [number, number]);
@@ -721,58 +717,6 @@ export default function Step2MapAnchor({
           </div>
 
           <div className="mt-4 flex flex-col gap-2">
-            <div
-              className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 transition ${
-                targetDistanceKm != null
-                  ? "border-pace-yellow bg-pace-yellow/10"
-                  : "border-pace-line bg-pace-white"
-              }`}
-            >
-              <label
-                htmlFor="target-distance"
-                className="shrink-0 font-bebas text-[11px] tracking-[0.14em] text-pace-muted"
-              >
-                Distance
-              </label>
-              <input
-                id="target-distance"
-                type="number"
-                min={2}
-                max={25}
-                step={0.5}
-                value={targetDistanceKm ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v === "") {
-                    setTargetDistanceKm(null);
-                    return;
-                  }
-                  const n = parseFloat(v);
-                  if (!Number.isFinite(n)) {
-                    setTargetDistanceKm(null);
-                    return;
-                  }
-                  setTargetDistanceKm(Math.min(25, Math.max(2, n)));
-                }}
-                placeholder="≈15"
-                className="w-14 border-0 bg-transparent p-0 text-xs font-semibold tabular-nums text-pace-ink placeholder:font-normal placeholder:text-pace-muted focus:outline-none focus:ring-0"
-              />
-              <span className="text-[11px] font-medium text-pace-muted">km</span>
-              {targetDistanceKm != null && (
-                <button
-                  type="button"
-                  onClick={() => setTargetDistanceKm(null)}
-                  className="ml-auto flex h-8 w-8 items-center justify-center rounded-full text-base leading-none text-pace-muted transition hover:bg-pace-ink/10 hover:text-pace-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow"
-                  title="Clear target distance"
-                  aria-label="Clear target distance"
-                >
-                  ×
-                </button>
-              )}
-            </div>
-            <p className="text-[10px] leading-snug text-pace-muted">
-              Optional: target distance (km).
-            </p>
             <button
               type="button"
               disabled={

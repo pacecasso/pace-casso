@@ -611,8 +611,8 @@ export async function runWowPlacement(args: {
 
   progress(`Looks like ${subject} — testing placements across Manhattan…`);
   const g = (await getStreetGraph()) as WowGraph;
-  const minKm = args.targetDistanceKm ? Math.max(4, args.targetDistanceKm * 0.7) : 7;
-  const maxKm = args.targetDistanceKm ? Math.min(42, args.targetDistanceKm * 1.5) : 26;
+  const minKm = args.targetDistanceKm ? Math.max(4, args.targetDistanceKm * 0.7) : 4;
+  const maxKm = args.targetDistanceKm ? Math.min(42, args.targetDistanceKm * 1.5) : 42;
 
   // Size the canvas from the artwork: route km scales with the contour's
   // ink-length-to-span ratio, so detailed art gets a smaller canvas instead
@@ -791,11 +791,25 @@ export async function runWowPlacement(args: {
     await addDeepSweep("No first-pass route cleared the judge bar - widening the search grid...");
   }
 
-  if (!keepers.length && scored.length && scored.every((s) => s.judgeFailed)) {
-    // Every judge call failing is OUR outage (API 529 wave), not a verdict
-    // on the art. Keep going to the best-runnable fallback below instead of
-    // returning zero picks.
-    progress("Route judge is overloaded - showing the best runnable street draft instead...");
+  if (!keepers.length) {
+    if (scored.length && scored.every((s) => s.judgeFailed)) {
+      return {
+        picks: [],
+        subject,
+        subjectConfidence: namedConfidence,
+        message:
+          "Our route-judging service is overloaded right now - this is not about your art. Please try again in a few minutes.",
+      };
+    }
+    const bestScored = scored.slice().sort((a, b) => b.score - a.score)[0];
+    return {
+      picks: [],
+      subject,
+      subjectConfidence: namedConfidence,
+      message: `We read your art as ${subject} and traced ${candidates.length} street placements, but the best route scored only ${bestScored?.score ?? 0}/10. I am not showing that as a result because it is below the recognizability bar.`,
+      refusedPreviewPngBase64: bestScored?.png.toString("base64"),
+      refusedPreviewScore: bestScored?.score,
+    };
   }
 
   // THE ACCEPTANCE GATE (Aug 10, Ralph: "that's how it should be"): the
@@ -823,27 +837,6 @@ export async function runWowPlacement(args: {
   const blindTried: { guess: string | null }[] = [];
   let blindQueueCount = 0;
 
-  const promoteBestRunnableDraft = async (fallbackReason: string): Promise<boolean> => {
-    const best =
-      scored
-        .slice()
-        .filter((s) => !s.judgeFailed)
-        .sort((a, b) => b.score - a.score || a.c.jitter - b.c.jitter || a.c.dev - b.c.dev)[0] ??
-      scored.slice().sort((a, b) => candidateScore(a.c) - candidateScore(b.c))[0];
-    if (!best) return false;
-    const joined = joinChains(g, best.c.segments);
-    if (joined.length < 2) return false;
-    const mapPng = await renderJoinedRouteMapPng(joined);
-    const plainPng = await renderChainsPng([joined]);
-    verified.push({
-      ...best,
-      joined,
-      shippedPng: mapPng ?? plainPng,
-      fallbackDraft: true,
-      fallbackReason,
-    });
-    return true;
-  };
   const runBlindVerification = async () => {
     // Walk BEYOND the shown-pick budget: every primed-passing candidate is
     // a chance to succeed, and refusing while untried candidates remain is
@@ -893,22 +886,17 @@ export async function runWowPlacement(args: {
     }
     if (!verified.length) {
       const misreads = [...new Set(blindTried.map((t) => t.guess).filter(Boolean))].join('", "');
-      const reason =
-        `Strict blind verification did not pass: ` +
-        (misreads
-          ? `judges called the closest routes "${misreads}" instead of ${subject}.`
-          : `no zero-context judge could name ${subject}.`);
-      if (await promoteBestRunnableDraft(reason)) {
-        progress("No strict pass - showing the best runnable draft instead...");
-      } else {
-        return {
-          picks: [],
-          subject,
-          subjectConfidence: namedConfidence,
-          message:
-            `We read your art as ${subject}, but could not build a usable street route from the candidates. Simpler/bolder shapes pass more often - or try the verified gallery.`,
-        };
-      }
+      return {
+        picks: [],
+        subject,
+        subjectConfidence: namedConfidence,
+        message:
+          `We read your art as ${subject} and found ${blindQueueCount} promising street placements, but when judges saw the final street routes with no hints, ` +
+          (misreads
+            ? `they called the best ones "${misreads}" instead. `
+            : `none could name the subject. `) +
+          `I am not showing those as results because they did not read clearly enough.`,
+      };
     }
   } else {
     for (const k of keepers) {
@@ -917,14 +905,16 @@ export async function runWowPlacement(args: {
     }
     if (!verified.length) {
       const bestScored = scored.slice().sort((a, b) => b.score - a.score)[0];
-      const reason = `The likeness judge scored the closest route ${bestScored?.score ?? 0}/10, below the normal pass bar.`;
-      if (await promoteBestRunnableDraft(reason)) {
-        progress("No strict likeness pass - showing the best runnable draft instead...");
-      }
+      return {
+        picks: [],
+        subject,
+        subjectConfidence: namedConfidence,
+        message: `The likeness judge scored the closest route ${bestScored?.score ?? 0}/10, below the normal pass bar. I am not showing that as a result because it is below the recognizability bar.`,
+      };
     }
   }
 
-  progress(verified.some((p) => p.fallbackDraft) ? "Building your best runnable draft..." : "Building your verified picks...");
+  progress("Building your verified picks...");
   const picks: WowPlacePick[] = [];
   for (const k of verified) {
     const placedStrokes = placeSegments(strokes, k.c.center, k.c.extentM, k.c.rotDeg, false);
