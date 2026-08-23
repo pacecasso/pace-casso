@@ -5,6 +5,9 @@ import {
   strokesToContour,
   guessMatchesSubject,
   MAX_PROGRAM_STROKES,
+  snapStrokesToLattice,
+  joinElementsWithRetrace,
+  polylineInkLen,
 } from "./sketchInterpret";
 
 // --- parse + validate ---------------------------------------------------------
@@ -108,7 +111,6 @@ import {
 
 // --- snapStrokesToLattice -------------------------------------------------------
 {
-  const { snapStrokesToLattice } = await import("./sketchInterpret");
   // a diagonal line snaps to lattice steps (more points, axis-aligned segs)
   const snapped = snapStrokesToLattice([[[0, 0], [1000, 1000]]]);
   assert.ok(snapped.length === 1 && snapped[0]!.length > 2, "diagonal becomes staircase");
@@ -128,7 +130,6 @@ import {
 
 // --- joinElementsWithRetrace ----------------------------------------------------
 {
-  const { joinElementsWithRetrace, polylineInkLen } = await import("./sketchInterpret");
   // Two elements whose endpoints don't meet: a square outline, then an
   // interior detail starting near a drawn corner. The direct join would be
   // a visible diagonal slash across the square; the join must instead walk

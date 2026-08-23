@@ -12,6 +12,7 @@ async function readGpx(id: string): Promise<{ status: number; body: string; disp
   };
 }
 
+async function main(): Promise<void> {
 // Aug 11 re-verification: only the apple remains an exportable verified
 // bank route; demoted subjects (trophy, martini-dc, sneaker, ...) 404.
 {
@@ -41,3 +42,9 @@ const ambiguous = await readGpx("martini");
 assert.equal(ambiguous.status, 404, "ambiguous martini id should not hide the DC-only route");
 
 console.log("curatedGpxRouteHandler tests ok");
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
