@@ -320,6 +320,36 @@ async function fetchArtistLoop(
   return cleanArtistLoopResult(rec);
 }
 
+type StudioRoutePayload = {
+  ok: boolean;
+  verified?: boolean;
+  subject?: string;
+  chain?: [number, number][];
+  km?: number;
+  visualScore?: number;
+  verdicts?: { guess: string; confidence: number }[];
+};
+
+async function fetchStudioRoute(
+  body: Record<string, unknown>,
+  onProgress: (detail: string) => void,
+): Promise<StudioRoutePayload | null> {
+  try {
+    onProgress("Studio lane: tracing your shape on real streets at hero scale…");
+    const res = await fetch("/api/studio-route", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) return null;
+    const rec = (await res.json()) as StudioRoutePayload;
+    if (!rec || typeof rec !== "object") return null;
+    return rec;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchInterpret(
   imageBase64: string,
   onProgress: (detail: string) => void,
@@ -583,7 +613,78 @@ export default function Step2MapAnchor({
       }, 120);
       return result.recognizedCount >= 2;
     };
+
+    const applyStudioResult = (result: StudioRoutePayload) => {
+      const chain = result.chain ?? [];
+      if (chain.length < 8) return false;
+      const distanceMeters = Math.round((result.km ?? 0) * 1000);
+      const lat = chain.reduce((a, p) => a + p[0], 0) / chain.length;
+      const lng = chain.reduce((a, p) => a + p[1], 0) / chain.length;
+      const guessText = result.verdicts?.length
+        ? ` Judges guessed: ${result.verdicts.map((v) => v.guess).join(", ")}.`
+        : "";
+      const pick: Top5Pick = {
+        placement: { center: [lat, lng], rotationDeg: 0, scale: 1 },
+        anchorLatLngs: chain,
+        designIntent: result.subject ?? "your art, traced on real streets",
+        routeCoords: chain,
+        snappedRoute: {
+          coordinates: chain,
+          distanceMeters,
+          blockWaypoints: chain,
+          preserveBlockWaypoints: true,
+        },
+        previewDataUrl: renderRouteToDataUrl(chain, 640, { padding: 96 }) ?? "",
+        distanceKm: result.km ?? distanceMeters / 1000,
+        qualityScore: 90,
+        shapeMatchScore: 90,
+        sourceMatchScore: 85,
+        verifiedRoute: true,
+        verificationLabel: "STUDIO 2/2",
+        reason:
+          `Studio lane: your shape traced directly on real streets at hero scale. ` +
+          `Both blind judges named it "${result.subject ?? "your subject"}" with zero context.${guessText}`,
+      };
+      setPicks([pick]);
+      setPicksVisionUsed(true);
+      setCenter([...pick.placement.center] as [number, number]);
+      setRotationDeg(0);
+      setScale(1);
+      setSelectedPickIdx(0);
+      setPreferredSnappedRoute(routeFromPick(pick));
+      setSelectedAnchorLatLngs(pick.anchorLatLngs ?? null);
+      setFitNonce((n) => n + 1);
+      setAutoHint(
+        `Studio route found: 2/2 blind judges recognized it as "${result.subject}". Tap it to inspect, then continue.`,
+      );
+      window.setTimeout(() => {
+        document
+          .getElementById("step2-picks")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 120);
+      return true;
+    };
     try {
+      // Stage 0: the studio lane — trace the approved shape directly on the
+      // street graph at hero scale and blind-judge the rendered route. This
+      // is the offline pipeline that produced the verified keeper batch;
+      // only a fully verified result (both judges correct) is shown, and
+      // anything else falls through to the normal cascade untouched.
+      if (cityPreset.id === "manhattan") {
+        const studio = await fetchStudioRoute(
+          {
+            contour,
+            cityId: cityPreset.id,
+            subject: interpretedSubject ?? undefined,
+            imageBase64: !interpretedSubject && imageBase64 ? imageBase64 : undefined,
+          },
+          setAutoHint,
+        );
+        if (studio?.ok && studio.verified && applyStudioResult(studio)) {
+          return;
+        }
+      }
+
       // Stage 1: the user's art, exactly as approved.
       const literal = await fetchWowPlace(
         {
