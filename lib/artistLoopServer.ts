@@ -116,8 +116,8 @@ async function callClaude(
 // ---------------------------------------------------------------------------
 // Designer
 // ---------------------------------------------------------------------------
-const DESIGNER_MODEL = "claude-opus-4-8";
-const JUDGE_MODEL = "claude-opus-4-8";
+const DESIGNER_MODEL = "claude-fable-5";
+const JUDGE_MODEL = "claude-fable-5";
 const DRAFTS_PER_ROUND = 4;
 
 const POC_ADDENDUM = `

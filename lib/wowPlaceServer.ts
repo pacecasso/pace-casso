@@ -49,7 +49,7 @@ import {
   strokesAxisAlignment,
 } from "./wowFunnel";
 
-const JUDGE_MODEL = "claude-opus-4-8"; // measurement parity with the July series
+const JUDGE_MODEL = "claude-fable-5"; // Aug 23 calibration: junk scores 2-4, references 8-9; opus-4-8 rated junk "Dog 6"
 const PRIMED_KEEP_THRESHOLD = 6;
 const SCREEN_COUNT = 16;
 const MAX_PICKS = 5;

@@ -42,7 +42,7 @@ import { strokesInkRatio } from "./wowFunnel";
 
 type Pt2 = [number, number];
 
-const MODEL = "claude-opus-4-8"; // measurement parity with the judge series
+const MODEL = "claude-fable-5"; // upgraded with the judge series, Aug 23
 const MAX_ROUNDS = 4;
 // Placement physics for the scale-honest street simulation (mirrors
 // wowPlaceServer: extent = km*1000 / (inkRatio * STREET_FACTOR), clamped).
