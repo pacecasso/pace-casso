@@ -14,10 +14,6 @@ import { extractNormalizedContourFromLineMask } from "../lib/extractNormalizedCo
 import { rasterizeNormalizedPathToLineMask } from "../lib/artPathMask";
 import { describeLineMaskHealth } from "../lib/lineMaskHealth";
 import { analyzeOneLinePath } from "../lib/oneLinePathAnalysis";
-import {
-  buildArtPathInterpretations,
-  type ArtPathInterpretation,
-} from "../lib/artPathInterpretation";
 import { inkThresholdForUpload } from "../lib/otsuThreshold";
 import type { PhotoContourWorkerResponse } from "../lib/photoContourWorkerMessages";
 import {
@@ -552,8 +548,6 @@ export default function Step1ImageUpload({
   const [normalizedContour, setNormalizedContour] = useState<
     NormalizedPoint[] | null
   >(null);
-  const [selectedInterpretationId, setSelectedInterpretationId] =
-    useState<ArtPathInterpretation["id"]>("trace");
   const [undoCount, setUndoCount] = useState(0);
   /** Bumps when line mask bytes change so contour preview can refresh. */
   const [lineMaskVersion, setLineMaskVersion] = useState(0);
@@ -731,33 +725,12 @@ export default function Step1ImageUpload({
     applyContourRef.current = applyContourToCanvas;
   }, [applyContourToCanvas]);
 
-  const interpretations = useMemo(
-    () => buildArtPathInterpretations(normalizedContour),
-    [normalizedContour],
-  );
-  const selectedInterpretation = useMemo(() => {
-    if (!interpretations.length) return null;
-    return (
-      interpretations.find((v) => v.id === selectedInterpretationId) ??
-      interpretations.find((v) => v.id === "ai-sketch") ??
-      interpretations.find((v) => v.id === "bold") ??
-      interpretations.find((v) => v.id === "grid") ??
-      interpretations.find((v) => v.id === "iconic-heart") ??
-      interpretations.find((v) => v.id === "trace") ??
-      interpretations[0]!
-    );
-  }, [interpretations, selectedInterpretationId]);
-  const selectedContour = selectedInterpretation?.points ?? normalizedContour;
-
+  const selectedContour = normalizedContour;
 
   useEffect(() => {
-    if (!selectedInterpretation && normalizedContour) {
-      applyContourToCanvas(normalizedContour);
-      return;
-    }
-    if (!selectedInterpretation) return;
-    requestAnimationFrame(() => applyContourToCanvas(selectedInterpretation.points));
-  }, [applyContourToCanvas, normalizedContour, selectedInterpretation]);
+    if (!normalizedContour) return;
+    requestAnimationFrame(() => applyContourToCanvas(normalizedContour));
+  }, [applyContourToCanvas, normalizedContour]);
 
   const refreshContourFromMask = useCallback(
     (level: number) => {
@@ -772,6 +745,9 @@ export default function Step1ImageUpload({
       setNormalizedContour(null);
       requestAnimationFrame(() => applyContourToCanvas(null));
       const copy = new Uint8Array(mask);
+      const source = lineArtDirtyRef.current
+        ? "line-art"
+        : "silhouette-outline";
       const buf = copy.buffer.slice(
         copy.byteOffset,
         copy.byteOffset + copy.byteLength,
@@ -782,7 +758,7 @@ export default function Step1ImageUpload({
         workerInFlightRef.current++;
         setContourComputing(true);
         w.postMessage(
-          { id, level, boxSize: BOX_SIZE, mask: buf },
+          { id, level, boxSize: BOX_SIZE, mask: buf, source },
           [buf],
         );
       } else {
@@ -793,6 +769,7 @@ export default function Step1ImageUpload({
             level,
             BOX_SIZE,
             BOX_SIZE,
+            { source },
           ) as NormalizedPoint[] | null;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -918,7 +895,6 @@ export default function Step1ImageUpload({
     setDecodeError(null);
     setSvgBusy(false);
     setAlphaBusy(false);
-    setSelectedInterpretationId("trace");
     setNormalizedContour(null);
     setContourHint(null);
     setContourBuilt(false);
@@ -1014,6 +990,7 @@ export default function Step1ImageUpload({
               DEFAULT_CONTOUR_LEVEL,
               BOX_SIZE,
               BOX_SIZE,
+              { source: "silhouette-outline" },
             );
             if (!contour || contour.length < 4) throw new Error("contour too short");
             if (uploadSeqRef.current !== uploadedImage.seq) return;

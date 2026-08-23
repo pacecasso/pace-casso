@@ -43,6 +43,7 @@ import {
   curatedNikeSwooshMapNativeCandidate,
   curatedNikeSwooshRouteLine,
 } from "./curatedNikeSwooshManhattanRoute";
+import { curatedNikeBlockLockupMapNativeCandidate } from "./curatedNikeBlockLockupManhattanRoute";
 import { compileContourToLattice } from "./latticeCompiler";
 import { getManhattanLatticeGraph } from "./manhattanLattice";
 import { splitSketchComponents } from "./sketchReview";
@@ -1433,7 +1434,8 @@ export function meetsAbsoluteDisplayFloor(
   // and length only.
   if (isVerifiedRouteLibraryIntent(candidate.designIntent)) {
     return (
-      clean >= 7 &&
+      shape >= 55 &&
+      clean >= 45 &&
       (distance == null || !Number.isFinite(distance) || distance <= 35)
     );
   }
@@ -1466,7 +1468,8 @@ export function isDisplayWorthyAutoFindCandidate(
   // traced contour, so contour similarity is the wrong test for them.
   if (isVerifiedRouteLibraryIntent(candidate.designIntent)) {
     return (
-      clean >= 7 &&
+      shape >= 62 &&
+      clean >= 45 &&
       (distance == null || !Number.isFinite(distance) || distance <= 35)
     );
   }
@@ -1523,8 +1526,11 @@ function finalRouteTruthFloors(
   // its wordmark in block letters. Scoring it for similarity to the contour
   // (which is the symbol alone) punishes it for the letters that are the
   // whole point, so it was generated, gated out, and never shown.
+  if (isCuratedNike) {
+    return { minShape: 62, minSource: 0, minClean: 45, maxDistanceKm: 18 };
+  }
   if (isVerifiedRouteLibrary) {
-    return { minShape: 10, minSource: 0, minClean: 7, maxDistanceKm: 35 };
+    return { minShape: 58, minSource: 0, minClean: 42, maxDistanceKm: 35 };
   }
   if (/\blockup\b/i.test(candidate.designIntent ?? "")) {
     return { minShape: 12, minSource: 0, minClean: 7, maxDistanceKm: 56 };
@@ -1535,9 +1541,6 @@ function finalRouteTruthFloors(
     // project has produced ran 50 km across 14th-54th Street. A 24 km
     // ceiling silently rejected exactly that class of route.
     return { minShape: 45, minSource: 20, minClean: 7, maxDistanceKm: 56 };
-  }
-  if (isCuratedNike) {
-    return { minShape: 42, minSource: 0, minClean: 20, maxDistanceKm: 12 };
   }
   if (isWordmark) {
     return { minShape: 62, minSource: 42, minClean: 18, maxDistanceKm: 42 };
@@ -1612,11 +1615,6 @@ function isDisplayWorthyForHint(
   const distance = candidate.distanceKm;
   if (!finalRouteTruthVerdict(candidate, hint, requiredVisualFeatures).ok) {
     return false;
-  }
-  if (/\bcurated nike swoosh manhattan v1\b/.test(
-    (candidate.designIntent ?? "").toLowerCase(),
-  )) {
-    return true;
   }
 
   if (hint?.shapeClass === "letter") {
@@ -2023,6 +2021,40 @@ function dominantChord(
   return best;
 }
 
+export function taperedSweepRibbonScore(
+  coords: [number, number][],
+  placement: PlacementTransform,
+): number {
+  const pts = localDesignSpaceRawPoints(coords, placement);
+  if (pts.length < 5) return 0;
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const height = Math.max(...ys) - Math.min(...ys);
+  if (width < 250 || height < 90) return 0;
+
+  let pathLen = 0;
+  for (let i = 1; i < pts.length; i++) {
+    pathLen += segmentLengthNorm(pts[i - 1]!, pts[i]!);
+  }
+  const endpointGap = segmentLengthNorm(pts[0]!, pts[pts.length - 1]!);
+  const diag = Math.hypot(width, height) || 1;
+  const closedness = Math.max(0, 1 - endpointGap / (diag * 0.18));
+  const aspect = width / Math.max(height, 1);
+  const pathRatio = pathLen / Math.max(width, 1);
+  const verticalMass = Math.min(1, height / Math.max(1, width * 0.22));
+
+  let score = 0;
+  score += Math.min(28, Math.max(0, ((aspect - 1.45) / 1.25) * 28));
+  score += Math.min(28, verticalMass * 28);
+  score += Math.min(26, closedness * 26);
+  score += Math.min(18, Math.max(0, ((pathRatio - 1.75) / 1.25) * 18));
+  if (closedness < 0.35) score -= 34;
+  if (height < width * 0.12) score -= 28;
+  if (pathRatio < 1.45) score -= 18;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
 export function sweepVisualStructureScore(
   coords: [number, number][],
   placement: PlacementTransform,
@@ -2109,7 +2141,6 @@ function requiredVisualStructureScore(
   requiredVisualFeatures: string[],
 ): number {
   if (!requiresSweepStructure(requiredVisualFeatures)) return 100;
-  if (isCuratedNikeCandidate(candidate)) return 100;
   return sweepVisualStructureScore(candidate.coords, candidate.placement);
 }
 
@@ -2118,9 +2149,6 @@ function passesSweepDisplayFloor(
   requiredVisualFeatures: string[],
 ): boolean {
   if (!requiresSweepStructure(requiredVisualFeatures)) return true;
-  if (isCuratedNikeCandidate(candidate)) {
-    return candidate.km >= 8 && candidate.km <= 24;
-  }
   if (requiresTaperedSweep(requiredVisualFeatures)) {
     const intent = (candidate.designIntent ?? "").toLowerCase();
     if (/\bgrid-etched\b/.test(intent)) {
@@ -2180,9 +2208,6 @@ function sweepRankPriority(candidate: SnappedCandidate): number {
   }
   if (/\bcurated nike block lockup manhattan v1\b/.test(intent)) {
     score += 340;
-  }
-  if (/\bcurated nike swoosh manhattan v1\b/.test(intent)) {
-    score += 260;
   }
   if (/\bhuman-grade manhattan open sweep\b/.test(intent)) {
     score += 110;
@@ -5085,11 +5110,8 @@ function makePicks(
     : null;
   const effectiveDisplayOrder =
     gasOrder ?? sweepOrder ?? boltOrder ?? starOrder ?? displayOrder;
-  const hasCuratedNikeSwoosh = displaySnapped.some(isCuratedNikeCandidate);
-  const preferredWeight = hasCuratedNikeSwoosh
-    ? 120
-    : needsGasSelection
-      ? 36
+  const preferredWeight = needsGasSelection
+    ? 36
     : needsSweepSelection
     ? 32
     : needsBoltSelection
@@ -5110,13 +5132,6 @@ function makePicks(
           preferredWeight,
         )
       : selectDiverseAutoFindPickIndices(displaySnapped, topK);
-  const curatedNikeIndex = displaySnapped.findIndex(isCuratedNikeCandidate);
-  if (curatedNikeIndex >= 0) {
-    indices = [
-      curatedNikeIndex,
-      ...indices.filter((index) => index !== curatedNikeIndex),
-    ].slice(0, topK);
-  }
   const out: Top5Pick[] = [];
   for (const i of indices) {
     const s = displaySnapped[i]!;
@@ -5265,7 +5280,7 @@ export async function autoFindTop5(
     !options.anchorAround &&
     preset.id === "manhattan" &&
     inferSwooshFromSourceName(options.imageSourceName)
-      ? [curatedNikeSwooshMapNativeCandidate()]
+      ? [curatedNikeBlockLockupMapNativeCandidate()]
       : [];
   /**
    * LOCKUP: the dominant traced component drawn large above the wordmark in
@@ -5326,7 +5341,7 @@ export async function autoFindTop5(
           requestStreetTraceCandidates(
             contour,
             preset,
-            effectiveTargetDistanceKm,
+            undefined,
             requiredVisualFeatures,
             "your art",
             { fullSketch: true },
@@ -5335,7 +5350,7 @@ export async function autoFindTop5(
             ? requestStreetTraceCandidates(
                 lockupSymbolDraft.points,
                 preset,
-                effectiveTargetDistanceKm,
+                undefined,
                 requiredVisualFeatures,
                 `the "${lockupSymbolDraft.label}" interpretation of the upload`,
               )

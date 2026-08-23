@@ -8,7 +8,7 @@ import type {
 } from "../lib/photoContourWorkerMessages";
 
 self.onmessage = (ev: MessageEvent<PhotoContourWorkerRequest>) => {
-  const { id, mask, level, boxSize } = ev.data;
+  const { id, mask, level, boxSize, source } = ev.data;
   try {
     const u8 = new Uint8Array(mask);
     const health = describeLineMaskHealth(u8, boxSize, boxSize);
@@ -17,6 +17,7 @@ self.onmessage = (ev: MessageEvent<PhotoContourWorkerRequest>) => {
       level,
       boxSize,
       boxSize,
+      { source },
     );
     const msg: PhotoContourWorkerResponse = {
       id,

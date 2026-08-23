@@ -33,6 +33,8 @@ export type GasLogoRouteBuildOptions = {
   snapDelayMs?: number;
   /** Reject if any consecutive geometry points exceed this (catches block chords). */
   maxHopMeters?: number;
+  /** Upper route distance for semantic logo runs. Defaults to 35 km. */
+  maxDistanceKm?: number;
 };
 
 export type GasLogoRouteResult = {
@@ -126,7 +128,8 @@ async function routeFromAxisAnchors(
   }
 
   const km = routeLengthKm(cleaned);
-  if (km < 6 || km > 22) {
+  const maxDistanceKm = options.maxDistanceKm ?? 35;
+  if (km < 6 || km > maxDistanceKm) {
     return { ok: false, reason: `distance ${km.toFixed(1)} km out of range` };
   }
 

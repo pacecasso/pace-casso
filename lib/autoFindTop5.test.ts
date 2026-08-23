@@ -29,6 +29,7 @@ import {
   selectDiverseAutoFindPickIndices,
   snappedRouteDistanceKm,
   sweepVisualStructureScore,
+  taperedSweepRibbonScore,
   usableTargetDistanceKm,
   visualStructureMatchPercent,
   type AutoFindPickSelectionCandidate,
@@ -444,6 +445,37 @@ assert.equal(
   }).ok,
   true,
   "sketch-led street routes should pass on etch-a-sketch readability, not pixel faithfulness to the upload",
+);
+
+assert.equal(
+  meetsAbsoluteDisplayFloor({
+    placement: { center: [40.75, -73.98], scale: 1, rotationDeg: 0 },
+    kind: "street-design",
+    qualityScore: 46,
+    shapeMatchScore: 20,
+    distanceKm: 8.7,
+    designIntent: "Curated Nike swoosh Manhattan v1: closed tapered swoosh outline compiled to real street junctions.",
+  }),
+  false,
+  "a curated/verified logo route still needs enough shape match; the label cannot rescue a line",
+);
+
+assert.equal(
+  finalRouteTruthVerdict(
+    {
+      placement: { center: [40.75, -73.98], scale: 1, rotationDeg: 0 },
+      kind: "street-design",
+      qualityScore: 46,
+      shapeMatchScore: 20,
+      sourceMatchScore: 0,
+      distanceKm: 8.7,
+      designIntent: "Curated Nike swoosh Manhattan v1: closed tapered swoosh outline compiled to real street junctions.",
+    },
+    null,
+    ["swoosh", "tapered outline", "wide heel", "thin rising tip"],
+  ).ok,
+  false,
+  "the curated Nike route must not bypass the stricter sweep/logo truth floor",
 );
 
 assert.equal(
@@ -1085,10 +1117,10 @@ assert(
   "swoosh candidates should preserve their route intent instead of becoming generic icons",
 );
 assert(
-  swooshStreetNative.some((candidate) =>
+  !swooshStreetNative.some((candidate) =>
     candidate.designIntent.includes("Human-grade Manhattan open sweep"),
   ),
-  "tapered swoosh representatives should include simple open-sweep routes for street readability",
+  "tapered swoosh representatives should not include open-sweep routes that collapse the logo into one line",
 );
 assert(
   swooshStreetNative.some((candidate) =>
@@ -1121,6 +1153,23 @@ assert(
     { center: [40.75, -73.99], rotationDeg: 90, scale: 1 },
   ) < 18,
   "generic sweep structure gate should reject plain vertical-line impostors",
+);
+assert(
+  taperedSweepRibbonScore(strongestSwooshSweep.anchors, strongestSwooshSweep.placement) >= 34,
+  "tapered swoosh candidates must have closed ribbon geometry, not just a sweep label",
+);
+assert(
+  taperedSweepRibbonScore(
+    [
+      [40.738, -74.003],
+      [40.732, -73.997],
+      [40.741, -73.988],
+      [40.755, -73.979],
+      [40.769, -73.972],
+    ],
+    { center: [40.75, -73.99], rotationDeg: 31, scale: 1 },
+  ) < 34,
+  "a clean open swoosh/checkmark line must not pass the tapered logo ribbon gate",
 );
 
 const boltStreetNative = cityGridSketchCandidates(

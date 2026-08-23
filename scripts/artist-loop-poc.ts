@@ -260,12 +260,43 @@ function cleanPoints(raw: unknown): StreetDesignPoint[] {
 
 const DRAFTS_PER_ROUND = 3;
 
+const LOGO_SPECIFIC_ADDENDUM = (() => {
+  if (baseName.includes("strava")) return `
+
+LOGO-SPECIFIC HARD REQUIREMENTS FOR STRAVA:
+- The drawing must read as the Strava mark: one tall upward chevron/mountain above one smaller downward chevron/valley.
+- Do NOT draw a diamond, animal face, shield, rocket, kite, or generic mountain landscape.
+- Use two bold angular open chevrons with a small overlap/offset; preserve the negative triangular hole.
+- Street output will be blocky, so design as stepped chevrons, not rounded curves.
+- If a stranger might say dog/cat/face/kite/diamond, the design failed.
+- acceptableGuesses must include: strava, strava logo, chevrons, mountain arrow, orange running logo.`;
+  if (baseName.includes("chanel")) return `
+
+LOGO-SPECIFIC HARD REQUIREMENTS FOR CHANEL:
+- The drawing must read as the Chanel lockup when the source includes it: interlocking double-C mark plus the visible CHANEL wordmark.
+- Do not drop the word CHANEL from a source image that visibly includes it; return word: "CHANEL" and keep points focused on the double-C symbol.
+- Draw two opposing C-shaped loops crossing in the middle, with open ends on left and right.
+- Do NOT draw boxes, glasses, a car, chain links, or a generic oval.
+- Keep the center overlap clear and symmetric; no interior grid scaffolding.
+- acceptableGuesses must include: chanel, chanel logo, double c, interlocking c, two c's, CHANEL.`;
+  if (baseName.includes("stones")) return `
+
+LOGO-SPECIFIC HARD REQUIREMENTS FOR ROLLING STONES TONGUE LOGO:
+- The drawing must read as lips with a tongue sticking out.
+- Primary features: top lip bow, lower lip, open mouth line, long tongue protruding downward.
+- Do NOT draw a face, map, gun, block diagram, animal, or abstract shape.
+- Simplify aggressively, but preserve every major identity component from the source: lips outline, mouth opening, tongue, and the obvious white highlight/teeth shapes as clean negative-space cues when present.
+- Keep the tongue large and unmistakable, at least 35% of total height.
+- acceptableGuesses must include: lips, tongue, rolling stones, mouth, lips and tongue.`;
+  return "";
+})();
+
 async function designerCall(
   imageBlock: ContentBlock,
   critique: ContentBlock[] | null,
   exemplarBlocks: ContentBlock[],
 ): Promise<{ designs: DesignRound[]; acceptableGuesses: string[] }> {
-  const basePrompt = buildInterpretationPrompt("Manhattan", DRAFTS_PER_ROUND) + POC_ADDENDUM;
+  const basePrompt = buildInterpretationPrompt("Manhattan", DRAFTS_PER_ROUND) + POC_ADDENDUM + LOGO_SPECIFIC_ADDENDUM;
   const content: ContentBlock[] = [
     ...exemplarBlocks,
     { type: "text", text: "Now the user's uploaded image — this is the subject to draw:" },

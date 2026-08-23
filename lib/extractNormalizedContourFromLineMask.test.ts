@@ -1,5 +1,7 @@
 import assert from "node:assert";
 import { extractNormalizedContourFromLineMask } from "./extractNormalizedContourFromLineMask";
+import { filledSilhouetteToLineArtMask } from "./filledSilhouetteToLineArtMask";
+import { scoreFinalRouteSimilarity } from "./finalRouteSimilarity";
 
 const W = 80;
 const H = 40;
@@ -26,6 +28,45 @@ function separatedLetterLikeStrokes(): Uint8Array {
   assert(
     Math.max(...xs) - Math.min(...xs) > 0.45,
     "path should span both separated components",
+  );
+}
+
+{
+  const w = 100;
+  const h = 60;
+  const filled = new Uint8Array(w * h);
+  for (let y = 10; y <= 44; y++) {
+    const left = 8 + Math.floor((y - 10) * 0.35);
+    const right = 90 - Math.floor((y - 10) * 1.7);
+    for (let x = left; x <= Math.max(left + 3, right); x++) {
+      filled[y * w + x] = INK;
+    }
+  }
+  const outline = filledSilhouetteToLineArtMask(filled, w, h, 3);
+  const contour = extractNormalizedContourFromLineMask(
+    outline,
+    0.22,
+    w,
+    h,
+    { source: "silhouette-outline" },
+  );
+  assert(contour, "silhouette outline should produce a contour");
+  const expected = [
+    { x: 8 / w, y: 10 / h },
+    { x: 90 / w, y: 10 / h },
+    { x: 32 / w, y: 44 / h },
+    { x: 20 / w, y: 44 / h },
+    { x: 8 / w, y: 10 / h },
+  ];
+  const similarity = scoreFinalRouteSimilarity(expected, contour);
+  assert(
+    similarity.score >= 90,
+    "silhouette boundary should stay clean, got " + similarity.score,
+  );
+  assert.strictEqual(
+    similarity.diagnostics.actualSelfIntersections,
+    0,
+    "untouched silhouette must not acquire skeleton branches",
   );
 }
 

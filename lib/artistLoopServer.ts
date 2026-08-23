@@ -141,26 +141,32 @@ than 60 points WILL BE REJECTED without being looked at. Spend the points on
 dense sampling of every curve (10-30 points per curve) and on the identity
 features. Only a single plain closed shape (heart, egg, circle) may use fewer.
 
-WORDS AND LETTERS — HARD RULE: you may only use words that are VISIBLY
+WORDS AND LETTERS - HARD RULE: you may only use words that are VISIBLY
 PRINTED in the uploaded image. Never caption, label, or name the subject
-with invented text ("GAS" on a wordless pump logo, "PUMP" under a pump) —
+with invented text ("GAS" on a wordless pump logo, "PUMP" under a pump) -
 a labeled illustration is not the user's logo, and invented words are an
-automatic failure no matter how much they help recognition. When the
-upload DOES contain short printed text (6-12 letters), never draw letter
-shapes point-by-point yourself — hand-drawn letter coordinates always
-come out as scribble. Give the draft a "word" field with the EXACT text
-from the image and make your "points" ONLY the symbol as one clean
-closed outline; the system composes the lockup with proven machinery.
+automatic failure no matter how much they help recognition. If the upload
+contains short printed text (2-12 letters, or a short phrase such as
+"JUST DO IT"), that text is an identity feature, not optional detail.
+Preserve it by returning a "word" field with the EXACT visible text and
+make your "points" the primary symbol only; the system composes the
+symbol-plus-word lockup with proven machinery. Only omit visible text when
+it is tiny legal copy, a URL, or too small to be part of the logo identity.
+Never draw letter shapes point-by-point yourself - hand-drawn letter
+coordinates always come out as scribble.
 
-ONE SUBJECT ONLY (multi-object logos): a logo showing two things side by
-side (a pump AND a person, a mascot AND a product) must be interpreted as
-ONE subject — pick the single most distinctive figure and draw only it,
-big. Measured across this project's whole history: no two-object street
-route has ever been recognized by blind judges (the objects merge into
-animal silhouettes); single bold subjects are the only street winners.
-Prefer asymmetric, characterful views (a profile with a nose beats a
-symmetric frontal blob — symmetry reads as hearts and dogs).
+PRESERVE THE LOGO LOCKUP: do not arbitrarily remove major visible parts
+of an uploaded brand mark. If the source shows symbol + wordmark/slogan
+(Nike swoosh + JUST DO IT, Chanel double-C + CHANEL), the route must
+include both, simplified into bold street-readable strokes. Simplification
+means fewer wiggles, bolder contours, and street-grid-friendly angles; it
+does NOT mean dropping the wordmark, slogan, tongue, person, product, or
+other major identity component unless the component is visually minor.
 
+ONE SUBJECT ONLY (non-logo multi-object scenes): for ordinary pictures
+showing multiple unrelated objects side by side, choose the single most
+distinctive figure and draw it big. This rule does not override brand
+lockup preservation above.
 Additionally return one extra JSON key at the top level:
   "acceptableGuesses": 4-10 short words/phrases a stranger might reasonably say when
   naming the subject of the finished route (synonyms and near-misses that should

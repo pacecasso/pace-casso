@@ -3163,9 +3163,11 @@ export function cityGridSketchCandidates(
       out.push(...manhattanBoltCandidates(draft, preset, targetDistanceKm));
     }
     if (isSweepingCurveDraft(draft)) {
-      prioritySweepRoutes.push(
-        ...manhattanOpenSweepCandidates(draft, preset, targetDistanceKm),
-      );
+      if (!isTaperedOutlineDraft(draft)) {
+        prioritySweepRoutes.push(
+          ...manhattanOpenSweepCandidates(draft, preset, targetDistanceKm),
+        );
+      }
       out.push(
         ...manhattanTaperedSwooshCandidates(draft, preset, targetDistanceKm),
         ...manhattanRibbonSweepCandidates(draft, preset, targetDistanceKm),

@@ -16,6 +16,8 @@
  * reaches it through POST /api/street-trace.
  */
 
+import { scoreFinalRouteSimilarity } from "./finalRouteSimilarity";
+
 export type LatLng = [number, number];
 export type NormalizedPoint = { x: number; y: number };
 
@@ -104,6 +106,107 @@ function nearestNode(g: Graph, p: LatLng): number {
   return best;
 }
 
+function unitDirection(a: LatLng, b: LatLng): [number, number] {
+  const x = (b[1] - a[1]) * mPerLng((a[0] + b[0]) / 2);
+  const y = (b[0] - a[0]) * M_PER_LAT;
+  const length = Math.hypot(x, y) || 1;
+  return [x / length, y / length];
+}
+
+function directionDot(
+  a: [number, number],
+  b: [number, number],
+): number {
+  return a[0] * b[0] + a[1] * b[1];
+}
+
+/**
+ * Snap an artwork anchor to a street node whose incident streets support the
+ * contour's incoming and outgoing directions. Pure nearest-node snapping
+ * alternates between parallel blocks and selects dead ends, creating ladders
+ * and false out-and-back marks in the final drawing.
+ */
+type AnchorNodeCandidate = { id: number; score: number };
+
+function directionAwareAnchorCandidates(
+  g: Graph,
+  dense: LatLng[],
+  denseIndex: number,
+  closed: boolean,
+  limit = 5,
+): AnchorNodeCandidate[] {
+  const last = dense.length - 1;
+  const cycleLength = closed ? Math.max(1, last) : dense.length;
+  const index = Math.max(0, Math.min(denseIndex, last));
+  const step = Math.min(4, Math.max(1, Math.floor(cycleLength / 12)));
+  const offsetIndex = (delta: number): number => {
+    if (!closed) return Math.max(0, Math.min(last, index + delta));
+    const base = index === last ? 0 : index;
+    return ((base + delta) % cycleLength + cycleLength) % cycleLength;
+  };
+  const prev = dense[offsetIndex(-step)]!;
+  const point = dense[index]!;
+  const next = dense[offsetIndex(step)]!;
+  const incoming = unitDirection(prev, point);
+  const outgoing = unitDirection(point, next);
+  const openStart = !closed && index === 0;
+  const openEnd = !closed && index === last;
+  const hairpin = directionDot(incoming, outgoing) < -0.35;
+
+  const clat = Math.round(point[0] / CELL);
+  const clng = Math.round(point[1] / CELL);
+  const candidates = new Set<number>();
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      const key = String(clat + dr) + ":" + String(clng + dc);
+      for (const id of g.grid.get(key) ?? []) candidates.add(id);
+    }
+  }
+
+  const ranked: AnchorNodeCandidate[] = [];
+  for (const id of candidates) {
+    const node = g.coord[id]!;
+    const distance = meters(point, node);
+    const edges = g.adj[id] ?? [];
+    let directionCost = 4;
+    for (let a = 0; a < edges.length; a++) {
+      const incomingEdge = unitDirection(node, g.coord[edges[a]!.to]!);
+      const arrival: [number, number] = [-incomingEdge[0], -incomingEdge[1]];
+      if (openEnd) {
+        directionCost = Math.min(
+          directionCost,
+          1 - directionDot(arrival, incoming),
+        );
+        continue;
+      }
+      for (let b = 0; b < edges.length; b++) {
+        const departure = unitDirection(node, g.coord[edges[b]!.to]!);
+        if (openStart) {
+          directionCost = Math.min(
+            directionCost,
+            1 - directionDot(departure, outgoing),
+          );
+          continue;
+        }
+        if (a === b && !hairpin) continue;
+        const cost =
+          1 - directionDot(arrival, incoming) +
+          1 - directionDot(departure, outgoing);
+        if (cost < directionCost) directionCost = cost;
+      }
+    }
+    const deadEndPenalty =
+      edges.length < 2 && !hairpin && !openStart && !openEnd ? 260 : 0;
+    const farPenalty = Math.max(0, distance - 180) * 3;
+    const score = distance + directionCost * 110 + deadEndPenalty + farPenalty;
+    ranked.push({ id, score });
+  }
+  ranked.sort((a, b) => a.score - b.score);
+  if (ranked.length) return ranked.slice(0, Math.max(1, limit));
+  const fallback = nearestNode(g, point);
+  return fallback >= 0 ? [{ id: fallback, score: 0 }] : [];
+}
+
 // ---------------------------------------------------------------------------
 // Corridor A*
 // ---------------------------------------------------------------------------
@@ -114,6 +217,7 @@ function corridorPath(
   contour: LatLng[],
   lambda: number,
   corridorM: number,
+  bendWeight = 28,
 ): number[] | null {
   const target = g.coord[b]!;
   const distContour = (p: LatLng) => {
@@ -124,69 +228,266 @@ function corridorPath(
     }
     return m;
   };
-  const open = new Map<number, number>([[a, 0]]);
-  const gScore = new Map<number, number>([[a, 0]]);
-  const came = new Map<number, number>();
-  const done = new Set<number>();
+  const keyOf = (prev: number, cur: number) => String(prev) + ":" + String(cur);
+  const parseKey = (key: string): [number, number] => {
+    const sep = key.indexOf(":");
+    return [Number(key.slice(0, sep)), Number(key.slice(sep + 1))];
+  };
+  const startKey = keyOf(-1, a);
+  const open = new Map<string, number>([[startKey, 0]]);
+  const gScore = new Map<string, number>([[startKey, 0]]);
+  const came = new Map<string, string>();
+  const done = new Set<string>();
   let guard = 0;
-  while (open.size && guard++ < 200000) {
-    let cur = -1;
+  while (open.size && guard++ < 400000) {
+    let curKey = "";
     let cf = Infinity;
-    for (const [n, f] of open) {
+    for (const [key, f] of open) {
       if (f < cf) {
         cf = f;
-        cur = n;
+        curKey = key;
       }
     }
+    const [prev, cur] = parseKey(curKey);
     if (cur === b) {
       const pathIds = [cur];
-      let c = cur;
-      while (came.has(c)) {
-        c = came.get(c)!;
-        pathIds.push(c);
+      let walkKey = curKey;
+      while (came.has(walkKey)) {
+        const [camePrev] = parseKey(walkKey);
+        pathIds.push(camePrev);
+        walkKey = came.get(walkKey)!;
       }
       return pathIds.reverse();
     }
-    open.delete(cur);
-    done.add(cur);
+    open.delete(curKey);
+    done.add(curKey);
     for (const { to, w } of g.adj[cur] ?? []) {
-      if (done.has(to)) continue;
+      const nextKey = keyOf(cur, to);
+      if (done.has(nextKey)) continue;
       const cto = g.coord[to]!;
       const dc = distContour(cto);
       if (dc > corridorM) continue;
-      const tentative = gScore.get(cur)! + w + lambda * dc;
-      if (tentative < (gScore.get(to) ?? Infinity)) {
-        came.set(to, cur);
-        gScore.set(to, tentative);
-        open.set(to, tentative + meters(cto, target));
+      let bendPenalty = 0;
+      if (prev >= 0 && g.coord[prev]) {
+        const incoming = unitDirection(g.coord[prev]!, g.coord[cur]!);
+        const outgoing = unitDirection(g.coord[cur]!, cto);
+        const dot = Math.max(-1, Math.min(1, directionDot(incoming, outgoing)));
+        bendPenalty = (1 - dot) * bendWeight;
+      }
+      const tentative = gScore.get(curKey)! + w + lambda * dc + bendPenalty;
+      if (tentative < (gScore.get(nextKey) ?? Infinity)) {
+        came.set(nextKey, curKey);
+        gScore.set(nextKey, tentative);
+        open.set(nextKey, tentative + meters(cto, target));
       }
     }
   }
   return null;
 }
-
 // ---------------------------------------------------------------------------
 // Trace a placed contour
 // ---------------------------------------------------------------------------
 type TraceResult = {
   chain: LatLng[];
+  hasIntentionalRetrace?: boolean;
   /** Fraction of the target outline the streets actually drew (routed legs / all legs, by length). */
   coverage: number;
   /** Longest single dropped stretch, meters — a teleport in the route. */
   maxGapM: number;
 };
 
-function traceContour(
+type TraceAnchor = {
+  point: LatLng;
+  denseIndex: number;
+};
+
+function addRdpLandmarks(
+  points: LatLng[],
+  start: number,
+  end: number,
+  toleranceM: number,
+  keep: Set<number>,
+): void {
+  const stack: Array<[number, number]> = [[start, end]];
+  keep.add(start);
+  keep.add(end);
+  while (stack.length) {
+    const [from, to] = stack.pop()!;
+    if (to - from < 2) continue;
+    let bestIndex = -1;
+    let bestDistance = toleranceM;
+    for (let i = from + 1; i < to; i++) {
+      const distance = distToSeg(points[i]!, points[from]!, points[to]!);
+      if (distance > bestDistance) {
+        bestDistance = distance;
+        bestIndex = i;
+      }
+    }
+    if (bestIndex < 0) continue;
+    keep.add(bestIndex);
+    stack.push([from, bestIndex], [bestIndex, to]);
+  }
+}
+
+/**
+ * Preserve high-salience bends exactly, then add only enough intermediate
+ * anchors to keep long edges routable. Uniform spacing alone either misses
+ * logo landmarks or overfits every block-sized pixel step.
+ */
+function traceAnchorIndexes(
+  dense: LatLng[],
+  anchorM: number,
+  closed: boolean,
+): number[] {
+  const last = dense.length - 1;
+  if (last <= 0) return [0];
+  const toleranceM = Math.max(35, Math.min(120, anchorM * 0.28));
+  const landmarks = new Set<number>();
+
+  if (closed && meters(dense[0]!, dense[last]!) < 30 && last >= 4) {
+    let split = 1;
+    let farthest = 0;
+    for (let i = 1; i < last; i++) {
+      const distance = meters(dense[0]!, dense[i]!);
+      if (distance > farthest) {
+        farthest = distance;
+        split = i;
+      }
+    }
+    addRdpLandmarks(dense, 0, split, toleranceM, landmarks);
+    addRdpLandmarks(dense, split, last, toleranceM, landmarks);
+  } else {
+    addRdpLandmarks(dense, 0, last, toleranceM, landmarks);
+  }
+
+  const indexes = [0];
+  const forced = [true];
+  let accumulated = 0;
+  for (let i = 1; i <= last; i++) {
+    accumulated += meters(dense[i - 1]!, dense[i]!);
+    const landmark = landmarks.has(i);
+    if (landmark) {
+      if (
+        accumulated < anchorM * 0.3 &&
+        indexes.length > 1 &&
+        !forced[forced.length - 1]
+      ) {
+        indexes[indexes.length - 1] = i;
+        forced[forced.length - 1] = true;
+      } else if (indexes[indexes.length - 1] !== i) {
+        indexes.push(i);
+        forced.push(true);
+      }
+      accumulated = 0;
+    } else if (accumulated >= anchorM) {
+      indexes.push(i);
+      forced.push(false);
+      accumulated = 0;
+    }
+  }
+  if (indexes[indexes.length - 1] !== last) indexes.push(last);
+  return indexes;
+}
+
+type RetracedPrefix = {
+  turnIndex: number;
+  returnIndex: number;
+};
+
+function pathLength(points: LatLng[]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += meters(points[i - 1]!, points[i]!);
+  }
+  return total;
+}
+
+/**
+ * Find an intentional out-and-back stroke at the start of a drawing. The
+ * street-resolution compiler uses this for details narrower than one block:
+ * draw the centerline, retrace it, then continue around the broad silhouette.
+ */
+function findRetracedPrefix(contour: LatLng[]): RetracedPrefix | null {
+  const maxReturn = Math.min(
+    contour.length - 2,
+    Math.floor(contour.length * 0.7),
+  );
+  for (let returnIndex = 6; returnIndex <= maxReturn; returnIndex += 2) {
+    if (meters(contour[0]!, contour[returnIndex]!) > 2) continue;
+    const turnIndex = returnIndex / 2;
+    let matches = true;
+    for (let i = 0; i <= turnIndex; i++) {
+      if (meters(contour[i]!, contour[returnIndex - i]!) > 2) {
+        matches = false;
+        break;
+      }
+    }
+    if (
+      matches &&
+      pathLength(contour.slice(0, turnIndex + 1)) >= 150
+    ) {
+      return { turnIndex, returnIndex };
+    }
+  }
+  return null;
+}
+
+export function traceContour(
   g: Graph,
   contour: LatLng[],
   opts: {
     anchorM: number;
     lambda: number;
     corridorM: number;
+    /** A* turn cost inside a leg; higher = straighter, more deliberate lines. */
+    bendWeight?: number;
     trimSpikes?: boolean;
     closeLoop?: boolean;
+    startNode?: number;
+    preserveRetraces?: boolean;
   },
 ): TraceResult {
+  const retraced =
+    opts.preserveRetraces === false ? null : findRetracedPrefix(contour);
+  if (retraced) {
+    const outboundTarget = contour.slice(0, retraced.turnIndex + 1);
+    const bodyTarget = contour.slice(retraced.returnIndex);
+    const outbound = traceContour(g, outboundTarget, {
+      ...opts,
+      closeLoop: false,
+      preserveRetraces: false,
+    });
+    if (!outbound.chain.length) return outbound;
+
+    const startNode = nearestNode(g, outbound.chain[0]!);
+    const bodyClosed =
+      bodyTarget.length > 2 &&
+      meters(bodyTarget[0]!, bodyTarget[bodyTarget.length - 1]!) < 2;
+    const body = traceContour(g, bodyTarget, {
+      ...opts,
+      closeLoop: bodyClosed,
+      startNode,
+      preserveRetraces: false,
+    });
+    const outboundM = pathLength(outboundTarget);
+    const bodyM = pathLength(bodyTarget);
+    const totalM = outboundM * 2 + bodyM;
+    const coveredM =
+      outbound.coverage * outboundM * 2 + body.coverage * bodyM;
+    // Remove incidental graph loops before assembling the deliberate
+    // out-and-back. Cleaning the final route would erase the intended retrace.
+    const outboundChain = trimNubs(outbound.chain);
+    const bodyChain = trimNubs(body.chain);
+    const reverse = outboundChain.slice(0, -1).reverse();
+    const bodyContinuation = bodyChain.length ? bodyChain.slice(1) : [];
+    return {
+      chain: [...outboundChain, ...reverse, ...bodyContinuation],
+      hasIntentionalRetrace: true,
+      coverage: totalM > 0 ? coveredM / totalM : 0,
+      maxGapM: Math.max(outbound.maxGapM, body.maxGapM),
+    };
+  }
+
   const dense: LatLng[] = [];
   for (let i = 1; i < contour.length; i++) {
     const a = contour[i - 1]!;
@@ -199,55 +500,160 @@ function traceContour(
   }
   dense.push(contour[contour.length - 1]!);
 
-  const anchors: LatLng[] = [dense[0]!];
-  let acc = 0;
-  for (let i = 1; i < dense.length; i++) {
-    acc += meters(dense[i - 1]!, dense[i]!);
-    if (acc >= opts.anchorM) {
-      anchors.push(dense[i]!);
-      acc = 0;
-    }
-  }
+  const finalDenseIndex = dense.length - 1;
+  const closed = opts.closeLoop !== false;
+  const anchors: TraceAnchor[] = traceAnchorIndexes(
+    dense,
+    opts.anchorM,
+    closed,
+  ).map((denseIndex) => ({
+    point: dense[denseIndex]!,
+    denseIndex,
+  }));
   // A single closed blob loops back to its start; a multi-piece sketch is
-  // an OPEN drawing — force-closing it adds a phantom cross-drawing chord
+  // an OPEN drawing: force-closing it adds a phantom cross-drawing chord
   // that can never route within the leg caps and poisons coverage at
   // every placement.
-  if (opts.closeLoop !== false) anchors.push(dense[0]!);
+  if (opts.closeLoop !== false) {
+    anchors.push({ point: dense[0]!, denseIndex: dense.length });
+  }
 
+  const anchorCandidates = anchors.map((anchor, index) => {
+    if (
+      index > 0 &&
+      closed &&
+      meters(anchor.point, anchors[0]!.point) < 2
+    ) {
+      return [] as AnchorNodeCandidate[];
+    }
+    return directionAwareAnchorCandidates(
+      g,
+      dense,
+      Math.min(anchor.denseIndex, finalDenseIndex),
+      closed,
+    );
+  });
+  if (opts.startNode != null && g.coord[opts.startNode]) {
+    anchorCandidates[0] = [{ id: opts.startNode, score: 0 }];
+  }
+  const firstCandidate = anchorCandidates[0]?.[0];
+  if (!firstCandidate) {
+    return { chain: [], coverage: 0, maxGapM: Infinity };
+  }
+  if (closed) {
+    for (let i = 1; i < anchorCandidates.length; i++) {
+      if (!anchorCandidates[i]!.length) {
+        anchorCandidates[i] = [{ id: firstCandidate.id, score: 0 }];
+      }
+    }
+  }
   const chain: LatLng[] = [];
   let coveredM = 0;
   let droppedM = 0;
   let maxGapM = 0;
+  let currentNode = firstCandidate.id;
   for (let i = 1; i < anchors.length; i++) {
-    const direct = meters(anchors[i - 1]!, anchors[i]!);
-    const na = nearestNode(g, anchors[i - 1]!);
-    const nb = nearestNode(g, anchors[i]!);
-    if (na < 0 || nb < 0) {
+    const prevAnchor = anchors[i - 1]!;
+    const nextAnchor = anchors[i]!;
+    const direct = meters(prevAnchor.point, nextAnchor.point);
+    const na = currentNode;
+    const candidates = anchorCandidates[i]!;
+    if (na < 0 || !candidates.length) {
       droppedM += direct;
       maxGapM = Math.max(maxGapM, direct);
       continue;
     }
-    if (na === nb) {
-      coveredM += direct;
-      continue;
+    const start = Math.min(prevAnchor.denseIndex, finalDenseIndex);
+    const end = Math.min(nextAnchor.denseIndex, finalDenseIndex);
+    const localContour =
+      end > start
+        ? dense.slice(start, end + 1)
+        : [prevAnchor.point, nextAnchor.point];
+
+    let selected:
+      | { node: number; path: number[]; score: number }
+      | null = null;
+    for (const candidate of candidates) {
+      const nb = candidate.id;
+      if (na === nb) {
+        if (direct <= 30 && (!selected || candidate.score < selected.score)) {
+          selected = { node: nb, path: [na], score: candidate.score };
+        }
+        continue;
+      }
+      let path = corridorPath(
+        g,
+        na,
+        nb,
+        localContour,
+        opts.lambda,
+        opts.corridorM,
+        opts.bendWeight,
+      );
+      if (!path) {
+        path = corridorPath(
+          g,
+          na,
+          nb,
+          localContour,
+          opts.lambda,
+          opts.corridorM * 3,
+          opts.bendWeight,
+        );
+      }
+      if (!path) continue;
+
+      let pathLengthM = 0;
+      let deviationSumM = 0;
+      let bendCost = 0;
+      for (let k = 0; k < path.length; k++) {
+        if (k > 0) {
+          pathLengthM += meters(g.coord[path[k - 1]!]!, g.coord[path[k]!]!);
+        }
+        if (k > 0 && k < path.length - 1) {
+          const incoming = unitDirection(g.coord[path[k - 1]!]!, g.coord[path[k]!]!);
+          const outgoing = unitDirection(g.coord[path[k]!]!, g.coord[path[k + 1]!]!);
+          const dot = Math.max(-1, Math.min(1, directionDot(incoming, outgoing)));
+          bendCost += 1 - dot;
+        }
+        let nearest = Infinity;
+        for (let j = 1; j < localContour.length; j++) {
+          nearest = Math.min(
+            nearest,
+            distToSeg(
+              g.coord[path[k]!]!,
+              localContour[j - 1]!,
+              localContour[j]!,
+            ),
+          );
+        }
+        deviationSumM += nearest;
+      }
+      if (
+        pathLengthM > direct * 2.2 + 250 ||
+        pathLengthM > 1400
+      ) {
+        continue;
+      }
+      const meanDeviationM = deviationSumM / Math.max(1, path.length);
+      const transitionScore =
+        candidate.score * 0.3 +
+        meanDeviationM * 4 +
+        Math.max(0, pathLengthM - direct) * 0.25 +
+        bendCost * 260;
+      if (!selected || transitionScore < selected.score) {
+        selected = { node: nb, path, score: transitionScore };
+      }
     }
-    let p = corridorPath(g, na, nb, dense, opts.lambda, opts.corridorM);
-    if (!p) p = corridorPath(g, na, nb, dense, opts.lambda, opts.corridorM * 3);
-    if (!p) p = corridorPath(g, na, nb, dense, 0, 1e7);
-    let plen = 0;
-    if (p) {
-      for (let k = 1; k < p.length; k++) plen += meters(g.coord[p[k - 1]!]!, g.coord[p[k]!]!);
-    }
-    // a dropped leg beats a huge detour loop across the city — but every
-    // dropped leg is a TELEPORT in the final route, so it is counted and
-    // the caller rejects candidates whose streets couldn't draw the shape.
-    if (!p || plen > direct * 2.2 + 250 || plen > 1400) {
+
+    if (!selected) {
       droppedM += direct;
       maxGapM = Math.max(maxGapM, direct);
       continue;
     }
+    currentNode = selected.node;
     coveredM += direct;
-    for (const id of p) chain.push(g.coord[id]!);
+    for (const id of selected.path) chain.push(g.coord[id]!);
   }
   const out: LatLng[] = [];
   for (const p of chain) {
@@ -255,18 +661,20 @@ function traceContour(
   }
   const total = coveredM + droppedM;
   return {
-    // trimSpikes=false preserves deliberate out-and-back strokes: a user
-    // sketch's spike (the swoosh tail, a unicorn horn) IS the art, and
-    // splicing it out amputates the drawing. Default stays on for
-    // single-blob organic shapes where spurs really are routing noise.
-    chain: opts.trimSpikes === false ? out : trimNubs(out),
+    // Cleanup is selected later by geometry score so a deliberate hairpin
+    // can survive while an accidental graph loop is removed.
+    chain: out,
     coverage: total > 0 ? coveredM / total : 0,
     maxGapM,
   };
 }
 
-/** Splice out short out-and-back excursions (dead-end spurs) that read as errors. */
-function trimNubs(chain: LatLng[], closeM = 34, maxLoopM = 380): LatLng[] {
+/**
+ * Erase only loops that return to the same graph node. A wider proximity
+ * splice can jump between different streets and silently make the route
+ * unrunnable.
+ */
+function trimNubs(chain: LatLng[], closeM = 1.5, maxLoopM = 1000): LatLng[] {
   const out = chain.slice();
   let changed = true;
   while (changed) {
@@ -292,7 +700,7 @@ function trimNubs(chain: LatLng[], closeM = 34, maxLoopM = 380): LatLng[] {
 // ---------------------------------------------------------------------------
 type UnitPoint = [number, number];
 
-function place(unit: UnitPoint[], center: LatLng, scaleM: number, rotDeg: number): LatLng[] {
+export function place(unit: UnitPoint[], center: LatLng, scaleM: number, rotDeg: number): LatLng[] {
   const r = (rotDeg * Math.PI) / 180;
   const cos = Math.cos(r);
   const sin = Math.sin(r);
@@ -399,12 +807,22 @@ export type StreetTraceCandidate = {
   center: LatLng;
   scaleM: number;
   rotDeg: number;
+  /** Geometry-only likeness of the final continuous route to the source. */
+  visualScore: number;
+  /** Artifact/readability cleanliness from the final visual scorer. */
+  visualCleanliness: number;
+  /** Length economy from the final visual scorer; higher means less extra ink. */
+  pathEconomy: number;
+  /** 1 only when every target leg survived as connected street geometry. */
+  coverage: number;
+  /** Zero for production candidates; any positive value is a missing jump. */
+  maxGapM: number;
 };
 
 /**
  * Normalized 0..1 (y down) contour → unit [-1,1] (y up) centered shape.
  */
-function toUnit(contour: NormalizedPoint[]): UnitPoint[] {
+export function toUnit(contour: NormalizedPoint[]): UnitPoint[] {
   let minX = Infinity;
   let maxX = -Infinity;
   let minY = Infinity;
@@ -422,6 +840,17 @@ function toUnit(contour: NormalizedPoint[]): UnitPoint[] {
     ((p.x - cx) * 2) / span,
     ((cy - p.y) * 2) / span,
   ]);
+}
+
+function toSimilarityPoints(path: LatLng[]): NormalizedPoint[] {
+  if (!path.length) return [];
+  const lat0 = path.reduce((sum, point) => sum + point[0], 0) / path.length;
+  const lng0 = path.reduce((sum, point) => sum + point[1], 0) / path.length;
+  const lngScale = mPerLng(lat0);
+  return path.map(([lat, lng]) => ({
+    x: (lng - lng0) * lngScale,
+    y: -(lat - lat0) * M_PER_LAT,
+  }));
 }
 
 /**
@@ -445,9 +874,17 @@ export async function traceShapeOnStreets(
     /** Restrict the placement sweep, e.g. to the uniform-grid window for
      * letter/box-bearing designs that mangle on organic streets. */
     bounds?: { latMin?: number; latMax?: number; lngMin?: number; lngMax?: number };
-    /** Runnability gate override (default 0.95). Every dropped leg is a
-     * teleport — lower this only for offline design exploration. */
+    /** Runnability gate override (default 1). Lower values are for offline
+     * diagnostics only because every dropped leg is a visible teleport. */
     minCoverage?: number;
+    /** Placement center grid resolution in degrees. Default 0.006. */
+    centerStepDeg?: number;
+    /** How many coarse placements to fully route per scale band. */
+    placementsPerScale?: number;
+    /** Corridor-A* overrides for offline tuning; defaults 12 / 90 / 28. */
+    lambda?: number;
+    corridorM?: number;
+    bendWeight?: number;
   } = {},
 ): Promise<StreetTraceCandidate[]> {
   const topK = Math.max(1, Math.min(4, options.topK ?? 3));
@@ -457,15 +894,22 @@ export async function traceShapeOnStreets(
 
   // Hero scale is what makes curves read (the circle proof spans Midtown).
   // scaleM is the shape's half-size: 1400 → ~2.8 km drawing.
-  const scales = options.scales ?? [1400, 2000, 2700];
-  const rots = options.rots ?? [0, 15, -15, 29];
-  const cands: { center: LatLng; scale: number; rot: number; score: number }[] = [];
+  const scales = options.scales ?? [900, 1300, 1800, 2400, 3200, 4000];
+  const rots = options.rots ?? [0, 15, -15, 29, -29, 45];
+  const cands: {
+    center: LatLng;
+    scale: number;
+    rot: number;
+    score: number;
+    relativeScore: number;
+  }[] = [];
   const latMin = options.bounds?.latMin ?? 40.71;
   const latMax = options.bounds?.latMax ?? 40.792;
   const lngMin = options.bounds?.lngMin ?? -74.012;
   const lngMax = options.bounds?.lngMax ?? -73.938;
-  for (let lat = latMin; lat <= latMax; lat += 0.008) {
-    for (let lng = lngMin; lng <= lngMax; lng += 0.008) {
+  const centerStepDeg = Math.max(0.003, options.centerStepDeg ?? 0.006);
+  for (let lat = latMin; lat <= latMax; lat += centerStepDeg) {
+    for (let lng = lngMin; lng <= lngMax; lng += centerStepDeg) {
       for (const scale of scales) {
         for (const rot of rots) {
           const outline = place(unit, [lat, lng], scale, rot);
@@ -474,25 +918,55 @@ export async function traceShapeOnStreets(
           // rivers, parks, off-island. 8-of-72 allowed shapes to hang a full
           // lobe over the water and still win ("floating above Manhattan,
           // half in the river"). At most 2 stray samples now.
-          if (miss <= 2) cands.push({ center: [lat, lng], scale, rot, score });
+          if (miss <= 2) {
+            cands.push({
+              center: [lat, lng],
+              scale,
+              rot,
+              score,
+              relativeScore: score / scale,
+            });
+          }
         }
       }
     }
   }
-  cands.sort((a, b) => a.score - b.score);
+  // Compare map fit relative to artwork scale so a longer route is not
+  // demoted merely because its street error is measured in more meters.
+  cands.sort(
+    (a, b) => a.relativeScore - b.relativeScore || a.score - b.score,
+  );
 
+  // Trace several genuinely different placements from every scale band.
+  // A single global top-six list was almost always six small routes, even
+  // when a larger interpretation preserved the silhouette much better.
   const picks: typeof cands = [];
-  for (const c of cands) {
-    if (picks.length >= topK + 2) break;
-    if (
-      picks.some(
-        (p) => meters(p.center, c.center) < 500 && Math.abs(p.scale - c.scale) < 300,
-      )
-    ) {
-      continue;
+  const perScale = Math.max(
+    2,
+    options.placementsPerScale ?? Math.ceil((topK * 12) / scales.length),
+  );
+  for (const scale of scales) {
+    let selectedAtScale = 0;
+    for (const candidate of cands) {
+      if (candidate.scale !== scale) continue;
+      if (
+        picks.some(
+          (picked) =>
+            picked.scale === scale &&
+            meters(picked.center, candidate.center) < 450 &&
+            Math.abs(picked.rot - candidate.rot) < 12,
+        )
+      ) {
+        continue;
+      }
+      picks.push(candidate);
+      selectedAtScale++;
+      if (selectedAtScale >= perScale) break;
     }
-    picks.push(c);
   }
+  picks.sort(
+    (a, b) => a.relativeScore - b.relativeScore || a.score - b.score,
+  );
 
   const traced: StreetTraceCandidate[] = [];
   for (const pk of picks) {
@@ -501,10 +975,12 @@ export async function traceShapeOnStreets(
       chain,
       coverage,
       maxGapM,
+      hasIntentionalRetrace,
     } = traceContour(g, target, {
       anchorM: options.anchorM ?? 200,
-      lambda: 12,
-      corridorM: 90,
+      lambda: options.lambda ?? 12,
+      corridorM: options.corridorM ?? 90,
+      bendWeight: options.bendWeight,
       trimSpikes: options.trimSpikes,
       closeLoop: options.closeLoop,
     });
@@ -517,12 +993,35 @@ export async function traceShapeOnStreets(
       );
     }
     if (chain.length < 8) continue;
-    // RUNNABILITY GATE: every dropped leg is a teleport. If the streets
-    // couldn't draw ≥95% of the shape connected, this placement is not a
-    // route — reject it instead of shipping a floating fragment.
-    if (coverage < (options.minCoverage ?? 0.95) || maxGapM > 180) continue;
+    // RUNNABILITY GATE: every dropped leg is a teleport. Production accepts
+    // only fully connected traces; there is no visual-score exception.
+    if (coverage < (options.minCoverage ?? 0.999999) || maxGapM > 0) continue;
+
+    const intendedSimilarity = toSimilarityPoints(target);
+    const routeVariants = [chain];
+    if (options.trimSpikes !== false && !hasIntentionalRetrace) {
+      routeVariants.push(trimNubs(chain));
+    }
+    let selectedChain = routeVariants[0]!;
+    let visual = scoreFinalRouteSimilarity(
+      intendedSimilarity,
+      toSimilarityPoints(selectedChain),
+    );
+    for (let i = 1; i < routeVariants.length; i++) {
+      const variant = routeVariants[i]!;
+      if (variant.length < 8) continue;
+      const candidateVisual = scoreFinalRouteSimilarity(
+        intendedSimilarity,
+        toSimilarityPoints(variant),
+      );
+      if (candidateVisual.score > visual.score) {
+        selectedChain = variant;
+        visual = candidateVisual;
+      }
+    }
+
     let dev = 0;
-    for (const p of chain) {
+    for (const p of selectedChain) {
       let m = Infinity;
       for (let j = 1; j < target.length; j++) {
         const dd = distToSeg(p, target[j - 1]!, target[j]!);
@@ -530,23 +1029,44 @@ export async function traceShapeOnStreets(
       }
       dev += m;
     }
-    dev /= chain.length;
+    dev /= selectedChain.length;
     let km = 0;
-    for (let j = 1; j < chain.length; j++) km += meters(chain[j - 1]!, chain[j]!);
+    for (let j = 1; j < selectedChain.length; j++) {
+      km += meters(selectedChain[j - 1]!, selectedChain[j]!);
+    }
     km /= 1000;
     if (options.targetDistanceKm != null && Number.isFinite(options.targetDistanceKm)) {
       if (km > options.targetDistanceKm * 3.4) continue;
     }
     traced.push({
-      chain,
+      chain: selectedChain,
       target,
       km: Number(km.toFixed(2)),
       meanDeviationM: Number(dev.toFixed(1)),
       center: pk.center,
       scaleM: pk.scale,
       rotDeg: pk.rot,
+      visualScore: visual.score,
+      visualCleanliness: visual.diagnostics.cleanliness,
+      pathEconomy: visual.diagnostics.pathEconomy,
+      coverage,
+      maxGapM,
     });
   }
-  traced.sort((a, b) => a.meanDeviationM - b.meanDeviationM);
+  traced.sort((a, b) => {
+    const visualDelta = b.visualScore - a.visualScore;
+    if (Math.abs(visualDelta) > 1) return visualDelta;
+    const cleanlinessDelta = b.visualCleanliness - a.visualCleanliness;
+    if (Math.abs(cleanlinessDelta) > 1) return cleanlinessDelta;
+    const economyDelta = b.pathEconomy - a.pathEconomy;
+    if (Math.abs(economyDelta) > 1) return economyDelta;
+    const deviationDelta =
+      a.meanDeviationM / a.scaleM - b.meanDeviationM / b.scaleM;
+    if (Math.abs(deviationDelta) > 0.0005) return deviationDelta;
+    return a.km - b.km;
+  });
   return traced.slice(0, topK);
 }
+
+
+

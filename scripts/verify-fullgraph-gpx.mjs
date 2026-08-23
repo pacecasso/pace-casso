@@ -1,0 +1,8 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { createRequire } from "node:module";
+const require=createRequire(import.meta.url);const jiti=require("jiti")(import.meta.url);const {buildGraph,meters}=jiti("./trace-contour.ts");
+const root=process.cwd();const file=path.join(root,"tmp-logo-proof","strava-fullgraph-block","best-current-strava-repaired.gpx");
+function parse(xml){const pts=[];const re=/<trkpt lat="([^"]+)" lon="([^"]+)"/g;let m;while((m=re.exec(xml)))pts.push([+m[1],+m[2]]);return pts;}
+const pts=parse(await fs.readFile(file,"utf8"));const g=await buildGraph();const nodeByKey=new Map();for(const [id,p] of g.coord){const key=`${p[0].toFixed(7)},${p[1].toFixed(7)}`;if(!nodeByKey.has(key))nodeByKey.set(key,[]);nodeByKey.get(key).push(id);}let missing=0,maxJump=0,total=0;const gaps=[];for(let i=1;i<pts.length;i++){const a=pts[i-1],b=pts[i],d=meters(a,b);total+=d;maxJump=Math.max(maxJump,d);const nas=nodeByKey.get(`${a[0].toFixed(7)},${a[1].toFixed(7)}`)??[];const nbs=nodeByKey.get(`${b[0].toFixed(7)},${b[1].toFixed(7)}`)??[];let ok=false;for(const na of nas){for(const nb of nbs){if((g.adj.get(na)??[]).some(e=>e.to===nb)){ok=true;break;}}if(ok)break;}if(!ok&&d>2){missing++; if(gaps.length<10)gaps.push({i,d:+d.toFixed(1),a,b,nas:nas.slice(0,3),nbs:nbs.slice(0,3)});}}
+console.log(JSON.stringify({points:pts.length,km:+(total/1000).toFixed(2),maxJump:+maxJump.toFixed(1),missingEdges:missing,gaps},null,2));

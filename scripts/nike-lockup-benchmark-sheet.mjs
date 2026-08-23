@@ -1,0 +1,16 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { createRequire } from "node:module";
+const require=createRequire(import.meta.url);
+const sharp=require("sharp");
+const jiti=require("jiti")(import.meta.url);
+const { CURATED_NIKE_BLOCK_LOCKUP_MANHATTAN_COORDS, curatedNikeBlockLockupRouteKm } = jiti("../lib/curatedNikeBlockLockupManhattanRoute.ts");
+const root=process.cwd();
+const outDir=path.join(root,"tmp-logo-proof","nike-benchmark");
+function meters(a,b){const M=111320,mx=M*Math.cos(a[0]*Math.PI/180);return Math.hypot((b[0]-a[0])*M,(b[1]-a[1])*mx)}
+function bounds(ps){const lats=ps.map(p=>p[0]),lngs=ps.map(p=>p[1]);return{minLat:Math.min(...lats),maxLat:Math.max(...lats),minLng:Math.min(...lngs),maxLng:Math.max(...lngs)}}
+function project(ps,w,h,pad=55){const b=bounds(ps),mid=(b.minLat+b.maxLat)/2,mx=111320*Math.cos(mid*Math.PI/180),spanX=Math.max(1,(b.maxLng-b.minLng)*mx),spanY=Math.max(1,(b.maxLat-b.minLat)*111320),s=Math.min((w-pad*2)/spanX,(h-pad*2)/spanY),ox=(w-spanX*s)/2,oy=(h-spanY*s)/2;return p=>[ox+(p[1]-b.minLng)*mx*s,oy+(b.maxLat-p[0])*111320*s]}
+function d(ps,pr){return ps.map((p,i)=>{const q=pr(p);return`${i?'L':'M'} ${q[0].toFixed(1)} ${q[1].toFixed(1)}`}).join(' ')}
+async function renderRoute(ps,file,label){const W=900,H=620,pr=project(ps,W,H,55);const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect width="100%" height="100%" fill="#fff"/><path d="${d(ps,pr)}" fill="none" stroke="#111" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/><text x="20" y="34" font-family="Arial" font-size="18" font-weight="700">${label}</text></svg>`;await sharp(Buffer.from(svg)).jpeg({quality:94}).toFile(file)}
+async function main(){await fs.rm(outDir,{recursive:true,force:true});await fs.mkdir(outDir,{recursive:true});const benchmark=path.join(outDir,'benchmark-old-curated-not-new.jpg');await renderRoute(CURATED_NIKE_BLOCK_LOCKUP_MANHATTAN_COORDS,benchmark,`old curated benchmark ${curatedNikeBlockLockupRouteKm().toFixed(1)} km`);const fresh='tmp-logo-proof/fresh-lockup-runs/nike/nike-01.jpg';const source=await sharp(path.join(root,'nike.png')).resize(520,380,{fit:'contain',background:'#fff'}).jpeg().toBuffer();const bench=await sharp(benchmark).resize(520,380,{fit:'contain',background:'#fff'}).jpeg().toBuffer();const gen=await sharp(path.join(root,fresh)).resize(520,380,{fit:'contain',background:'#fff'}).jpeg().toBuffer();const base=Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="1620" height="500"><rect width="100%" height="100%" fill="#f8f5ef"/><text x="30" y="34" font-family="Arial" font-size="22" font-weight="700">Nike source vs old benchmark vs current fresh generator</text><text x="30" y="470" font-family="Arial" font-size="15">source upload</text><text x="570" y="470" font-family="Arial" font-size="15">old curated benchmark - not new work</text><text x="1110" y="470" font-family="Arial" font-size="15">current fresh generator - reject</text></svg>`);await sharp(base).composite([{input:source,left:30,top:65},{input:bench,left:570,top:65},{input:gen,left:1110,top:65}]).jpeg({quality:94}).toFile(path.join(outDir,'benchmark-sheet.jpg'));console.log(path.relative(root,path.join(outDir,'benchmark-sheet.jpg')).replace(/\\/g,'/'));}
+main().catch(e=>{console.error(e);process.exit(1)});

@@ -390,6 +390,7 @@ export function extractNormalizedContourFromLineMask(
   level: number,
   w: number,
   h: number,
+  options: { source?: "line-art" | "silhouette-outline" } = {},
 ): NormalizedContourPoint[] | null {
   let ring: [number, number][] | null = null;
   let usedMoore = false;
@@ -400,7 +401,34 @@ export function extractNormalizedContourFromLineMask(
     ? binaryPrepToLineMask(unionBinaryComponents(prepComponents, mask.length), mask.length)
     : null;
 
-  if (traceMask) {
+  if (options.source === "silhouette-outline") {
+    const largest = mooreContourRingsFromLineMask(mask, w, h)?.[0] ?? null;
+    const siblings = mooreSiblingOuterRings(mask, w, h, 30, 0.015, 16);
+    const rawRings = [largest, ...siblings].filter(
+      (candidate): candidate is [number, number][] =>
+        !!candidate && candidate.length >= 4,
+    );
+    if (rawRings.length) {
+      const pieces = rawRings.map((candidate) =>
+        pieceOf(simplifyRingPx(candidate.slice(), true)),
+      );
+      sortPiecesInReadingOrder(pieces);
+      const joined: [number, number][] = [];
+      for (let i = 0; i < pieces.length; i++) {
+        const piece = pieces[i]!;
+        const target: [number, number] = joined.length
+          ? joined[joined.length - 1]!
+          : pieces.length > 1
+            ? [pieces[1]!.cx, pieces[1]!.cy]
+            : piece.ring[0]!;
+        joined.push(...rotateRingToNearest(piece.ring, target));
+      }
+      ring = joined;
+      usedMoore = true;
+    }
+  }
+
+  if (!ring && traceMask) {
     // Multi-component art (a logo's symbol + letters): trace each RAW-INK
     // component's outer ring — the crisp letterform the touch-up panel
     // shows — instead of centerlines, whose skeleton artifacts melt small

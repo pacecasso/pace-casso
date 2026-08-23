@@ -71,16 +71,13 @@ export async function POST(req: Request) {
   if (contour.length < 8) {
     return Response.json({ error: "contour too short" }, { status: 400 });
   }
-  const targetDistanceKm =
-    typeof body.targetDistanceKm === "number" && Number.isFinite(body.targetDistanceKm)
-      ? body.targetDistanceKm
-      : undefined;
-
   try {
     const fullSketch = body.trimSpikes === false;
     const candidates = await traceShapeOnStreets(contour, {
       topK: 3,
-      targetDistanceKm,
+      // Organic logo tracing searches for the best-looking street fit first;
+      // distance is reported after the fact, not used as a constraint.
+      targetDistanceKm: undefined,
       // false preserves deliberate out-and-back strokes (spike tips are
       // part of the user's art, not routing noise); full sketches also
       // carry letter-scale detail that 200 m anchors would blur out.

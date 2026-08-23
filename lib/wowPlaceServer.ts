@@ -802,13 +802,35 @@ export async function runWowPlacement(args: {
       };
     }
     const bestScored = scored.slice().sort((a, b) => b.score - a.score)[0];
+    if (!bestScored) {
+      return {
+        picks: [],
+        subject,
+        subjectConfidence: namedConfidence,
+        message: `We read your art as ${subject}, but no runnable street placement could be scored.`,
+      };
+    }
+    const joined = joinChains(g, bestScored.c.segments);
+    const placedStrokes = placeSegments(strokes, bestScored.c.center, bestScored.c.extentM, bestScored.c.rotDeg, false);
     return {
-      picks: [],
+      picks: [{
+        center: bestScored.c.center,
+        rotDeg: bestScored.c.rotDeg,
+        extentM: bestScored.c.extentM,
+        km: Number(chainsKm([joined]).toFixed(2)),
+        dev: bestScored.c.dev,
+        primed: bestScored.score,
+        fallbackDraft: true,
+        fallbackReason: `Strict judging did not pass; best route scored ${bestScored.score}/10.`,
+        coordinates: joined.map(([lat, lng]) => [lat, lng]),
+        anchorLatLngs: placedStrokes.flat().map(([lat, lng]) => [lat, lng]),
+        previewPngBase64: bestScored.png.toString("base64"),
+      }],
       subject,
       subjectConfidence: namedConfidence,
-      message: `We read your art as ${subject} and traced ${candidates.length} street placements, but the best route scored only ${bestScored?.score ?? 0}/10. I am not showing that as a result because it is below the recognizability bar.`,
-      refusedPreviewPngBase64: bestScored?.png.toString("base64"),
-      refusedPreviewScore: bestScored?.score,
+      message: `We read your art as ${subject} and traced ${candidates.length} street placements. The best route scored ${bestScored.score}/10, below the normal approval bar, so I am returning it as an editable draft rather than calling it ready.`,
+      refusedPreviewPngBase64: bestScored.png.toString("base64"),
+      refusedPreviewScore: bestScored.score,
     };
   }
 
@@ -886,8 +908,38 @@ export async function runWowPlacement(args: {
     }
     if (!verified.length) {
       const misreads = [...new Set(blindTried.map((t) => t.guess).filter(Boolean))].join('", "');
+      const bestScored = scored.slice().sort((a, b) => b.score - a.score)[0];
+      if (!bestScored) {
+        return {
+          picks: [],
+          subject,
+          subjectConfidence: namedConfidence,
+          message:
+            `We read your art as ${subject}, but no promising street placement survived scoring.`,
+        };
+      }
+      const joined = joinChains(g, bestScored.c.segments);
+      const mapPng = await renderJoinedRouteMapPng(joined);
+      const shippedPng = mapPng ?? bestScored.png;
+      const placedStrokes = placeSegments(strokes, bestScored.c.center, bestScored.c.extentM, bestScored.c.rotDeg, false);
       return {
-        picks: [],
+        picks: [{
+          center: bestScored.c.center,
+          rotDeg: bestScored.c.rotDeg,
+          extentM: bestScored.c.extentM,
+          km: Number(chainsKm([joined]).toFixed(2)),
+          dev: bestScored.c.dev,
+          primed: bestScored.score,
+          fallbackDraft: true,
+          fallbackReason:
+            (misreads
+              ? `Blind judges misread the best route as "${misreads}".`
+              : `Blind judges could not name the subject.`) +
+            ` Best primed score was ${bestScored.score}/10.`,
+          coordinates: joined.map(([lat, lng]) => [lat, lng]),
+          anchorLatLngs: placedStrokes.flat().map(([lat, lng]) => [lat, lng]),
+          previewPngBase64: shippedPng.toString("base64"),
+        }],
         subject,
         subjectConfidence: namedConfidence,
         message:
@@ -895,7 +947,7 @@ export async function runWowPlacement(args: {
           (misreads
             ? `they called the best ones "${misreads}" instead. `
             : `none could name the subject. `) +
-          `I am not showing those as results because they did not read clearly enough.`,
+          `I am returning the best runnable draft so you can inspect and edit it, but it is not judge-approved.`,
       };
     }
   } else {
@@ -905,12 +957,23 @@ export async function runWowPlacement(args: {
     }
     if (!verified.length) {
       const bestScored = scored.slice().sort((a, b) => b.score - a.score)[0];
-      return {
-        picks: [],
-        subject,
-        subjectConfidence: namedConfidence,
-        message: `The likeness judge scored the closest route ${bestScored?.score ?? 0}/10, below the normal pass bar. I am not showing that as a result because it is below the recognizability bar.`,
-      };
+      if (!bestScored) {
+        return {
+          picks: [],
+          subject,
+          subjectConfidence: namedConfidence,
+          message: `The likeness judge could not score any runnable route.`,
+        };
+      }
+      const joined = joinChains(g, bestScored.c.segments);
+      const placedStrokes = placeSegments(strokes, bestScored.c.center, bestScored.c.extentM, bestScored.c.rotDeg, false);
+      verified.push({
+        ...bestScored,
+        fallbackDraft: true,
+        fallbackReason: `Likeness judge scored this route ${bestScored.score}/10, below the normal pass bar.`,
+        joined,
+        shippedPng: bestScored.png,
+      });
     }
   }
 

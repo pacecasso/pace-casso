@@ -5,6 +5,7 @@ export type PhotoContourWorkerRequest = {
   mask: ArrayBuffer;
   level: number;
   boxSize: number;
+  source?: "line-art" | "silhouette-outline";
 };
 
 export type PhotoContourWorkerResponse =

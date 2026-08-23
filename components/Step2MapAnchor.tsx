@@ -23,6 +23,7 @@ import { matchVerifiedBankRun } from "../lib/refusalOfframp";
 import type { CuratedRun } from "../lib/curatedManhattanRuns";
 import { useLeafletContainerId } from "../lib/useLeafletContainerId";
 import type { RouteLineString } from "../lib/routeTypes";
+import { renderRouteToDataUrl } from "../lib/renderRouteImage";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
 import MapChunkFallback from "./MapChunkFallback";
 import MapStepSplitLayout from "./MapStepSplitLayout";
@@ -179,6 +180,20 @@ type WowPlaceResultPayload = {
   message?: string;
 };
 
+type ArtistLoopResultPayload = {
+  label: string;
+  description: string;
+  sketchLatLngs: [number, number][];
+  chain: [number, number][];
+  distanceMeters: number;
+  center: [number, number];
+  meanDeviationMeters: number;
+  recognizedCount: number;
+  medianConfidence: number;
+  guesses: string[];
+  roundsRun: number;
+};
+
 async function readNdjsonResult(
   res: Response,
   onProgress: (detail: string) => void,
@@ -247,6 +262,62 @@ async function fetchWowPlace(
     subject: typeof rec.subject === "string" ? rec.subject : null,
     message: typeof rec.message === "string" ? rec.message : undefined,
   };
+}
+
+function cleanArtistLoopResult(rec: Record<string, unknown>): ArtistLoopResultPayload | null {
+  const sketchLatLngs = cleanLatLngArray(rec.sketchLatLngs);
+  const chain = cleanLatLngArray(rec.chain);
+  const center = cleanLatLngArray([rec.center])[0];
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const distanceMeters = num(rec.distanceMeters);
+  const meanDeviationMeters = num(rec.meanDeviationMeters);
+  const recognizedCount = num(rec.recognizedCount);
+  const medianConfidence = num(rec.medianConfidence);
+  const roundsRun = num(rec.roundsRun);
+  if (
+    sketchLatLngs.length < 2 ||
+    chain.length < 2 ||
+    !center ||
+    distanceMeters == null ||
+    meanDeviationMeters == null ||
+    recognizedCount == null ||
+    medianConfidence == null ||
+    roundsRun == null
+  ) {
+    return null;
+  }
+  return {
+    label: typeof rec.label === "string" && rec.label ? rec.label : "street-ready design",
+    description:
+      typeof rec.description === "string" && rec.description
+        ? rec.description
+        : "Design-first street route",
+    sketchLatLngs,
+    chain,
+    distanceMeters,
+    center,
+    meanDeviationMeters,
+    recognizedCount,
+    medianConfidence,
+    guesses: Array.isArray(rec.guesses)
+      ? rec.guesses.filter((g): g is string => typeof g === "string" && !!g)
+      : [],
+    roundsRun,
+  };
+}
+
+async function fetchArtistLoop(
+  body: Record<string, unknown>,
+  onProgress: (detail: string) => void,
+): Promise<ArtistLoopResultPayload | null> {
+  const res = await fetch("/api/artist-loop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const rec = await readNdjsonResult(res, onProgress);
+  return cleanArtistLoopResult(rec);
 }
 
 async function fetchInterpret(
@@ -459,19 +530,60 @@ export default function Step2MapAnchor({
       }, 120);
       return true;
     };
-    try {
-      if (imageBase64) {
-        setAutoHint("Building route-native street candidates from your upload...");
-        const routeNative = await autoFindTop5(contour, cityPreset, {
-          anchorSource: "image",
-          imageBase64,
-          imageSourceName: imageSourceName ?? undefined,
-          topK: 5,
-        });
-        if (applyAutoFindResult(routeNative)) return;
-        setAutoHint("Route-native search did not find a strong street fit yet - trying blind-verified placement...");
-      }
 
+    const applyArtistLoopResult = (result: ArtistLoopResultPayload) => {
+      const recognizedPct = Math.round((Math.min(3, Math.max(0, result.recognizedCount)) / 3) * 100);
+      const confidencePct = Math.round(Math.min(1, Math.max(0, result.medianConfidence)) * 100);
+      const routeCleanPct = Math.max(45, Math.min(95, Math.round(100 - result.meanDeviationMeters * 2)));
+      const guessText = result.guesses.length ? ` Judges guessed: ${result.guesses.join(", ")}.` : "";
+      const pick: Top5Pick = {
+        placement: {
+          center: result.center,
+          rotationDeg: 0,
+          scale: 1,
+        },
+        anchorLatLngs: result.sketchLatLngs,
+        designIntent: result.description,
+        routeCoords: result.chain,
+        snappedRoute: {
+          coordinates: result.chain,
+          distanceMeters: Math.round(result.distanceMeters),
+          blockWaypoints: result.chain,
+          preserveBlockWaypoints: true,
+        },
+        previewDataUrl: renderRouteToDataUrl(result.chain, 640, { padding: 96 }) ?? "",
+        distanceKm: result.distanceMeters / 1000,
+        qualityScore: routeCleanPct,
+        shapeMatchScore: Math.max(55, Math.min(95, Math.round((recognizedPct + confidencePct) / 2))),
+        sourceMatchScore: Math.max(45, Math.min(95, Math.round((recognizedPct * 0.7) + (confidencePct * 0.3)))),
+        verifiedRoute: result.recognizedCount >= 2,
+        verificationLabel: `ARTIST LOOP ${result.recognizedCount}/3`,
+        reason:
+          `${result.label}: design-first street route compiled on real Manhattan streets after ${result.roundsRun} round${result.roundsRun === 1 ? "" : "s"}. ` +
+          `${result.recognizedCount}/3 blind judges recognized it.${guessText}`,
+      };
+      setPicks([pick]);
+      setPicksVisionUsed(true);
+      setCenter([...pick.placement.center] as [number, number]);
+      setRotationDeg(pick.placement.rotationDeg);
+      setScale(pick.placement.scale);
+      setSelectedPickIdx(0);
+      setPreferredSnappedRoute(routeFromPick(pick));
+      setSelectedAnchorLatLngs(pick.anchorLatLngs ?? null);
+      setFitNonce((n) => n + 1);
+      setAutoHint(
+        result.recognizedCount >= 2
+          ? `Design-first route found: ${result.recognizedCount}/3 blind judges recognized it. Tap it to inspect, then continue.`
+          : `Design-first route found, but only ${result.recognizedCount}/3 blind judges recognized it. Showing the best real-street draft instead of failing.`,
+      );
+      window.setTimeout(() => {
+        document
+          .getElementById("step2-picks")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 120);
+      return result.recognizedCount >= 2;
+    };
+    try {
       // Stage 1: the user's art, exactly as approved.
       const literal = await fetchWowPlace(
         {
@@ -552,8 +664,33 @@ export default function Step2MapAnchor({
           return;
         }
       }
+      if (imageBase64) {
+        setAutoHint("Blind-verified placement did not pass - running the design-first street artist loop...");
+        const artistRoute = await fetchArtistLoop(
+          {
+            imageBase64,
+            cityId: cityPreset.id,
+            cityLabel: cityPreset.label,
+            sourceName: imageSourceName ?? undefined,
+          },
+          setAutoHint,
+        );
+        if (artistRoute) {
+          applyArtistLoopResult(artistRoute);
+          return;
+        }
+
+        setAutoHint("Design-first route did not return a usable route - checking strict route-native fallbacks...");
+        const routeNative = await autoFindTop5(contour, cityPreset, {
+          anchorSource: "image",
+          imageBase64,
+          imageSourceName: imageSourceName ?? undefined,
+          topK: 5,
+        });
+        if (applyAutoFindResult(routeNative)) return;
+      }
       setAutoHint(
-        `We tried your art as-drawn plus ${roundsTried} fresh street-ready redraws${lastInterp?.subject ? ` (as ${lastInterp.subject})` : ""} — nothing cleared the blind judge's bar. ${lastPlaced?.message ?? lastInterp?.message ?? ""} You can place it yourself: drag the art where you want it and continue, and we'll fit it to the streets faithfully.`,
+        `We tried your art as-drawn plus ${roundsTried} fresh street-ready redraws${lastInterp?.subject ? ` (as ${lastInterp.subject})` : ""} - nothing cleared the blind judge's bar. ${lastPlaced?.message ?? lastInterp?.message ?? ""} You can place it yourself: drag the art where you want it and continue, and we'll fit it to the streets faithfully.`,
       );
       setShowOfframp(true);
       setOfframpRun(
