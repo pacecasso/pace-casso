@@ -334,19 +334,32 @@ async function fetchStudioRoute(
   body: Record<string, unknown>,
   onProgress: (detail: string) => void,
 ): Promise<StudioRoutePayload | null> {
+  // Never let this stage stall the cascade: the server budgets itself to
+  // ~200 s and streams progress; if neither a result nor the stream's end
+  // arrives by 270 s something is wedged — abort and fall through.
+  const abort = new AbortController();
+  const timer = window.setTimeout(() => abort.abort(), 270_000);
   try {
     onProgress("Studio lane: tracing your shape on real streets at hero scale…");
     const res = await fetch("/api/studio-route", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: abort.signal,
     });
     if (!res.ok) return null;
-    const rec = (await res.json()) as StudioRoutePayload;
-    if (!rec || typeof rec !== "object") return null;
-    return rec;
+    const contentType = res.headers.get("Content-Type") ?? "";
+    if (!contentType.includes("ndjson")) {
+      // non-stream replies (manhattan-only, validation) are plain JSON
+      const rec = (await res.json()) as StudioRoutePayload;
+      return rec && typeof rec === "object" ? rec : null;
+    }
+    const result = await readNdjsonResult(res, onProgress);
+    return result as StudioRoutePayload;
   } catch {
     return null;
+  } finally {
+    window.clearTimeout(timer);
   }
 }
 

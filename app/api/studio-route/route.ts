@@ -8,11 +8,18 @@ import {
 } from "../../../lib/streetGraphTrace";
 
 export const runtime = "nodejs";
-// Two placement sweeps (fine + deliberate anchor cadence) plus a handful of
-// judge calls. Typically 60-150 s.
+// Placement sweeps + judge calls, bounded by TIME_BUDGET_MS below — the
+// budget keeps us well inside the platform's function limit.
 export const maxDuration = 300;
 
 const MAX_POINTS = 600;
+// Trace cost scales with contour length; photo uploads send up to 600
+// points but the street lattice can't render detail finer than ~240 points
+// resolve anyway. Downsampling is the difference between 20 s and minutes.
+const TRACE_POINTS = 240;
+// Hard wall for the whole request: sweeps stop starting after this, so the
+// user never waits on a silent function that the platform will kill anyway.
+const TIME_BUDGET_MS = 200_000;
 const JUDGE_MODEL = "claude-fable-5";
 
 function cleanContour(raw: unknown): NormalizedPoint[] {
@@ -31,6 +38,16 @@ function cleanContour(raw: unknown): NormalizedPoint[] {
       });
       if (out.length >= MAX_POINTS) break;
     }
+  }
+  return out;
+}
+
+function downsampleContour(contour: NormalizedPoint[], maxPoints: number): NormalizedPoint[] {
+  if (contour.length <= maxPoints) return contour;
+  const out: NormalizedPoint[] = [];
+  const step = contour.length / maxPoints;
+  for (let i = 0; i < maxPoints; i++) {
+    out.push(contour[Math.floor(i * step)]!);
   }
   return out;
 }
@@ -149,40 +166,31 @@ async function sameSubject(subject: string, alts: string[], guess: string): Prom
   }
 }
 
-/**
- * The studio lane: the offline pipeline that produced the verified route
- * batch, slimmed to fit a request. Dual-cadence street tracing at hero
- * scale, then a zero-context correct-name gate on the rendered route.
- * Returns street-native chains — no Mapbox spend.
- */
-export async function POST(req: Request) {
-  const shield = shieldExpensiveRoute(req, "studio-route", 600);
-  if (!shield.ok) {
-    return Response.json({ error: shield.message }, { status: shield.status });
-  }
-  if (!rateLimitAllow(`studio-route:${trustedClientIp(req)}`, 8)) {
-    return Response.json({ error: "Rate limit" }, { status: 429 });
-  }
-  let body: { contour?: unknown; cityId?: unknown; subject?: unknown; imageBase64?: unknown };
-  try {
-    body = (await req.json()) as typeof body;
-  } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
-  }
-  const cityId = typeof body.cityId === "string" ? body.cityId : "manhattan";
-  if (cityId !== "manhattan") {
-    return Response.json({ ok: false, reason: "manhattan-only" });
-  }
-  const contour = cleanContour(body.contour);
-  if (contour.length < 8) {
-    return Response.json({ error: "contour too short" }, { status: 400 });
-  }
+type StudioResult = {
+  ok: boolean;
+  verified?: boolean;
+  reason?: string;
+  subject?: string;
+  chain?: [number, number][];
+  km?: number;
+  visualScore?: number;
+  verdicts?: { guess: string; confidence: number }[];
+};
 
-  // subject for the correct-name gate: caller-provided, else named from the
-  // uploaded image, else the gate cannot run and we return unverified.
+async function runStudio(
+  body: { contour?: unknown; subject?: unknown; imageBase64?: unknown },
+  onProgress: (detail: string) => void,
+): Promise<StudioResult> {
+  const started = Date.now();
+  const timeLeft = () => TIME_BUDGET_MS - (Date.now() - started);
+
+  const contour = downsampleContour(cleanContour(body.contour), TRACE_POINTS);
+  if (contour.length < 8) return { ok: false, reason: "contour-too-short" };
+
   let subject = typeof body.subject === "string" && body.subject.trim() ? body.subject.trim() : null;
   let alts: string[] = [];
   if (!subject && typeof body.imageBase64 === "string" && body.imageBase64.length > 100) {
+    onProgress("Studio lane: naming your subject…");
     const named = await nameSubject(body.imageBase64);
     if (named) {
       subject = named.subject;
@@ -190,43 +198,56 @@ export async function POST(req: Request) {
     }
   }
 
-  // dual-cadence sweep: fine anchors keep detail, sparse anchors draw
-  // deliberate long edges; the visual scorer picks per placement.
-  const sweeps = await Promise.all(
-    [120, 380].map((anchorM) =>
-      traceShapeOnStreets(contour, {
+  // dual-cadence sweep, sequential so progress flows between them and the
+  // time budget can stop the second one.
+  const sweeps: StreetTraceCandidate[] = [];
+  const cadences: [number, string][] = [
+    [120, "Studio lane: tracing your shape on real streets (fine cadence)…"],
+    [380, "Studio lane: tracing again with long deliberate strokes…"],
+  ];
+  for (const [anchorM, label] of cadences) {
+    if (timeLeft() < 30_000) break;
+    onProgress(label);
+    // let the progress line flush before the CPU-bound sweep
+    await new Promise((r) => setTimeout(r, 10));
+    try {
+      const found = await traceShapeOnStreets(contour, {
         topK: 3,
         anchorM,
         placementsPerScale: 2,
         // hero scales only: below ~1300 m half-size, features collapse into
         // the lattice and nothing has ever passed the correct-name gate.
         scales: [1300, 1800, 2400, 3200],
-      }).catch(() => [] as StreetTraceCandidate[]),
-    ),
-  );
+      });
+      sweeps.push(...found);
+    } catch {
+      /* a failed sweep just contributes nothing */
+    }
+  }
   const candidates = sweeps
-    .flat()
     .sort((a, b) => b.visualScore - a.visualScore || b.visualCleanliness - a.visualCleanliness)
     .slice(0, 3);
-  if (!candidates.length) {
-    return Response.json({ ok: false, reason: "no-placement" });
-  }
+  if (!candidates.length) return { ok: false, reason: "no-placement" };
 
   if (!subject) {
-    const best = candidates[0];
-    return Response.json({
+    const best = candidates[0]!;
+    return {
       ok: true,
       verified: false,
       reason: "no-subject",
-      chain: best.chain,
+      chain: best.chain as [number, number][],
       km: best.km,
       visualScore: best.visualScore,
-    });
+    };
   }
 
   // judge the top two candidates: 2 zero-context samples each; verified
   // requires both samples naming the subject correctly.
-  for (const cand of candidates.slice(0, 2)) {
+  const judgeable = candidates.slice(0, 2);
+  for (let c = 0; c < judgeable.length; c++) {
+    if (timeLeft() < 20_000) break;
+    const cand = judgeable[c]!;
+    onProgress(`Studio lane: showing route ${c + 1} of ${judgeable.length} to blind judges…`);
     let png: Buffer;
     try {
       png = await renderChainPng(cand.chain as [number, number][]);
@@ -256,25 +277,89 @@ export async function POST(req: Request) {
       if (guess && (await sameSubject(subject, alts, guess))) correct++;
     }
     if (correct === 2) {
-      return Response.json({
+      return {
         ok: true,
         verified: true,
         subject,
-        chain: cand.chain,
+        chain: cand.chain as [number, number][],
         km: cand.km,
         visualScore: cand.visualScore,
         verdicts,
-      });
+      };
     }
   }
-  const best = candidates[0];
-  return Response.json({
+  const best = candidates[0]!;
+  return {
     ok: true,
     verified: false,
     reason: "not-recognized",
     subject,
-    chain: best.chain,
+    chain: best.chain as [number, number][],
     km: best.km,
     visualScore: best.visualScore,
+  };
+}
+
+/**
+ * The studio lane: the offline pipeline that produced the verified route
+ * batch, slimmed to fit a request. Dual-cadence street tracing at hero
+ * scale, then a zero-context correct-name gate on the rendered route.
+ * Streams NDJSON progress lines (same protocol as wow-place) so the UI
+ * stays alive and proxies don't kill an idle connection. Returns
+ * street-native chains — no Mapbox spend.
+ */
+export async function POST(req: Request) {
+  const shield = shieldExpensiveRoute(req, "studio-route", 600);
+  if (!shield.ok) {
+    return Response.json({ error: shield.message }, { status: shield.status });
+  }
+  if (!rateLimitAllow(`studio-route:${trustedClientIp(req)}`, 8)) {
+    return Response.json({ error: "Rate limit" }, { status: 429 });
+  }
+  let body: { contour?: unknown; cityId?: unknown; subject?: unknown; imageBase64?: unknown };
+  try {
+    body = (await req.json()) as typeof body;
+  } catch {
+    return Response.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+  const cityId = typeof body.cityId === "string" ? body.cityId : "manhattan";
+  if (cityId !== "manhattan") {
+    return Response.json({ ok: false, reason: "manhattan-only" });
+  }
+
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (obj: unknown) => {
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
+        } catch {
+          /* client went away */
+        }
+      };
+      try {
+        const result = await runStudio(body, (detail) => send({ type: "progress", detail }));
+        send({ type: "result", result });
+      } catch (err) {
+        send({
+          type: "error",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Accel-Buffering": "no",
+    },
   });
 }
