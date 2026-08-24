@@ -1357,7 +1357,8 @@ export default function Step1ImageUpload({
       ) : null}
 
       <div className="pace-card mb-1 w-full max-w-4xl p-1.5 sm:p-2">
-        <div className="pace-card-editorial flex w-full min-w-0 flex-nowrap items-center gap-2 overflow-x-auto py-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {/* Phones wrap the toolbar into rows; sm+ keeps the single strip. */}
+        <div className="pace-card-editorial flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 py-0.5 sm:flex-nowrap sm:overflow-x-auto sm:[-ms-overflow-style:none] sm:[scrollbar-width:none] sm:[&::-webkit-scrollbar]:hidden">
           <input
             id={traceFileInputId}
             type="file"
@@ -1395,7 +1396,7 @@ export default function Step1ImageUpload({
               className="w-[72px] accent-pace-yellow sm:w-[84px]"
             />
           </label>
-          <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-x-1 pl-1">
+          <div className="flex shrink-0 flex-nowrap items-center gap-x-1 pl-1 sm:ml-auto">
             <span className="shrink-0 font-bebas text-[11px] tracking-[0.1em] text-pace-muted sm:text-[11px]">
               Line art
             </span>
@@ -1457,8 +1458,9 @@ export default function Step1ImageUpload({
       </div>
 
       <div className="w-full overflow-x-auto overflow-y-visible pb-0.5 [-webkit-overflow-scrolling:touch]">
-        <div className="mx-auto min-w-[min(100%,720px)] max-w-[880px] px-0 sm:min-w-[740px] sm:px-0">
-          <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
+        {/* Phones stack the three panels; sm+ keeps them side by side. */}
+        <div className="mx-auto max-w-[880px] px-0 sm:min-w-[740px] sm:px-0">
+          <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3 sm:gap-2">
             <div className="flex min-w-0 flex-col items-center">
               <div className={columnTitleClass}>
                 <span className="font-bebas text-[11px] tracking-[0.12em] text-pace-muted sm:text-xs">
@@ -1532,9 +1534,9 @@ export default function Step1ImageUpload({
             </div>
           </div>
 
-          <div className="mt-1 grid grid-cols-3 gap-1.5 sm:gap-2">
-            <div className="min-w-0" />
-            <div className="min-w-0" />
+          <div className="mt-1 grid grid-cols-1 gap-1.5 sm:grid-cols-3 sm:gap-2">
+            <div className="hidden min-w-0 sm:block" />
+            <div className="hidden min-w-0 sm:block" />
             <div className="flex min-w-0 flex-col items-center px-1">
               <div className="w-full max-w-[280px]">
                 <label
