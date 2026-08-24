@@ -670,11 +670,12 @@ export function traceContour(
 }
 
 /**
- * Erase only loops that return to the same graph node. A wider proximity
- * splice can jump between different streets and silently make the route
- * unrunnable.
+ * Erase loops that return to (effectively) the same spot: the same graph
+ * node, or another node of the same intersection. 6 m stays within one
+ * intersection — a wider proximity splice could jump between different
+ * streets and silently make the route unrunnable.
  */
-function trimNubs(chain: LatLng[], closeM = 1.5, maxLoopM = 1000): LatLng[] {
+export function trimNubs(chain: LatLng[], closeM = 6, maxLoopM = 1000): LatLng[] {
   const out = chain.slice();
   let changed = true;
   while (changed) {
@@ -1014,7 +1015,11 @@ export async function traceShapeOnStreets(
         intendedSimilarity,
         toSimilarityPoints(variant),
       );
-      if (candidateVisual.score > visual.score) {
+      // Cleanliness preference: nub spurs barely move the similarity
+      // score, so a strict > let the raw nubby chain win every tie. The
+      // trimmed variant now wins unless trimming meaningfully hurt the
+      // shape.
+      if (candidateVisual.score > visual.score - 1.5) {
         selectedChain = variant;
         visual = candidateVisual;
       }
