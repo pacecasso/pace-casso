@@ -245,6 +245,10 @@ async function readNdjsonResult(
   return resultRef.current;
 }
 
+// One record: the state of the latest find-my-route search. Written on
+// every stage change, read on mount to surface interrupted searches.
+const SEARCH_STATE_KEY = "pacecasso.step2.searchState.v1";
+
 async function fetchWowPlace(
   body: Record<string, unknown>,
   onProgress: (detail: string) => void,
@@ -460,6 +464,68 @@ export default function Step2MapAnchor({
   }, []);
 
   /**
+   * A route search runs for minutes — long enough for the user to walk
+   * away, the laptop to sleep, or the browser to discard the tab. The
+   * outcome must survive all of that: every stage is mirrored to
+   * localStorage, so an interrupted or failed search greets the returning
+   * user with WHAT happened and WHERE, never a silently reset button.
+   */
+  const lastStageRef = useRef<string>("starting");
+  const noteStage = useCallback((detail: string) => {
+    lastStageRef.current = detail;
+    setAutoHint(detail);
+    try {
+      window.localStorage.setItem(
+        SEARCH_STATE_KEY,
+        JSON.stringify({ status: "running", stage: detail, at: Date.now() }),
+      );
+    } catch {
+      /* storage unavailable — hint alone still works */
+    }
+  }, []);
+  const recordSearchEnd = useCallback(
+    (status: "done" | "stopped" | "no-route", message?: string) => {
+      try {
+        window.localStorage.setItem(
+          SEARCH_STATE_KEY,
+          JSON.stringify({ status, stage: lastStageRef.current, message, at: Date.now() }),
+        );
+      } catch {
+        /* storage unavailable */
+      }
+    },
+    [],
+  );
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SEARCH_STATE_KEY);
+      if (!raw) return;
+      const rec = JSON.parse(raw) as {
+        status?: string;
+        stage?: string;
+        message?: string;
+      };
+      if (rec.status === "running") {
+        // still marked running on a fresh mount = the tab reloaded or was
+        // discarded mid-search; the search itself is gone.
+        window.localStorage.removeItem(SEARCH_STATE_KEY);
+        setAutoHint(
+          `Your last route search was interrupted mid-way, during: "${rec.stage ?? "searching"}". ` +
+            "The search runs in this tab, so it needs the tab open and the computer awake. " +
+            "Press Find my route to run it again.",
+        );
+      } else if ((rec.status === "stopped" || rec.status === "no-route") && rec.message) {
+        window.localStorage.removeItem(SEARCH_STATE_KEY);
+        setAutoHint(rec.message);
+      } else {
+        window.localStorage.removeItem(SEARCH_STATE_KEY);
+      }
+    } catch {
+      /* unreadable state — ignore */
+    }
+  }, []);
+
+  /**
    * ONE button, the whole funnel (Ralph, July 28: "multiple options that
    * all fail is terrible"). Cascade: try the art exactly as drawn ->
    * verified street placement; if the judge refuses and we have the
@@ -475,7 +541,16 @@ export default function Step2MapAnchor({
     }
     if (hintTimerRef.current !== null) window.clearTimeout(hintTimerRef.current);
     setAutoBusy(true);
-    setAutoHint("Trying your art exactly as drawn…");
+    // Keep the machine awake for the duration — a multi-minute search dies
+    // silently when the laptop sleeps. Released in finally; the browser
+    // also auto-releases it if the tab is hidden.
+    let wakeLock: WakeLockSentinel | null = null;
+    try {
+      wakeLock = (await navigator.wakeLock?.request("screen")) ?? null;
+    } catch {
+      /* unsupported or denied — search still runs */
+    }
+    noteStage("Trying your art exactly as drawn…");
     setPicks([]);
     setShowOfframp(false);
     setOfframpRun(null);
@@ -691,9 +766,10 @@ export default function Step2MapAnchor({
             subject: interpretedSubject ?? undefined,
             imageBase64: !interpretedSubject && imageBase64 ? imageBase64 : undefined,
           },
-          setAutoHint,
+          noteStage,
         );
         if (studio?.ok && studio.verified && applyStudioResult(studio)) {
+          recordSearchEnd("done");
           return;
         }
       }
@@ -705,19 +781,21 @@ export default function Step2MapAnchor({
           cityId: cityPreset.id,
           subject: interpretedSubject ?? undefined,
         },
-        setAutoHint,
+        noteStage,
       );
       if (literal.picks.length) {
         applyResult(literal, false);
+        recordSearchEnd("done");
         return;
       }
 
       // Stage 2: automatic street-ready redraw, then place that.
       if (!imageBase64) {
-        setAutoHint(
+        const noRouteMessage =
           literal.message ??
-            "Nothing cleared the judge's bar. Bold, simple shapes work best — or drag the art where you want it and continue; we'll fit it to the streets.",
-        );
+          "Nothing cleared the judge's bar. Bold, simple shapes work best — or drag the art where you want it and continue; we'll fit it to the streets.";
+        setAutoHint(noRouteMessage);
+        recordSearchEnd("no-route", noRouteMessage);
         setShowOfframp(true);
         setOfframpRun(
           matchVerifiedBankRun([literal.subject, interpretedSubject, imageSourceName]),
@@ -747,12 +825,12 @@ export default function Step2MapAnchor({
       for (let round = 1; round <= MAX_REDRAW_ROUNDS; round++) {
         if (round > 1 && Date.now() - cascadeStart > REDRAW_BUDGET_MS) break;
         roundsTried = round;
-        setAutoHint(
+        noteStage(
           round === 1
             ? "Your art as-drawn didn't pass the street judges — redrawing it street-ready…"
             : `Attempt ${round}: drawing a fresh street-ready version…`,
         );
-        const interp = await fetchInterpret(imageBase64, setAutoHint);
+        const interp = await fetchInterpret(imageBase64, noteStage);
 
         if (!interp.contour) {
           lastInterp = lastInterp ?? interp;
@@ -770,16 +848,17 @@ export default function Step2MapAnchor({
             // pump+figure+hose route it was asked to read as one element).
             imageBase64: interp.composite ? imageBase64 : undefined,
           },
-          setAutoHint,
+          noteStage,
         );
         lastPlaced = placed;
         if (placed.picks.length) {
           applyResult(placed, true, interp.composite);
+          recordSearchEnd("done");
           return;
         }
       }
       if (imageBase64) {
-        setAutoHint("Blind-verified placement did not pass - running the design-first street artist loop...");
+        noteStage("Blind-verified placement did not pass - running the design-first street artist loop...");
         const artistRoute = await fetchArtistLoop(
           {
             imageBase64,
@@ -787,25 +866,29 @@ export default function Step2MapAnchor({
             cityLabel: cityPreset.label,
             sourceName: imageSourceName ?? undefined,
           },
-          setAutoHint,
+          noteStage,
         );
         if (artistRoute) {
           applyArtistLoopResult(artistRoute);
+          recordSearchEnd("done");
           return;
         }
 
-        setAutoHint("Design-first route did not return a usable route - checking strict route-native fallbacks...");
+        noteStage("Design-first route did not return a usable route - checking strict route-native fallbacks...");
         const routeNative = await autoFindTop5(contour, cityPreset, {
           anchorSource: "image",
           imageBase64,
           imageSourceName: imageSourceName ?? undefined,
           topK: 5,
         });
-        if (applyAutoFindResult(routeNative)) return;
+        if (applyAutoFindResult(routeNative)) {
+          recordSearchEnd("done");
+          return;
+        }
       }
-      setAutoHint(
-        `We tried your art as-drawn plus ${roundsTried} fresh street-ready redraws${lastInterp?.subject ? ` (as ${lastInterp.subject})` : ""} - nothing cleared the blind judge's bar. ${lastPlaced?.message ?? lastInterp?.message ?? ""} You can place it yourself: drag the art where you want it and continue, and we'll fit it to the streets faithfully.`,
-      );
+      const exhaustedMessage = `We tried your art as-drawn plus ${roundsTried} fresh street-ready redraws${lastInterp?.subject ? ` (as ${lastInterp.subject})` : ""} - nothing cleared the blind judge's bar. ${lastPlaced?.message ?? lastInterp?.message ?? ""} You can place it yourself: drag the art where you want it and continue, and we'll fit it to the streets faithfully.`;
+      setAutoHint(exhaustedMessage);
+      recordSearchEnd("no-route", exhaustedMessage);
       setShowOfframp(true);
       setOfframpRun(
         matchVerifiedBankRun([
@@ -818,12 +901,24 @@ export default function Step2MapAnchor({
       );
     } catch (err) {
       console.warn("[Step2] find-my-route cascade failed:", err);
-      setAutoHint(err instanceof Error ? err.message : "Route finding failed.");
-      armHintClear(9000);
+      // Persistent on purpose: the user may come back minutes later and
+      // must find the outcome, not a silently reset button.
+      const detail = err instanceof Error ? err.message : "Route finding failed.";
+      const message =
+        `Route search stopped during: "${lastStageRef.current}" — ${detail} ` +
+        "This can happen if the computer sleeps or the tab stays in the background too long. " +
+        "Keep this tab visible and press Find my route to try again.";
+      setAutoHint(message);
+      recordSearchEnd("stopped", message);
     } finally {
+      try {
+        void wakeLock?.release();
+      } catch {
+        /* already released */
+      }
       setAutoBusy(false);
     }
-  }, [contour, cityPreset, imageBase64, imageSourceName, interpretedSubject, routeFromPick, armHintClear]);
+  }, [contour, cityPreset, imageBase64, imageSourceName, interpretedSubject, routeFromPick, armHintClear, noteStage, recordSearchEnd]);
 
   const applyPick = useCallback((pick: Top5Pick, idx: number) => {
     setCenter([...pick.placement.center] as [number, number]);
