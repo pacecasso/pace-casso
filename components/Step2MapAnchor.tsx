@@ -367,6 +367,64 @@ async function fetchStudioRoute(
   }
 }
 
+// ---- async job lane (server-side search; survives closed tabs) -----------
+const NOTIFY_EMAIL_KEY = "pacecasso.notifyEmail";
+const ACTIVE_JOB_KEY = "pacecasso.activeRouteJob.v1";
+
+type RouteJobStatusPayload = {
+  jobId?: string;
+  status?: string;
+  stage?: string;
+  stageNote?: string;
+  result?: {
+    kind?: string;
+    studio?: StudioRoutePayload;
+    wow?: { picks?: unknown[]; subject?: unknown; message?: unknown };
+    redrawn?: boolean;
+    composite?: boolean;
+    artist?: Record<string, unknown>;
+    message?: string;
+  } | null;
+  error?: string | null;
+};
+
+function searchRunningLine(email: string | null): string {
+  return email
+    ? `Your route search is running on our servers — we'll email ${email} when it's found. You can close this page.`
+    : "Your route search is running on our servers — you can close this page and come back; the result will be waiting here.";
+}
+
+async function createRouteJob(
+  body: Record<string, unknown>,
+): Promise<{ jobId: string } | "unavailable" | null> {
+  try {
+    const res = await fetch("/api/route-job", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 503) return "unavailable";
+    if (!res.ok) return null;
+    const rec = (await res.json()) as { jobId?: unknown };
+    return typeof rec.jobId === "string" && rec.jobId ? { jobId: rec.jobId } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRouteJobStatus(jobId: string): Promise<RouteJobStatusPayload | null> {
+  try {
+    const res = await fetch(`/api/route-job?id=${encodeURIComponent(jobId)}`, {
+      cache: "no-store",
+    });
+    if (res.status === 404) return { status: "gone" };
+    if (!res.ok) return null;
+    return (await res.json()) as RouteJobStatusPayload;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchInterpret(
   imageBase64: string,
   onProgress: (detail: string) => void,
@@ -533,11 +591,401 @@ export default function Step2MapAnchor({
    * Ends in verified picks or ONE honest final answer — never a menu of
    * dead ends.
    */
+const applyResult = useCallback((result: WowPlaceResultPayload, redrawn: boolean, likenessJudged = false) => {
+    const subjectLabel = result.subject ?? "your art";
+    const mapped: Top5Pick[] = result.picks.map((p) => ({
+      placement: {
+        center: p.center,
+        rotationDeg: p.rotDeg,
+        scale: p.extentM / 2000,
+      },
+      anchorLatLngs: p.anchorLatLngs,
+      routeCoords: p.coordinates,
+      snappedRoute: {
+        coordinates: p.coordinates,
+        distanceMeters: Math.round(p.km * 1000),
+        blockWaypoints: p.coordinates,
+        preserveBlockWaypoints: true,
+      },
+      previewDataUrl: `data:image/png;base64,${p.previewPngBase64}`,
+      distanceKm: p.km,
+      qualityScore: Math.min(100, p.primed * 10),
+      shapeMatchScore: Math.max(1, Math.min(100, Math.round(100 - p.dev))),
+      sourceMatchScore: Math.min(100, p.primed * 10),
+      verifiedRoute: !p.fallbackDraft,
+      verificationLabel: p.fallbackDraft
+        ? "BEST RUNNABLE DRAFT"
+        : p.blindGuess
+          ? "BLIND-VERIFIED 3/3"
+          : `AI JUDGE ${p.primed}/10`,
+      reason: p.fallbackDraft
+        ? `${p.fallbackReason ?? "Strict judging did not pass."} This is the best real-street draft we found, so you can inspect and edit it instead of getting a dead end.`
+        : p.blindGuess
+          ? `A judge shown this route with zero context named it "${p.blindGuess}" three times out of three.`
+          : likenessJudged
+            ? `A vision judge compared this street route against your original image and scored the likeness ${p.primed}/10 before we showed it to you.`
+            : `A vision judge, told only "${subjectLabel}", scored this street route ${p.primed}/10 before we showed it to you.`,
+    }));
+    setPicks(mapped);
+    setPicksVisionUsed(true);
+    const first = mapped[0]!;
+    setCenter([...first.placement.center] as [number, number]);
+    setRotationDeg(first.placement.rotationDeg);
+    setScale(first.placement.scale);
+    setSelectedPickIdx(0);
+    setPreferredSnappedRoute(routeFromPick(first));
+    setSelectedAnchorLatLngs(first.anchorLatLngs ?? null);
+    setFitNonce((n) => n + 1);
+    const hasFallbackDraft = result.picks.some((p) => p.fallbackDraft);
+    setAutoHint(
+      hasFallbackDraft
+        ? `We read your art as ${subjectLabel}. No strict route passed, so here is the best runnable street draft to inspect and edit.`
+        : redrawn
+          ? `Your art as-drawn didn't survive the streets, so we redrew it as ${subjectLabel} - ${mapped.length} judge-checked placements. Tap one to try it.`
+          : `We read your art as ${subjectLabel} - here are ${mapped.length} judge-checked placements. Tap one to try it.`,
+    );
+    window.setTimeout(() => {
+      document
+        .getElementById("step2-picks")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+  }, [routeFromPick]);
+
+const applyArtistLoopResult = useCallback((result: ArtistLoopResultPayload) => {
+    const recognizedPct = Math.round((Math.min(3, Math.max(0, result.recognizedCount)) / 3) * 100);
+    const confidencePct = Math.round(Math.min(1, Math.max(0, result.medianConfidence)) * 100);
+    const routeCleanPct = Math.max(45, Math.min(95, Math.round(100 - result.meanDeviationMeters * 2)));
+    const guessText = result.guesses.length ? ` Judges guessed: ${result.guesses.join(", ")}.` : "";
+    const pick: Top5Pick = {
+      placement: {
+        center: result.center,
+        rotationDeg: 0,
+        scale: 1,
+      },
+      anchorLatLngs: result.sketchLatLngs,
+      designIntent: result.description,
+      routeCoords: result.chain,
+      snappedRoute: {
+        coordinates: result.chain,
+        distanceMeters: Math.round(result.distanceMeters),
+        blockWaypoints: result.chain,
+        preserveBlockWaypoints: true,
+      },
+      previewDataUrl: renderRouteToDataUrl(result.chain, 640, { padding: 96 }) ?? "",
+      distanceKm: result.distanceMeters / 1000,
+      qualityScore: routeCleanPct,
+      shapeMatchScore: Math.max(55, Math.min(95, Math.round((recognizedPct + confidencePct) / 2))),
+      sourceMatchScore: Math.max(45, Math.min(95, Math.round((recognizedPct * 0.7) + (confidencePct * 0.3)))),
+      verifiedRoute: result.recognizedCount >= 2,
+      verificationLabel: `ARTIST LOOP ${result.recognizedCount}/3`,
+      reason:
+        `${result.label}: design-first street route compiled on real Manhattan streets after ${result.roundsRun} round${result.roundsRun === 1 ? "" : "s"}. ` +
+        `${result.recognizedCount}/3 blind judges recognized it.${guessText}`,
+    };
+    setPicks([pick]);
+    setPicksVisionUsed(true);
+    setCenter([...pick.placement.center] as [number, number]);
+    setRotationDeg(pick.placement.rotationDeg);
+    setScale(pick.placement.scale);
+    setSelectedPickIdx(0);
+    setPreferredSnappedRoute(routeFromPick(pick));
+    setSelectedAnchorLatLngs(pick.anchorLatLngs ?? null);
+    setFitNonce((n) => n + 1);
+    setAutoHint(
+      result.recognizedCount >= 2
+        ? `Design-first route found: ${result.recognizedCount}/3 blind judges recognized it. Tap it to inspect, then continue.`
+        : `Design-first route found, but only ${result.recognizedCount}/3 blind judges recognized it. Showing the best real-street draft instead of failing.`,
+    );
+    window.setTimeout(() => {
+      document
+        .getElementById("step2-picks")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+    return result.recognizedCount >= 2;
+  }, [routeFromPick]);
+
+const applyStudioResult = useCallback((result: StudioRoutePayload) => {
+    const chain = result.chain ?? [];
+    if (chain.length < 8) return false;
+    const distanceMeters = Math.round((result.km ?? 0) * 1000);
+    const lat = chain.reduce((a, p) => a + p[0], 0) / chain.length;
+    const lng = chain.reduce((a, p) => a + p[1], 0) / chain.length;
+    const guessText = result.verdicts?.length
+      ? ` Judges guessed: ${result.verdicts.map((v) => v.guess).join(", ")}.`
+      : "";
+    const pick: Top5Pick = {
+      placement: { center: [lat, lng], rotationDeg: 0, scale: 1 },
+      anchorLatLngs: chain,
+      designIntent: result.subject ?? "your art, traced on real streets",
+      routeCoords: chain,
+      snappedRoute: {
+        coordinates: chain,
+        distanceMeters,
+        blockWaypoints: chain,
+        preserveBlockWaypoints: true,
+      },
+      previewDataUrl: renderRouteToDataUrl(chain, 640, { padding: 96 }) ?? "",
+      distanceKm: result.km ?? distanceMeters / 1000,
+      qualityScore: 90,
+      shapeMatchScore: 90,
+      sourceMatchScore: 85,
+      verifiedRoute: true,
+      verificationLabel: "STUDIO 2/2",
+      reason:
+        `Studio lane: your shape traced directly on real streets at hero scale. ` +
+        `Both blind judges named it "${result.subject ?? "your subject"}" with zero context.${guessText}`,
+    };
+    setPicks([pick]);
+    setPicksVisionUsed(true);
+    setCenter([...pick.placement.center] as [number, number]);
+    setRotationDeg(0);
+    setScale(1);
+    setSelectedPickIdx(0);
+    setPreferredSnappedRoute(routeFromPick(pick));
+    setSelectedAnchorLatLngs(pick.anchorLatLngs ?? null);
+    setFitNonce((n) => n + 1);
+    setAutoHint(
+      `Studio route found: 2/2 blind judges recognized it as "${result.subject}". Tap it to inspect, then continue.`,
+    );
+    window.setTimeout(() => {
+      document
+        .getElementById("step2-picks")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+    return true;
+  }, [routeFromPick]);
+
+  // ---- async job lane state ----------------------------------------------
+  const [notifyEmail, setNotifyEmail] = useState("");
+  useEffect(() => {
+    try {
+      setNotifyEmail(window.localStorage.getItem(NOTIFY_EMAIL_KEY) ?? "");
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
+  const jobPollRef = useRef<number | null>(null);
+  const stopJobWatch = useCallback(() => {
+    if (jobPollRef.current !== null) {
+      window.clearInterval(jobPollRef.current);
+      jobPollRef.current = null;
+    }
+  }, []);
+  useEffect(() => stopJobWatch, [stopJobWatch]);
+
+  const applyJobResult = useCallback(
+    (payload: RouteJobStatusPayload): void => {
+      // Keep the job pointer on success (marked done) so a reload or a
+      // return visit re-applies the finished result — with async search,
+      // coming back later IS the normal flow. Only dead ends clear it.
+      const keepPointer = () => {
+        try {
+          const raw = window.localStorage.getItem(ACTIVE_JOB_KEY);
+          const rec = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+          window.localStorage.setItem(
+            ACTIVE_JOB_KEY,
+            JSON.stringify({ ...rec, jobId: payload.jobId, done: true }),
+          );
+        } catch {
+          /* storage unavailable */
+        }
+      };
+      const dropPointer = () => {
+        try {
+          window.localStorage.removeItem(ACTIVE_JOB_KEY);
+        } catch {
+          /* storage unavailable */
+        }
+      };
+      const r = payload.result;
+      if (!r) {
+        dropPointer();
+        setAutoHint(
+          payload.error
+            ? `Route search failed: ${payload.error}`
+            : "Route search finished without a result — press Find my route to run it again.",
+        );
+        return;
+      }
+      if (r.kind === "studio" && r.studio && applyStudioResult(r.studio)) {
+        keepPointer();
+        recordSearchEnd("done");
+        return;
+      }
+      if (r.kind === "wow" && r.wow) {
+        const picks = Array.isArray(r.wow.picks)
+          ? r.wow.picks.map(cleanWowPick).filter((p): p is WowPlacePickPayload => p !== null)
+          : [];
+        if (picks.length) {
+          applyResult(
+            {
+              picks,
+              subject: typeof r.wow.subject === "string" ? r.wow.subject : null,
+              message: typeof r.wow.message === "string" ? r.wow.message : undefined,
+            },
+            r.redrawn === true,
+            r.composite === true,
+          );
+          keepPointer();
+          recordSearchEnd("done");
+          return;
+        }
+      }
+      if (r.kind === "artist" && r.artist) {
+        const artist = cleanArtistLoopResult(r.artist);
+        if (artist) {
+          applyArtistLoopResult(artist);
+          keepPointer();
+          recordSearchEnd("done");
+          return;
+        }
+      }
+      dropPointer();
+      const message =
+        r.kind === "none" && typeof r.message === "string" && r.message
+          ? `${r.message} You can place it yourself: drag the art where you want it and continue.`
+          : "The search finished but its result could not be loaded — press Find my route to run it again.";
+      setAutoHint(message);
+      recordSearchEnd("no-route", message);
+      setShowOfframp(true);
+    },
+    [applyStudioResult, applyResult, applyArtistLoopResult, recordSearchEnd],
+  );
+
+  const watchRouteJob = useCallback(
+    (jobId: string, email: string | null) => {
+      stopJobWatch();
+      const poll = async () => {
+        const payload = await fetchRouteJobStatus(jobId);
+        if (!payload) return; // transient network blip — next tick retries
+        if (payload.status === "gone") {
+          stopJobWatch();
+          try {
+            window.localStorage.removeItem(ACTIVE_JOB_KEY);
+          } catch {
+            /* storage unavailable */
+          }
+          return;
+        }
+        if (payload.status === "done") {
+          stopJobWatch();
+          applyJobResult(payload);
+          return;
+        }
+        if (payload.status === "failed") {
+          stopJobWatch();
+          try {
+            window.localStorage.removeItem(ACTIVE_JOB_KEY);
+          } catch {
+            /* storage unavailable */
+          }
+          setAutoHint(
+            `Route search failed: ${payload.error ?? "unknown error"}. Press Find my route to try again.`,
+          );
+          return;
+        }
+        if (typeof payload.stageNote === "string" && payload.stageNote) {
+          setAutoHint(`${searchRunningLine(email)} Now: ${payload.stageNote}`);
+        }
+      };
+      void poll();
+      jobPollRef.current = window.setInterval(() => void poll(), 20_000);
+    },
+    [applyJobResult, stopJobWatch],
+  );
+
+  // Pick up a job from the email link (?job=) or a previous visit.
+  useEffect(() => {
+    let jobId: string | null = null;
+    let email: string | null = null;
+    try {
+      const q = new URL(window.location.href).searchParams.get("job");
+      if (q && /^[0-9a-f]{32}$/.test(q)) jobId = q;
+      if (!jobId) {
+        const raw = window.localStorage.getItem(ACTIVE_JOB_KEY);
+        if (raw) {
+          const rec = JSON.parse(raw) as { jobId?: string; email?: string | null };
+          if (typeof rec.jobId === "string" && /^[0-9a-f]{32}$/.test(rec.jobId)) {
+            jobId = rec.jobId;
+            email = rec.email ?? null;
+          }
+        }
+      }
+    } catch {
+      /* storage unavailable */
+    }
+    if (!jobId) return;
+    setAutoHint("Checking on your route search…");
+    watchRouteJob(jobId, email);
+    // mount-only: the stored/linked job id cannot change after load
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const runWowFind = useCallback(async () => {
     if (cityPreset.id !== "manhattan") {
       setAutoHint("Route finding currently supports Manhattan only.");
       armHintClear(6000);
       return;
+    }
+
+    // Async lane: hand the search to the server so the user can close the
+    // tab ("we'll email you"). Existing running job → re-attach instead of
+    // double-submitting. Falls back to the live in-tab cascade only when
+    // the job store is not configured.
+    try {
+      const raw = window.localStorage.getItem(ACTIVE_JOB_KEY);
+      if (raw) {
+        const rec = JSON.parse(raw) as { jobId?: string; email?: string | null };
+        if (typeof rec.jobId === "string" && /^[0-9a-f]{32}$/.test(rec.jobId)) {
+          const st = await fetchRouteJobStatus(rec.jobId);
+          if (st && (st.status === "running" || st.status === "queued")) {
+            setAutoHint(searchRunningLine(rec.email ?? null));
+            watchRouteJob(rec.jobId, rec.email ?? null);
+            return;
+          }
+        }
+      }
+    } catch {
+      /* storage unavailable — proceed to a fresh submit */
+    }
+    {
+      const email = notifyEmail.trim();
+      try {
+        window.localStorage.setItem(NOTIFY_EMAIL_KEY, email);
+      } catch {
+        /* storage unavailable */
+      }
+      setPicks([]);
+      setShowOfframp(false);
+      setOfframpRun(null);
+      setSelectedPickIdx(null);
+      setPreferredSnappedRoute(null);
+      setSelectedAnchorLatLngs(null);
+      setAutoHint("Handing your search to our servers…");
+      const created = await createRouteJob({
+        contour,
+        cityId: cityPreset.id,
+        cityLabel: cityPreset.label,
+        subject: interpretedSubject ?? undefined,
+        imageBase64: imageBase64 ?? undefined,
+        sourceName: imageSourceName ?? undefined,
+        email: email || undefined,
+      });
+      if (created && created !== "unavailable") {
+        try {
+          window.localStorage.setItem(
+            ACTIVE_JOB_KEY,
+            JSON.stringify({ jobId: created.jobId, email: email || null, at: Date.now() }),
+          );
+        } catch {
+          /* storage unavailable */
+        }
+        setAutoHint(searchRunningLine(email || null));
+        watchRouteJob(created.jobId, email || null);
+        return;
+      }
+      // Store not configured (503) or submit failed — run the proven live
+      // cascade in this tab instead.
     }
     if (hintTimerRef.current !== null) window.clearTimeout(hintTimerRef.current);
     setAutoBusy(true);
@@ -562,66 +1010,6 @@ export default function Step2MapAnchor({
         .getElementById("step2-status")
         ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }, 80);
-
-    const applyResult = (result: WowPlaceResultPayload, redrawn: boolean, likenessJudged = false) => {
-      const subjectLabel = result.subject ?? "your art";
-      const mapped: Top5Pick[] = result.picks.map((p) => ({
-        placement: {
-          center: p.center,
-          rotationDeg: p.rotDeg,
-          scale: p.extentM / 2000,
-        },
-        anchorLatLngs: p.anchorLatLngs,
-        routeCoords: p.coordinates,
-        snappedRoute: {
-          coordinates: p.coordinates,
-          distanceMeters: Math.round(p.km * 1000),
-          blockWaypoints: p.coordinates,
-          preserveBlockWaypoints: true,
-        },
-        previewDataUrl: `data:image/png;base64,${p.previewPngBase64}`,
-        distanceKm: p.km,
-        qualityScore: Math.min(100, p.primed * 10),
-        shapeMatchScore: Math.max(1, Math.min(100, Math.round(100 - p.dev))),
-        sourceMatchScore: Math.min(100, p.primed * 10),
-        verifiedRoute: !p.fallbackDraft,
-        verificationLabel: p.fallbackDraft
-          ? "BEST RUNNABLE DRAFT"
-          : p.blindGuess
-            ? "BLIND-VERIFIED 3/3"
-            : `AI JUDGE ${p.primed}/10`,
-        reason: p.fallbackDraft
-          ? `${p.fallbackReason ?? "Strict judging did not pass."} This is the best real-street draft we found, so you can inspect and edit it instead of getting a dead end.`
-          : p.blindGuess
-            ? `A judge shown this route with zero context named it "${p.blindGuess}" three times out of three.`
-            : likenessJudged
-              ? `A vision judge compared this street route against your original image and scored the likeness ${p.primed}/10 before we showed it to you.`
-              : `A vision judge, told only "${subjectLabel}", scored this street route ${p.primed}/10 before we showed it to you.`,
-      }));
-      setPicks(mapped);
-      setPicksVisionUsed(true);
-      const first = mapped[0]!;
-      setCenter([...first.placement.center] as [number, number]);
-      setRotationDeg(first.placement.rotationDeg);
-      setScale(first.placement.scale);
-      setSelectedPickIdx(0);
-      setPreferredSnappedRoute(routeFromPick(first));
-      setSelectedAnchorLatLngs(first.anchorLatLngs ?? null);
-      setFitNonce((n) => n + 1);
-      const hasFallbackDraft = result.picks.some((p) => p.fallbackDraft);
-      setAutoHint(
-        hasFallbackDraft
-          ? `We read your art as ${subjectLabel}. No strict route passed, so here is the best runnable street draft to inspect and edit.`
-          : redrawn
-            ? `Your art as-drawn didn't survive the streets, so we redrew it as ${subjectLabel} - ${mapped.length} judge-checked placements. Tap one to try it.`
-            : `We read your art as ${subjectLabel} - here are ${mapped.length} judge-checked placements. Tap one to try it.`,
-      );
-      window.setTimeout(() => {
-        document
-          .getElementById("step2-picks")
-          ?.scrollIntoView({ behavior: "smooth", block: "start" });
-      }, 120);
-    };
 
     const applyAutoFindResult = (result: Awaited<ReturnType<typeof autoFindTop5>>) => {
       if (!result.picks.length || result.relaxedQuality) return false;
@@ -649,109 +1037,6 @@ export default function Step2MapAnchor({
       return true;
     };
 
-    const applyArtistLoopResult = (result: ArtistLoopResultPayload) => {
-      const recognizedPct = Math.round((Math.min(3, Math.max(0, result.recognizedCount)) / 3) * 100);
-      const confidencePct = Math.round(Math.min(1, Math.max(0, result.medianConfidence)) * 100);
-      const routeCleanPct = Math.max(45, Math.min(95, Math.round(100 - result.meanDeviationMeters * 2)));
-      const guessText = result.guesses.length ? ` Judges guessed: ${result.guesses.join(", ")}.` : "";
-      const pick: Top5Pick = {
-        placement: {
-          center: result.center,
-          rotationDeg: 0,
-          scale: 1,
-        },
-        anchorLatLngs: result.sketchLatLngs,
-        designIntent: result.description,
-        routeCoords: result.chain,
-        snappedRoute: {
-          coordinates: result.chain,
-          distanceMeters: Math.round(result.distanceMeters),
-          blockWaypoints: result.chain,
-          preserveBlockWaypoints: true,
-        },
-        previewDataUrl: renderRouteToDataUrl(result.chain, 640, { padding: 96 }) ?? "",
-        distanceKm: result.distanceMeters / 1000,
-        qualityScore: routeCleanPct,
-        shapeMatchScore: Math.max(55, Math.min(95, Math.round((recognizedPct + confidencePct) / 2))),
-        sourceMatchScore: Math.max(45, Math.min(95, Math.round((recognizedPct * 0.7) + (confidencePct * 0.3)))),
-        verifiedRoute: result.recognizedCount >= 2,
-        verificationLabel: `ARTIST LOOP ${result.recognizedCount}/3`,
-        reason:
-          `${result.label}: design-first street route compiled on real Manhattan streets after ${result.roundsRun} round${result.roundsRun === 1 ? "" : "s"}. ` +
-          `${result.recognizedCount}/3 blind judges recognized it.${guessText}`,
-      };
-      setPicks([pick]);
-      setPicksVisionUsed(true);
-      setCenter([...pick.placement.center] as [number, number]);
-      setRotationDeg(pick.placement.rotationDeg);
-      setScale(pick.placement.scale);
-      setSelectedPickIdx(0);
-      setPreferredSnappedRoute(routeFromPick(pick));
-      setSelectedAnchorLatLngs(pick.anchorLatLngs ?? null);
-      setFitNonce((n) => n + 1);
-      setAutoHint(
-        result.recognizedCount >= 2
-          ? `Design-first route found: ${result.recognizedCount}/3 blind judges recognized it. Tap it to inspect, then continue.`
-          : `Design-first route found, but only ${result.recognizedCount}/3 blind judges recognized it. Showing the best real-street draft instead of failing.`,
-      );
-      window.setTimeout(() => {
-        document
-          .getElementById("step2-picks")
-          ?.scrollIntoView({ behavior: "smooth", block: "start" });
-      }, 120);
-      return result.recognizedCount >= 2;
-    };
-
-    const applyStudioResult = (result: StudioRoutePayload) => {
-      const chain = result.chain ?? [];
-      if (chain.length < 8) return false;
-      const distanceMeters = Math.round((result.km ?? 0) * 1000);
-      const lat = chain.reduce((a, p) => a + p[0], 0) / chain.length;
-      const lng = chain.reduce((a, p) => a + p[1], 0) / chain.length;
-      const guessText = result.verdicts?.length
-        ? ` Judges guessed: ${result.verdicts.map((v) => v.guess).join(", ")}.`
-        : "";
-      const pick: Top5Pick = {
-        placement: { center: [lat, lng], rotationDeg: 0, scale: 1 },
-        anchorLatLngs: chain,
-        designIntent: result.subject ?? "your art, traced on real streets",
-        routeCoords: chain,
-        snappedRoute: {
-          coordinates: chain,
-          distanceMeters,
-          blockWaypoints: chain,
-          preserveBlockWaypoints: true,
-        },
-        previewDataUrl: renderRouteToDataUrl(chain, 640, { padding: 96 }) ?? "",
-        distanceKm: result.km ?? distanceMeters / 1000,
-        qualityScore: 90,
-        shapeMatchScore: 90,
-        sourceMatchScore: 85,
-        verifiedRoute: true,
-        verificationLabel: "STUDIO 2/2",
-        reason:
-          `Studio lane: your shape traced directly on real streets at hero scale. ` +
-          `Both blind judges named it "${result.subject ?? "your subject"}" with zero context.${guessText}`,
-      };
-      setPicks([pick]);
-      setPicksVisionUsed(true);
-      setCenter([...pick.placement.center] as [number, number]);
-      setRotationDeg(0);
-      setScale(1);
-      setSelectedPickIdx(0);
-      setPreferredSnappedRoute(routeFromPick(pick));
-      setSelectedAnchorLatLngs(pick.anchorLatLngs ?? null);
-      setFitNonce((n) => n + 1);
-      setAutoHint(
-        `Studio route found: 2/2 blind judges recognized it as "${result.subject}". Tap it to inspect, then continue.`,
-      );
-      window.setTimeout(() => {
-        document
-          .getElementById("step2-picks")
-          ?.scrollIntoView({ behavior: "smooth", block: "start" });
-      }, 120);
-      return true;
-    };
     try {
       // Stage 0: the studio lane — trace the approved shape directly on the
       // street graph at hero scale and blind-judge the rendered route. This
@@ -918,7 +1203,7 @@ export default function Step2MapAnchor({
       }
       setAutoBusy(false);
     }
-  }, [contour, cityPreset, imageBase64, imageSourceName, interpretedSubject, routeFromPick, armHintClear, noteStage, recordSearchEnd]);
+  }, [contour, cityPreset, imageBase64, imageSourceName, interpretedSubject, routeFromPick, armHintClear, noteStage, recordSearchEnd, applyResult, applyArtistLoopResult, applyStudioResult, notifyEmail, watchRouteJob]);
 
   const applyPick = useCallback((pick: Top5Pick, idx: number) => {
     setCenter([...pick.placement.center] as [number, number]);
@@ -1063,13 +1348,24 @@ export default function Step2MapAnchor({
           </div>
 
           <div className="mt-4 flex flex-col gap-2">
+            <label className="font-dm flex flex-col gap-1 text-[10px] text-pace-muted">
+              <span>Email me when it&apos;s found (optional — you can close the page)</span>
+              <input
+                type="email"
+                value={notifyEmail}
+                onChange={(e) => setNotifyEmail(e.target.value)}
+                placeholder="you@example.com"
+                autoComplete="email"
+                className="w-full border border-pace-line bg-pace-white px-2 py-1.5 text-xs text-pace-ink placeholder:text-pace-muted/50"
+              />
+            </label>
             <button
               type="button"
               disabled={
                 autoBusy || !contour.length || cityPreset.id !== "manhattan"
               }
               onClick={() => void runWowFind()}
-              className="pace-toolbar-btn-primary w-full py-2.5 text-[11px] font-semibold disabled:opacity-50 sm:text-xs"
+              className="pace-toolbar-btn-primary mt-1 w-full py-2.5 text-[11px] font-semibold disabled:opacity-50 sm:text-xs"
               title={
                 cityPreset.id === "manhattan"
                   ? "Tries your art exactly as drawn, and if the street judges refuse, automatically redraws it street-ready and tries again. Shows only routes an AI judge verified — or one honest answer."

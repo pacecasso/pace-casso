@@ -19,15 +19,17 @@
   "license": "ISC",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",
-    "sharp": "^0.34.5",
     "@turf/turf": "^7.3.4",
+    "@vercel/blob": "^2.8.0",
+    "@vercel/functions": "^3.9.5",
     "d3-contour": "^4.0.2",
     "leaflet": "^1.9.4",
     "lucide-react": "^1.7.0",
     "next": "^16.2.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "react-leaflet": "^5.0.0"
+    "react-leaflet": "^5.0.0",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.5",

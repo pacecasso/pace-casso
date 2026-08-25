@@ -277,6 +277,10 @@ export function clearCreateDraft(): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.removeItem(KEY);
+    // Start over also abandons any async route-search state — a kept job
+    // pointer would re-apply the old design's result onto the new flow.
+    localStorage.removeItem("pacecasso.activeRouteJob.v1");
+    localStorage.removeItem("pacecasso.step2.searchState.v1");
   } catch {
     /* ignore */
   }

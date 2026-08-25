@@ -31,3 +31,6 @@ playwright/.cache
 
 # depends on gitignored tmp-heart-qa/ — local experiment, never CI-clean
 /scripts/proof-nyc-three-logos.ts
+
+# local async job store (dev fallback for Vercel Blob)
+/.route-jobs/

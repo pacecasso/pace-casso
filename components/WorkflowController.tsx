@@ -132,6 +132,7 @@ export default function WorkflowController() {
 
   const searchParams = useSearchParams();
   const galleryHandOffDone = useRef(false);
+  const jobHandOffDone = useRef(false);
 
   useLayoutEffect(() => {
     // "Start Creating" (?new=1) always begins fresh: drop any saved draft
@@ -233,6 +234,49 @@ export default function WorkflowController() {
     setFinalRoute(null);
     setCurrentStep(3);
   }, [draftHydrated, searchParams]);
+
+  // Async job hand-off: /create?job=<id> from the result email. When this
+  // browser has no draft with art in it (another device, cleared storage),
+  // reconstruct the flow from the job's stored input so the placement step
+  // mounts — its own pickup effect then applies the job's result. The ?job
+  // param is deliberately NOT consumed; the placement step reads it too.
+  useEffect(() => {
+    if (!draftHydrated) return;
+    if (jobHandOffDone.current) return;
+    const jobId = searchParams.get("job")?.trim() ?? "";
+    if (!/^[0-9a-f]{32}$/.test(jobId)) return;
+    jobHandOffDone.current = true;
+    if (contourCoordinates && contourCoordinates.length >= 8) return;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/route-job?id=${encodeURIComponent(jobId)}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const rec = (await res.json()) as { contour?: unknown; cityId?: unknown };
+        const contour = Array.isArray(rec.contour)
+          ? (rec.contour.filter(
+              (p): p is NormalizedPoint =>
+                !!p &&
+                typeof p === "object" &&
+                Number.isFinite((p as { x?: number }).x) &&
+                Number.isFinite((p as { y?: number }).y),
+            ) as NormalizedPoint[])
+          : [];
+        if (contour.length < 8) return;
+        if (typeof rec.cityId === "string" && CITY_PRESETS[rec.cityId]) {
+          setSelectedCityId(rec.cityId);
+          setCityPreset(CITY_PRESETS[rec.cityId]);
+        }
+        setContourCoordinates(contour);
+        setSourceKind("image");
+        setSketchApproved(true);
+        setCurrentStep(3);
+      } catch {
+        /* fall back to the normal fresh flow */
+      }
+    })();
+  }, [draftHydrated, searchParams, contourCoordinates]);
 
   const dismissCreateIntro = useCallback(() => {
     try {
