@@ -238,6 +238,7 @@ export async function runStudio(
   // samples naming the subject correctly.
   const judgeCandidate = async (
     cand: StreetTraceCandidate,
+    samples = 3,
   ): Promise<{ verdicts: { guess: string; confidence: number }[]; correct: number } | null> => {
     let png: Buffer;
     try {
@@ -247,7 +248,7 @@ export async function runStudio(
     }
     const verdicts: { guess: string; confidence: number }[] = [];
     let correct = 0;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < samples; i++) {
       let guess = "";
       let confidence = 0;
       try {
@@ -271,12 +272,28 @@ export async function runStudio(
   };
 
   // Reveal bar (hardened Aug 26 after a 6-confidence "house" was shown and
-  // rejected): ALL THREE zero-context samples must name the subject and
-  // average confidence must reach 7. Two-sample gates let judge variance
-  // pass 6-quality routes.
-  const passesBar = (j: { verdicts: { guess: string; confidence: number }[]; correct: number }) =>
-    j.correct === 3 &&
-    j.verdicts.reduce((a, v) => a + v.confidence, 0) / j.verdicts.length >= 7;
+  // rejected, then re-hardened when the same route re-passed at 7/7/7 on a
+  // good judge day): all three zero-context samples must name the subject
+  // and average confidence must reach 7.5. Ralph's calibrated "better"
+  // starts at 8; a flat-7 route is exactly what he called terrible.
+  // Borderline results (3/3 correct, avg 6.8-7.5) earn two MORE samples,
+  // decided on the 5-sample average >= 7.3 — judge variance was flipping
+  // a decent star in and out at any fixed 3-sample cut.
+  const avgConf = (vs: { confidence: number }[]) =>
+    vs.reduce((a, v) => a + v.confidence, 0) / (vs.length || 1);
+  const resolveBar = async (
+    cand: StreetTraceCandidate,
+    j: { verdicts: { guess: string; confidence: number }[]; correct: number },
+  ): Promise<{ pass: boolean; verdicts: { guess: string; confidence: number }[] }> => {
+    if (j.correct !== 3) return { pass: false, verdicts: j.verdicts };
+    const a3 = avgConf(j.verdicts);
+    if (a3 >= 7.5) return { pass: true, verdicts: j.verdicts };
+    if (a3 < 6.8 || timeLeft() < 40_000) return { pass: false, verdicts: j.verdicts };
+    const extra = await judgeCandidate(cand, 2);
+    if (!extra || extra.correct !== 2) return { pass: false, verdicts: j.verdicts };
+    const all = [...j.verdicts, ...extra.verdicts];
+    return { pass: avgConf(all) >= 7.3, verdicts: all };
+  };
 
   const verifiedResult = (
     cand: StreetTraceCandidate,
@@ -298,7 +315,8 @@ export async function runStudio(
     onProgress(`Studio lane: showing route ${c + 1} of ${judgeable.length} to blind judges…`);
     const judged = await judgeCandidate(judgeable[c]!);
     if (!judged) continue;
-    if (passesBar(judged)) return verifiedResult(judgeable[c]!, judged.verdicts);
+    const bar = await resolveBar(judgeable[c]!, judged);
+    if (bar.pass) return verifiedResult(judgeable[c]!, bar.verdicts);
     if (judged.correct > 0) anyCorrect = true;
   }
 
@@ -340,7 +358,9 @@ export async function runStudio(
       if (timeLeft() < 20_000) break;
       onProgress(`Studio lane: judging wide-retry route ${c + 1} of ${fresh.length}…`);
       const judged = await judgeCandidate(fresh[c]!);
-      if (judged && passesBar(judged)) return verifiedResult(fresh[c]!, judged.verdicts);
+      if (!judged) continue;
+      const bar = await resolveBar(fresh[c]!, judged);
+      if (bar.pass) return verifiedResult(fresh[c]!, bar.verdicts);
     }
   }
 

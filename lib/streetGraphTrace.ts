@@ -925,6 +925,145 @@ export function straightenLongRuns(
   return out;
 }
 
+/**
+ * Snap a placement so its long straight edges LAND ON street lines before
+ * tracing. Trace-time corridors can only warp toward whatever is within
+ * reach — when the ideal wall lies between two avenues, the left and right
+ * walls drift in different directions and the shape leans (the "terrible
+ * house"). Here each long edge measures its perpendicular offset to the
+ * nearest parallel street and all edges vote, least-squares, for one
+ * translation of the whole placement. Two orthogonal edge families make
+ * the 2x2 system well-conditioned; a single family slides along itself
+ * harmlessly.
+ */
+function refinePlacement(
+  g: Graph,
+  unit: UnitPoint[],
+  center: LatLng,
+  scaleM: number,
+  rot: number,
+  minRunM = 450,
+): { center: LatLng; scaleM: number } {
+  let cur: LatLng = center;
+  let curScale = scaleM;
+  for (let iter = 0; iter < 2; iter++) {
+    const target = place(unit, cur, curScale, rot);
+    const edges = mergeStraightEdges(target, minRunM);
+    if (edges.length < 2) break;
+    // votes: normal (unit, meters frame) and desired signed shift along it
+    const votes: { nx: number; ny: number; r: number; s: number }[] = [];
+    for (const edge of edges) {
+      const [dx, dy] = unitDirection(edge.a, edge.b);
+      const nx = -dy;
+      const ny = dx;
+      const offsets: number[] = [];
+      const SAMPLES = 5;
+      for (let k = 1; k <= SAMPLES; k++) {
+        const t = k / (SAMPLES + 1);
+        const p: LatLng = [
+          edge.a[0] + (edge.b[0] - edge.a[0]) * t,
+          edge.a[1] + (edge.b[1] - edge.a[1]) * t,
+        ];
+        // nearest street edge roughly parallel to this ideal edge
+        let best = Infinity;
+        let bestOff = 0;
+        const clat = Math.round(p[0] / CELL);
+        const clng = Math.round(p[1] / CELL);
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            for (const id of g.grid.get(`${clat + dr}:${clng + dc}`) ?? []) {
+              for (const e of g.adj[id] ?? []) {
+                if (e.to < id) continue; // each street edge once
+                const a = g.coord[id]!;
+                const b = g.coord[e.to]!;
+                if (meters(a, b) < 40) continue; // stubs carry no direction
+                const [sx, sy] = unitDirection(a, b);
+                if (Math.abs(sx * dx + sy * dy) < Math.cos((12 * Math.PI) / 180)) continue;
+                const mid: LatLng = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+                // signed offset of the street from the ideal edge, along n
+                const off =
+                  (mid[1] - p[1]) * mPerLng(p[0]) * nx +
+                  (mid[0] - p[0]) * M_PER_LAT * ny;
+                const d = Math.abs(off);
+                if (d < best) {
+                  best = d;
+                  bestOff = off;
+                }
+              }
+            }
+          }
+        }
+        if (best <= 220) offsets.push(bestOff);
+      }
+      if (offsets.length < 3) continue;
+      offsets.sort((a, b) => a - b);
+      // signed distance of this edge line from the placement center along
+      // its normal — the lever arm through which a scale change moves it
+      const emid: LatLng = [(edge.a[0] + edge.b[0]) / 2, (edge.a[1] + edge.b[1]) / 2];
+      const r =
+        (emid[1] - cur[1]) * mPerLng(cur[0]) * nx +
+        (emid[0] - cur[0]) * M_PER_LAT * ny;
+      votes.push({ nx, ny, r, s: offsets[Math.floor(offsets.length / 2)]! });
+    }
+    if (votes.length < 2) break;
+    // least squares over (tx, ty, ds): each edge predicts a movement of
+    // n·t + ds·r along its normal; solve for the translation AND uniform
+    // scale tweak that land every long edge on its street simultaneously
+    // (translation alone cannot put BOTH walls on avenues when the wall
+    // separation is not an integer number of blocks).
+    let m = [
+      [0, 0, 0],
+      [0, 0, 0],
+      [0, 0, 0],
+    ];
+    const b = [0, 0, 0];
+    for (const v of votes) {
+      const row = [v.nx, v.ny, v.r];
+      for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) m[i]![j]! += row[i]! * row[j]!;
+        b[i]! += row[i]! * v.s;
+      }
+    }
+    // regularize ds so a single edge family cannot explode the scale
+    m[2]![2]! += 800 * 800 * 0.02;
+    const det3 = (mm: number[][]) =>
+      mm[0]![0]! * (mm[1]![1]! * mm[2]![2]! - mm[1]![2]! * mm[2]![1]!) -
+      mm[0]![1]! * (mm[1]![0]! * mm[2]![2]! - mm[1]![2]! * mm[2]![0]!) +
+      mm[0]![2]! * (mm[1]![0]! * mm[2]![1]! - mm[1]![1]! * mm[2]![0]!);
+    const D = det3(m);
+    if (Math.abs(D) < 1e-3) break;
+    const col = (k: number, rhs: number[]) => {
+      const mm = m.map((r) => r.slice());
+      for (let i = 0; i < 3; i++) mm[i]![k] = rhs[i]!;
+      return det3(mm) / D;
+    };
+    let tx = col(0, b);
+    let ty = col(1, b);
+    let ds = col(2, b);
+    const mag = Math.hypot(tx, ty);
+    if (mag > 260) {
+      tx *= 260 / mag;
+      ty *= 260 / mag;
+    }
+    ds = Math.max(-0.08, Math.min(0.08, ds));
+    // Fitness gate: apply only when the solve genuinely lands the edges on
+    // streets. A shape whose edge directions cannot all be satisfied (a
+    // star's five families) yields a compromise shift that makes things
+    // WORSE — measured: the star stopped verifying until this gate.
+    let pre = 0;
+    let post = 0;
+    for (const v of votes) {
+      pre += Math.abs(v.s);
+      post += Math.abs(v.nx * tx + v.ny * ty + v.r * ds - v.s);
+    }
+    if (post > pre * 0.6) break;
+    if (mag < 4 && Math.abs(ds) < 0.005) break;
+    cur = [cur[0] + ty / M_PER_LAT, cur[1] + tx / mPerLng(cur[0])];
+    curScale = curScale * (1 + ds);
+  }
+  return { center: cur, scaleM: curScale };
+}
+
 // ---------------------------------------------------------------------------
 // Placement search
 // ---------------------------------------------------------------------------
@@ -1223,7 +1362,11 @@ export async function traceShapeOnStreets(
 
   const traced: StreetTraceCandidate[] = [];
   for (const pk of picks) {
-    const target = place(unit, pk.center, pk.scale, pk.rot);
+    // snap the placement's long edges onto street lines before tracing —
+    // corridors can only warp toward what is within reach
+    const refined = refinePlacement(g, unit, pk.center, pk.scale, pk.rot);
+    const center = refined.center;
+    const target = place(unit, center, refined.scaleM, pk.rot);
     const {
       chain,
       coverage,
@@ -1275,6 +1418,14 @@ export async function traceShapeOnStreets(
         intendedSimilarity,
         toSimilarityPoints(variant),
       );
+      if (
+        typeof process !== "undefined" &&
+        process.env?.STRAIGHTEN_DEBUG === "1"
+      ) {
+        console.log(
+          `[variant ${i}] score ${candidateVisual.score} (raw ${visual.score}) clean ${candidateVisual.diagnostics.cleanliness} (raw ${visual.diagnostics.cleanliness})`,
+        );
+      }
       // Cleanliness preference: nub spurs barely move the similarity
       // score, so a strict > let the raw nubby chain win every tie. The
       // trimmed variant now wins unless trimming meaningfully hurt the
@@ -1308,8 +1459,8 @@ export async function traceShapeOnStreets(
       target,
       km: Number(km.toFixed(2)),
       meanDeviationM: Number(dev.toFixed(1)),
-      center: pk.center,
-      scaleM: pk.scale,
+      center,
+      scaleM: Math.round(refined.scaleM),
       rotDeg: pk.rot,
       visualScore: visual.score,
       visualCleanliness: visual.diagnostics.cleanliness,
