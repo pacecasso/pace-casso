@@ -205,9 +205,9 @@ export async function runStudio(
     await new Promise((r) => setTimeout(r, 10));
     try {
       const found = await traceShapeOnStreets(contour, {
-        topK: 3,
+        topK: 4,
         anchorM,
-        placementsPerScale: 2,
+        placementsPerScale: 3,
         // hero scales only: below ~1300 m half-size, features collapse into
         // the lattice and nothing has ever passed the correct-name gate.
         scales: [1300, 1800, 2400, 3200],
@@ -234,18 +234,16 @@ export async function runStudio(
     };
   }
 
-  // judge the top two candidates: 2 zero-context samples each; verified
-  // requires both samples naming the subject correctly.
-  const judgeable = candidates.slice(0, 2);
-  for (let c = 0; c < judgeable.length; c++) {
-    if (timeLeft() < 20_000) break;
-    const cand = judgeable[c]!;
-    onProgress(`Studio lane: showing route ${c + 1} of ${judgeable.length} to blind judges…`);
+  // judge candidates: 2 zero-context samples each; verified requires both
+  // samples naming the subject correctly.
+  const judgeCandidate = async (
+    cand: StreetTraceCandidate,
+  ): Promise<{ verdicts: { guess: string; confidence: number }[]; correct: number } | null> => {
     let png: Buffer;
     try {
       png = await renderChainPng(cand.chain as [number, number][]);
     } catch {
-      continue;
+      return null;
     }
     const verdicts: { guess: string; confidence: number }[] = [];
     let correct = 0;
@@ -269,18 +267,75 @@ export async function runStudio(
       verdicts.push({ guess: guess || "no response", confidence });
       if (guess && (await sameSubject(subject, alts, guess))) correct++;
     }
-    if (correct === 2) {
-      return {
-        ok: true,
-        verified: true,
-        subject,
-        chain: cand.chain as [number, number][],
-        km: cand.km,
-        visualScore: cand.visualScore,
-        verdicts,
-      };
+    return { verdicts, correct };
+  };
+
+  const verifiedResult = (
+    cand: StreetTraceCandidate,
+    verdicts: { guess: string; confidence: number }[],
+  ): StudioResult => ({
+    ok: true,
+    verified: true,
+    subject: subject!,
+    chain: cand.chain as [number, number][],
+    km: cand.km,
+    visualScore: cand.visualScore,
+    verdicts,
+  });
+
+  let anyCorrect = false;
+  const judgeable = candidates.slice(0, 3);
+  for (let c = 0; c < judgeable.length; c++) {
+    if (timeLeft() < 20_000) break;
+    onProgress(`Studio lane: showing route ${c + 1} of ${judgeable.length} to blind judges…`);
+    const judged = await judgeCandidate(judgeable[c]!);
+    if (!judged) continue;
+    if (judged.correct === 2) return verifiedResult(judgeable[c]!, judged.verdicts);
+    if (judged.correct > 0) anyCorrect = true;
+  }
+
+  // Wide retry — the offline studio's proven win pattern: when a judge got
+  // it right once but not 2/2, the DESIGN reads; the placement is the weak
+  // link. Spend the remaining budget sweeping more placements at more
+  // rotations, then judge the best fresh candidates.
+  if (anyCorrect && timeLeft() > 90_000) {
+    onProgress("Studio lane: close! Sweeping more placements for a cleaner read…");
+    await new Promise((r) => setTimeout(r, 10));
+    let wide: StreetTraceCandidate[] = [];
+    try {
+      wide = await traceShapeOnStreets(contour, {
+        topK: 6,
+        anchorM: 380,
+        placementsPerScale: 4,
+        scales: [1300, 1800, 2400, 2800, 3200],
+        rots: [0, 8, -8, 15, -15, 22, -22, 29, -29, 37, -37, 45, 61],
+      });
+    } catch {
+      /* retry contributes nothing */
+    }
+    const fresh = wide
+      .filter(
+        (w) =>
+          !judgeable.some(
+            (j) =>
+              j.scaleM === w.scaleM &&
+              Math.abs(j.rotDeg - w.rotDeg) < 6 &&
+              Math.hypot(
+                (j.center[0] - w.center[0]) * 111320,
+                (j.center[1] - w.center[1]) * 111320 * Math.cos((j.center[0] * Math.PI) / 180),
+              ) < 300,
+          ),
+      )
+      .sort((a, b) => b.visualScore - a.visualScore || b.visualCleanliness - a.visualCleanliness)
+      .slice(0, 2);
+    for (let c = 0; c < fresh.length; c++) {
+      if (timeLeft() < 20_000) break;
+      onProgress(`Studio lane: judging wide-retry route ${c + 1} of ${fresh.length}…`);
+      const judged = await judgeCandidate(fresh[c]!);
+      if (judged && judged.correct === 2) return verifiedResult(fresh[c]!, judged.verdicts);
     }
   }
+
   const best = candidates[0]!;
   return {
     ok: true,
