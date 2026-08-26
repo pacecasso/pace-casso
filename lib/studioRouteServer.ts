@@ -247,7 +247,7 @@ export async function runStudio(
     }
     const verdicts: { guess: string; confidence: number }[] = [];
     let correct = 0;
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 3; i++) {
       let guess = "";
       let confidence = 0;
       try {
@@ -270,6 +270,14 @@ export async function runStudio(
     return { verdicts, correct };
   };
 
+  // Reveal bar (hardened Aug 26 after a 6-confidence "house" was shown and
+  // rejected): ALL THREE zero-context samples must name the subject and
+  // average confidence must reach 7. Two-sample gates let judge variance
+  // pass 6-quality routes.
+  const passesBar = (j: { verdicts: { guess: string; confidence: number }[]; correct: number }) =>
+    j.correct === 3 &&
+    j.verdicts.reduce((a, v) => a + v.confidence, 0) / j.verdicts.length >= 7;
+
   const verifiedResult = (
     cand: StreetTraceCandidate,
     verdicts: { guess: string; confidence: number }[],
@@ -290,7 +298,7 @@ export async function runStudio(
     onProgress(`Studio lane: showing route ${c + 1} of ${judgeable.length} to blind judges…`);
     const judged = await judgeCandidate(judgeable[c]!);
     if (!judged) continue;
-    if (judged.correct === 2) return verifiedResult(judgeable[c]!, judged.verdicts);
+    if (passesBar(judged)) return verifiedResult(judgeable[c]!, judged.verdicts);
     if (judged.correct > 0) anyCorrect = true;
   }
 
@@ -332,7 +340,7 @@ export async function runStudio(
       if (timeLeft() < 20_000) break;
       onProgress(`Studio lane: judging wide-retry route ${c + 1} of ${fresh.length}…`);
       const judged = await judgeCandidate(fresh[c]!);
-      if (judged && judged.correct === 2) return verifiedResult(fresh[c]!, judged.verdicts);
+      if (judged && passesBar(judged)) return verifiedResult(fresh[c]!, judged.verdicts);
     }
   }
 
