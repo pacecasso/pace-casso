@@ -990,6 +990,8 @@ function coarseScore(g: Graph, outline: LatLng[]): { score: number; miss: number
   let wsum = 0;
   let acc = 0;
   let miss = 0;
+  let alignAcc = 0;
+  let alignWsum = 0;
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i]!;
     const nd = nearestNode(g, p);
@@ -1020,8 +1022,29 @@ function coarseScore(g: Graph, outline: LatLng[]): { score: number; miss: number
     }
     acc += w[i]! * Math.min(d, 300) + bendPenalty;
     wsum += w[i]!;
+
+    // Direction support: a straight stretch of the outline wants a street
+    // RUNNING ITS WAY at hand, not merely a node nearby — node proximity
+    // alone scores a 45°-to-grid placement as well as an aligned one, then
+    // the trace pays for it in staircase. Curves sample all directions, so
+    // rotations stay comparable for curvy art and this only separates
+    // placements of straight-edged art.
+    if (w[i]! < 0.55 && nd >= 0) {
+      const prev = pts[Math.max(0, i - 1)]!;
+      const next = pts[Math.min(pts.length - 1, i + 1)]!;
+      const dir = unitDirection(prev, next);
+      let bestDot = 0;
+      for (const e of g.adj[nd] ?? []) {
+        const ed = unitDirection(g.coord[nd]!, g.coord[e.to]!);
+        const dot = Math.abs(directionDot(dir, ed));
+        if (dot > bestDot) bestDot = dot;
+      }
+      alignAcc += (1 - bestDot) * (1 - w[i]!);
+      alignWsum += 1 - w[i]!;
+    }
   }
-  return { score: acc / (wsum || 1) + miss * 40, miss };
+  const alignPenalty = alignWsum > 0 ? (alignAcc / alignWsum) * 95 : 0;
+  return { score: acc / (wsum || 1) + miss * 40 + alignPenalty, miss };
 }
 
 // ---------------------------------------------------------------------------
