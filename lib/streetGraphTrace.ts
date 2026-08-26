@@ -697,6 +697,235 @@ export function trimNubs(chain: LatLng[], closeM = 6, maxLoopM = 1000): LatLng[]
 }
 
 // ---------------------------------------------------------------------------
+// Deliberateness: straighten long intended edges into single street runs
+// ---------------------------------------------------------------------------
+
+type StraightEdge = { a: LatLng; b: LatLng; segStart: number; segEnd: number };
+
+/**
+ * Merge collinear runs of target segments into logical straight edges.
+ * Photo contours deliver a straight logo edge as MANY short collinear
+ * segments, so per-segment length checks never see the real edge.
+ */
+function mergeStraightEdges(target: LatLng[], minRunM: number): StraightEdge[] {
+  const edges: StraightEdge[] = [];
+  if (target.length < 3) return edges;
+  const heading = (a: LatLng, b: LatLng) =>
+    (Math.atan2((b[1] - a[1]) * Math.cos((a[0] * Math.PI) / 180), b[0] - a[0]) * 180) /
+    Math.PI;
+  let runStart = 0;
+  let runHeading = heading(target[0]!, target[1]!);
+  const flush = (endSeg: number) => {
+    const a = target[runStart]!;
+    const b = target[endSeg + 1]!;
+    const chord = meters(a, b);
+    if (chord < minRunM) return;
+    let along = 0;
+    for (let i = runStart + 1; i <= endSeg + 1; i++) along += meters(target[i - 1]!, target[i]!);
+    // only genuinely straight runs — a gentle arc merged by the tolerance
+    // is not an edge and must not be forced onto one street
+    if (chord / Math.max(1e-9, along) < 0.985) return;
+    edges.push({ a, b, segStart: runStart, segEnd: endSeg });
+  };
+  for (let j = 1; j < target.length - 1; j++) {
+    const h = heading(target[j]!, target[j + 1]!);
+    let dh = Math.abs(h - runHeading);
+    if (dh > 180) dh = 360 - dh;
+    if (dh > 12) {
+      flush(j - 1);
+      runStart = j;
+      runHeading = h;
+    } else {
+      // drift the reference heading slowly so long gentle arcs still split
+      runHeading = runHeading + (((h - runHeading + 540) % 360) - 180) * 0.2;
+    }
+  }
+  flush(target.length - 2);
+  return edges;
+}
+
+/** Resample to ~stepM spacing and count heading changes above 30°. */
+function deliberateTurns(pts: LatLng[], stepM = 30): number {
+  if (pts.length < 3) return 0;
+  const rs: LatLng[] = [pts[0]!];
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    acc += meters(pts[i - 1]!, pts[i]!);
+    if (acc >= stepM) {
+      rs.push(pts[i]!);
+      acc = 0;
+    }
+  }
+  rs.push(pts[pts.length - 1]!);
+  let turns = 0;
+  for (let i = 2; i < rs.length; i++) {
+    const ax = (rs[i - 1]![1] - rs[i - 2]![1]) * Math.cos((rs[i - 1]![0] * Math.PI) / 180);
+    const ay = rs[i - 1]![0] - rs[i - 2]![0];
+    const bx = (rs[i]![1] - rs[i - 1]![1]) * Math.cos((rs[i - 1]![0] * Math.PI) / 180);
+    const by = rs[i]![0] - rs[i - 1]![0];
+    const la = Math.hypot(ax, ay);
+    const lb = Math.hypot(bx, by);
+    if (la < 1e-12 || lb < 1e-12) continue;
+    const dot = (ax * bx + ay * by) / (la * lb);
+    if (dot < Math.cos((30 * Math.PI) / 180)) turns++;
+  }
+  return turns;
+}
+
+/**
+ * Deliberateness pass. Per-anchor tracing re-snaps to the ideal line every
+ * anchorM meters, so a long straight intended edge comes out as a sawtooth
+ * hopping between the parallel streets that straddle it — the top visual
+ * complaint on otherwise-good routes. For each long intended edge, re-run
+ * the corridor A* over the WHOLE edge (no intermediate anchors, strong
+ * bend penalty) and keep the new span only when it is measurably more
+ * deliberate: fewer resampled turns, not meaningfully longer, still inside
+ * the corridor. Spans connect at the same graph nodes, so runnability is
+ * preserved by construction.
+ */
+export function straightenLongRuns(
+  g: Graph,
+  chain: LatLng[],
+  target: LatLng[],
+  lambda: number,
+  minRunM = 450,
+): LatLng[] {
+  if (chain.length < 8 || target.length < 3) return chain;
+  const edges = mergeStraightEdges(target, minRunM);
+  if (!edges.length) return chain;
+
+  // A closed chain puts the first edge's points at BOTH ends (the seam),
+  // fragmenting its window. Rotate the loop so it starts at a corner; the
+  // caller-visible route is the same loop with a different start.
+  const closed = meters(chain[0]!, chain[chain.length - 1]!) < 10;
+  if (closed) {
+    const ring = chain.slice(0, -1);
+    const segAt = (p: LatLng) => {
+      let m = Infinity;
+      let si = -1;
+      for (let j = 1; j < target.length; j++) {
+        const dd = distToSeg(p, target[j - 1]!, target[j]!);
+        if (dd < m) {
+          m = dd;
+          si = j - 1;
+        }
+      }
+      return si;
+    };
+    const s0 = segAt(ring[0]!);
+    let cut = 0;
+    for (let i = 1; i < ring.length; i++) {
+      if (segAt(ring[i]!) !== s0) {
+        cut = i;
+        break;
+      }
+    }
+    if (cut > 0) {
+      chain = [...ring.slice(cut), ...ring.slice(0, cut), ring[cut]!];
+    }
+  }
+
+  // nearest target segment index for every chain point (once, shared)
+  const segOf = new Array<number>(chain.length);
+  for (let i = 0; i < chain.length; i++) {
+    let m = Infinity;
+    let si = -1;
+    for (let j = 1; j < target.length; j++) {
+      const dd = distToSeg(chain[i]!, target[j - 1]!, target[j]!);
+      if (dd < m) {
+        m = dd;
+        si = j - 1;
+      }
+    }
+    segOf[i] = m <= 150 ? si : -1;
+  }
+  const spanLen = (pts: LatLng[]) => {
+    let s = 0;
+    for (let i = 1; i < pts.length; i++) s += meters(pts[i - 1]!, pts[i]!);
+    return s;
+  };
+
+  // replace back-to-front so indices stay valid
+  const windows: { i0: number; i1: number; edge: StraightEdge }[] = [];
+  for (const edge of edges) {
+    // longest contiguous run of on-edge chain points (gap tolerance 3 —
+    // corner-ambiguous points near the far end must not stretch the
+    // window across unrelated edges)
+    const dbgw = typeof process !== "undefined" && process.env?.STRAIGHTEN_DEBUG === "1";
+    let best: [number, number] | null = null;
+    let runStart = -1;
+    let lastOn = -1;
+    for (let i = 0; i <= chain.length; i++) {
+      const on =
+        i < chain.length && segOf[i]! >= edge.segStart && segOf[i]! <= edge.segEnd;
+      if (on) {
+        if (runStart === -1) runStart = i;
+        lastOn = i;
+      } else if (runStart !== -1 && (i - lastOn > 3 || i === chain.length)) {
+        if (!best || lastOn - runStart > best[1] - best[0]) best = [runStart, lastOn];
+        runStart = -1;
+      }
+    }
+    if (!best || best[1] - best[0] < 4) {
+      if (dbgw) console.log(`[straighten] edge seg${edge.segStart}-${edge.segEnd}: no window`);
+      continue;
+    }
+    const [i0, i1] = best;
+    // the window must cover most of the edge, not a corner clip
+    const covered = meters(chain[i0]!, chain[i1]!);
+    if (covered < meters(edge.a, edge.b) * 0.7) {
+      if (dbgw) console.log(`[straighten] edge seg${edge.segStart}-${edge.segEnd}: partial cover ${covered.toFixed(0)}/${meters(edge.a, edge.b).toFixed(0)}`);
+      continue;
+    }
+    windows.push({ i0, i1, edge });
+  }
+  windows.sort((a, b) => b.i0 - a.i0);
+  const dbg = typeof process !== "undefined" && process.env?.STRAIGHTEN_DEBUG === "1";
+  if (dbg) console.log(`[straighten] edges=${edges.length} windows=${windows.length}`);
+
+  let out = chain;
+  for (const { i0, i1, edge } of windows) {
+    const oldSpan = out.slice(i0, i1 + 1);
+    const oldTurns = deliberateTurns(oldSpan);
+    if (oldTurns <= 2) { if (dbg) console.log(`[straighten] win ${i0}-${i1}: already deliberate (${oldTurns})`); continue; }
+    const a = nearestNode(g, out[i0]!);
+    const b = nearestNode(g, out[i1]!);
+    if (a < 0 || b < 0 || a === b) continue;
+    // Corridor = the span's own chord (endpoints inside by construction).
+    // Weights are the INVERSE of tracing: barely-weighted line adherence
+    // (lambda 12 is what carves the fine sawtooth in the first place) and
+    // a heavy bend penalty, so the A* buys long straight street runs.
+    const chord: [LatLng, LatLng] = [out[i0]!, out[i1]!];
+    // 150 m corridor first; superblocks (Grand Central, Port Authority)
+    // can pinch it shut, so retry wider — the maxDev gate below still
+    // rejects results that wander.
+    const ids =
+      corridorPath(g, a, b, chord, 1.2, 150, 320) ??
+      corridorPath(g, a, b, chord, 1.2, 260, 320);
+    if (!ids || ids.length < 2) { if (dbg) console.log(`[straighten] win ${i0}-${i1}: no corridor path (chord ${meters(chord[0], chord[1]).toFixed(0)}m ${chord[0]![0].toFixed(4)},${chord[0]![1].toFixed(4)} -> ${chord[1]![0].toFixed(4)},${chord[1]![1].toFixed(4)})`); continue; }
+    const newSpan = ids.map((id) => g.coord[id]!);
+    // corridor discipline: no point of the new span may leave the edge zone
+    let maxDev = 0;
+    for (const p of newSpan) {
+      const dd = distToSeg(p, chord[0], chord[1]);
+      if (dd > maxDev) maxDev = dd;
+    }
+    if (maxDev > 170) { if (dbg) console.log(`[straighten] win ${i0}-${i1}: maxDev ${maxDev.toFixed(0)}`); continue; }
+    const newTurns = deliberateTurns(newSpan);
+    const oldLen = spanLen(oldSpan);
+    const newLen = spanLen(newSpan);
+    if (dbg) console.log(`[straighten] win ${i0}-${i1}: turns ${oldTurns}->${newTurns} len ${oldLen.toFixed(0)}->${newLen.toFixed(0)} dev ${maxDev.toFixed(0)}`);
+    // accept either a strictly-free improvement or a big deliberateness
+    // win bought with a little distance
+    const freeWin = newTurns < oldTurns && newLen <= oldLen * 1.02;
+    const bigWin = newTurns <= oldTurns * 0.7 && newLen <= oldLen * 1.08;
+    if (!freeWin && !bigWin) continue;
+    out = [...out.slice(0, i0), ...newSpan, ...out.slice(i1 + 1)];
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Placement search
 // ---------------------------------------------------------------------------
 type UnitPoint = [number, number];
@@ -1002,6 +1231,14 @@ export async function traceShapeOnStreets(
     const routeVariants = [chain];
     if (options.trimSpikes !== false && !hasIntentionalRetrace) {
       routeVariants.push(trimNubs(chain));
+      // Deliberateness variant: long intended edges re-routed as single
+      // anchor-free street runs. Last in the list so the tie-tolerant
+      // selection below prefers it when the shape holds. (STRAIGHTEN_OFF=1
+      // is a measurement kill-switch for offline A/B runs.)
+      if (typeof process === "undefined" || process.env?.STRAIGHTEN_OFF !== "1") {
+        const straightened = straightenLongRuns(g, chain, target, options.lambda ?? 12);
+        if (straightened !== chain) routeVariants.push(trimNubs(straightened));
+      }
     }
     let selectedChain = routeVariants[0]!;
     let visual = scoreFinalRouteSimilarity(
