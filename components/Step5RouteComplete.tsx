@@ -79,6 +79,13 @@ export default function Step5RouteComplete({
   /** Bumped to force the cues useEffect to re-run. Used by the Retry button. */
   const [cuesRetryNonce, setCuesRetryNonce] = useState(0);
   const [shareHint, setShareHint] = useState<string | null>(null);
+  // Download buttons gave zero feedback (UX audit, Aug 29): confirm the
+  // filename so the user knows the file went to their downloads folder.
+  const [exportHint, setExportHint] = useState<string | null>(null);
+  const noteExport = useCallback((filename: string) => {
+    setExportHint(`Saved ${filename} to your downloads folder.`);
+    window.setTimeout(() => setExportHint(null), 6000);
+  }, []);
   const [canNativeShare, setCanNativeShare] = useState(false);
 
   useEffect(() => {
@@ -194,7 +201,8 @@ export default function Step5RouteComplete({
       "application/geo+json",
       JSON.stringify(fc, null, 2),
     );
-  }, [route, safeTurnCues, exportMetadata]);
+    noteExport("pacecasso-route.geojson");
+  }, [route, safeTurnCues, exportMetadata, noteExport]);
 
   const downloadGpx = useCallback(() => {
     triggerDownload(
@@ -202,7 +210,8 @@ export default function Step5RouteComplete({
       "application/gpx+xml",
       exportRouteToGpx(route, safeTurnCues, shouldAppendStreetLabel, exportMetadata),
     );
-  }, [route, safeTurnCues, exportMetadata]);
+    noteExport("pacecasso-route.gpx");
+  }, [route, safeTurnCues, exportMetadata, noteExport]);
 
   const downloadCueSheet = useCallback(() => {
     if (!safeTurnCues.length) return;
@@ -211,7 +220,8 @@ export default function Step5RouteComplete({
       "text/plain;charset=utf-8",
       exportCuesToPlainText(safeTurnCues, shouldAppendStreetLabel),
     );
-  }, [safeTurnCues]);
+    noteExport("pacecasso-turn-cues.txt");
+  }, [safeTurnCues, noteExport]);
 
   const [animBusy, setAnimBusy] = useState(false);
   const [animError, setAnimError] = useState<string | null>(null);
@@ -581,6 +591,14 @@ export default function Step5RouteComplete({
                     Garmin · Coros · Apple Watch · Suunto · most Strava imports
                   </span>
                 </button>
+                {exportHint ? (
+                  <p
+                    role="status"
+                    className="font-dm text-[11px] font-medium text-pace-ink"
+                  >
+                    {exportHint}
+                  </p>
+                ) : null}
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"

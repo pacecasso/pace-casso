@@ -344,7 +344,7 @@ async function fetchStudioRoute(
   const abort = new AbortController();
   const timer = window.setTimeout(() => abort.abort(), 270_000);
   try {
-    onProgress("Studio lane: tracing your shape on real streets at hero scale…");
+    onProgress("Tracing your shape onto real streets… (usually 1–3 minutes)");
     const res = await fetch("/api/studio-route", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1637,7 +1637,14 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
           </button>
           <button
             type="button"
-            disabled={!anchorLatLngs.length}
+            disabled={!anchorLatLngs.length || autoBusy}
+            title={
+              autoBusy
+                ? "Finding your route — this continues automatically when it's done."
+                : preferredSnappedRoute
+                  ? "Continue with the verified route shown on the map."
+                  : "Skip the search and fit your art to the streets exactly where you placed it."
+            }
             onClick={() =>
               onComplete({
                 anchorLatLngs,
@@ -1656,9 +1663,9 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
                     : undefined,
               })
             }
-            className="pace-toolbar-btn-primary flex-1 font-bebas tracking-[0.08em]"
+            className="pace-toolbar-btn-primary flex-1 font-bebas tracking-[0.08em] disabled:opacity-40"
           >
-            Snap to streets →
+            {preferredSnappedRoute ? "Continue with this route →" : "Place it myself →"}
           </button>
         </div>
       }

@@ -39,7 +39,7 @@ export function classifySnapReadiness({
       tone: "ready",
       title: "Verified runnable GPS art",
       detail:
-        "This route comes from a verified street-art route library and keeps its proven block-level path.",
+        "Blind judges recognized this route on real streets, so it keeps its exact block-by-block path.",
     };
   }
   if (

@@ -183,7 +183,7 @@ export async function runStudio(
   let subject = typeof body.subject === "string" && body.subject.trim() ? body.subject.trim() : null;
   let alts: string[] = [];
   if (!subject && typeof body.imageBase64 === "string" && body.imageBase64.length > 100) {
-    onProgress("Studio lane: naming your subject…");
+    onProgress("Looking at your image to see what it shows…");
     const named = await nameSubject(body.imageBase64);
     if (named) {
       subject = named.subject;
@@ -195,8 +195,8 @@ export async function runStudio(
   // time budget can stop the second one.
   const sweeps: StreetTraceCandidate[] = [];
   const cadences: [number, string][] = [
-    [120, "Studio lane: tracing your shape on real streets (fine cadence)…"],
-    [380, "Studio lane: tracing again with long deliberate strokes…"],
+    [120, "Tracing your shape onto real streets (close fit)…"],
+    [380, "Tracing again with longer, cleaner street runs…"],
   ];
   for (const [anchorM, label] of cadences) {
     if (timeLeft() < 30_000) break;
@@ -312,7 +312,7 @@ export async function runStudio(
   const judgeable = candidates.slice(0, 3);
   for (let c = 0; c < judgeable.length; c++) {
     if (timeLeft() < 20_000) break;
-    onProgress(`Studio lane: showing route ${c + 1} of ${judgeable.length} to blind judges…`);
+    onProgress(`Asking independent judges to name candidate route ${c + 1} of ${judgeable.length}… (about 20 s each)`);
     const judged = await judgeCandidate(judgeable[c]!);
     if (!judged) continue;
     const bar = await resolveBar(judgeable[c]!, judged);
@@ -325,7 +325,7 @@ export async function runStudio(
   // link. Spend the remaining budget sweeping more placements at more
   // rotations, then judge the best fresh candidates.
   if (anyCorrect && timeLeft() > 90_000) {
-    onProgress("Studio lane: close! Sweeping more placements for a cleaner read…");
+    onProgress("Close — a judge recognized it. Trying more placements for a cleaner version… (1–2 min)");
     await new Promise((r) => setTimeout(r, 10));
     let wide: StreetTraceCandidate[] = [];
     try {
@@ -356,7 +356,7 @@ export async function runStudio(
       .slice(0, 2);
     for (let c = 0; c < fresh.length; c++) {
       if (timeLeft() < 20_000) break;
-      onProgress(`Studio lane: judging wide-retry route ${c + 1} of ${fresh.length}…`);
+      onProgress(`Judging improved candidate ${c + 1} of ${fresh.length}…`);
       const judged = await judgeCandidate(fresh[c]!);
       if (!judged) continue;
       const bar = await resolveBar(fresh[c]!, judged);

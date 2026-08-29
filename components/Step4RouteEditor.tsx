@@ -669,7 +669,10 @@ export default function Step4RouteEditor({
   /** When off, hide full Mapbox polyline so stray tails past your waypoints disappear. */
   const [showFullSnapReference, setShowFullSnapReference] = useState(false);
   /** When off, hide orange waypoint handles to preview the final red route only. */
-  const [showWaypointDots, setShowWaypointDots] = useState(true);
+  // Off by default: a hero-scale route has 800+ waypoints and the dots
+  // smear the drawing into a blob on first sight (UX audit, Aug 29). The
+  // toggle is one tap away when the user wants to edit.
+  const [showWaypointDots, setShowWaypointDots] = useState(false);
   const [selectedWaypointIndex, setSelectedWaypointIndex] = useState<
     number | null
   >(null);
