@@ -170,10 +170,10 @@ test.describe("smoke", () => {
     await nextButton.click();
     await expect(page.getByText("Place on map").first()).toBeVisible();
     await expect(
-      page.getByRole("button", { name: /Snap to streets/i }),
+      page.getByRole("button", { name: /Place it myself|Continue with this route|Snap to streets/i }),
     ).toBeEnabled();
     await expect(
-      page.getByRole("button", { name: /Snap to streets/i }),
+      page.getByRole("button", { name: /Place it myself|Continue with this route|Snap to streets/i }),
     ).toBeInViewport();
     const pageScrolls = await page.evaluate(
       () =>
@@ -206,7 +206,7 @@ test.describe("smoke", () => {
     }
     await page.getByRole("button", { name: /Next: place on map/i }).click();
     await expect(page.getByText("Place on map").first()).toBeVisible();
-    await page.getByRole("button", { name: /Snap to streets/i }).click();
+    await page.getByRole("button", { name: /Place it myself|Continue with this route|Snap to streets/i }).click();
 
     await expect(page.getByText(/READY TO TUNE/i)).toBeVisible({
       timeout: 30_000,
