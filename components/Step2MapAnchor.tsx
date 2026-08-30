@@ -1059,15 +1059,28 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
         }
       }
 
-      // Stage 1: the user's art, exactly as approved.
-      const literal = await fetchWowPlace(
-        {
-          contour,
-          cityId: cityPreset.id,
-          subject: interpretedSubject ?? undefined,
-        },
-        noteStage,
-      );
+      // Stage 1: the user's art, exactly as approved. A stage that dies
+      // (function limit, network) must fall through to the next stage -
+      // Aug 30: a real upload ended the whole search at "24/100 areas".
+      const stageFailed = (stage: string, err: unknown): string => {
+        const detail = err instanceof Error ? err.message : String(err);
+        console.warn(`[Step2] ${stage} failed, continuing:`, err);
+        noteStage(`${stage} didn't finish (${detail}) - moving on to the next approach…`);
+        return detail;
+      };
+      let literal: WowPlaceResultPayload;
+      try {
+        literal = await fetchWowPlace(
+          {
+            contour,
+            cityId: cityPreset.id,
+            subject: interpretedSubject ?? undefined,
+          },
+          noteStage,
+        );
+      } catch (err) {
+        literal = { picks: [], subject: null, message: stageFailed("Placing your art as drawn", err) };
+      }
       if (literal.picks.length) {
         applyResult(literal, false);
         recordSearchEnd("done");
@@ -1115,26 +1128,38 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
             ? "Your art as-drawn didn't pass the street judges — redrawing it street-ready…"
             : `Attempt ${round}: drawing a fresh street-ready version…`,
         );
-        const interp = await fetchInterpret(imageBase64, noteStage);
+        let interp: Awaited<ReturnType<typeof fetchInterpret>>;
+        try {
+          interp = await fetchInterpret(imageBase64, noteStage);
+        } catch (err) {
+          stageFailed(`Redraw attempt ${round}`, err);
+          continue;
+        }
 
         if (!interp.contour) {
           lastInterp = lastInterp ?? interp;
           continue;
         }
         lastInterp = interp;
-        const placed = await fetchWowPlace(
-          {
-            contour: interp.contour,
-            cityId: cityPreset.id,
-            subject: interp.subject ?? undefined,
-            // Composite (multi-element logo) redraws: send the upload so
-            // placement judges by likeness to it — the primed single-subject
-            // question scores a full logo unfairly (measured 3/10 on a
-            // pump+figure+hose route it was asked to read as one element).
-            imageBase64: interp.composite ? imageBase64 : undefined,
-          },
-          noteStage,
-        );
+        let placed: WowPlaceResultPayload;
+        try {
+          placed = await fetchWowPlace(
+            {
+              contour: interp.contour,
+              cityId: cityPreset.id,
+              subject: interp.subject ?? undefined,
+              // Composite (multi-element logo) redraws: send the upload so
+              // placement judges by likeness to it — the primed single-subject
+              // question scores a full logo unfairly (measured 3/10 on a
+              // pump+figure+hose route it was asked to read as one element).
+              imageBase64: interp.composite ? imageBase64 : undefined,
+            },
+            noteStage,
+          );
+        } catch (err) {
+          stageFailed(`Placing redraw ${round}`, err);
+          continue;
+        }
         lastPlaced = placed;
         if (placed.picks.length) {
           applyResult(placed, true, interp.composite);
@@ -1144,15 +1169,20 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
       }
       if (imageBase64) {
         noteStage("Blind-verified placement did not pass - running the design-first street artist loop...");
-        const artistRoute = await fetchArtistLoop(
-          {
-            imageBase64,
-            cityId: cityPreset.id,
-            cityLabel: cityPreset.label,
-            sourceName: imageSourceName ?? undefined,
-          },
-          noteStage,
-        );
+        let artistRoute: ArtistLoopResultPayload | null = null;
+        try {
+          artistRoute = await fetchArtistLoop(
+            {
+              imageBase64,
+              cityId: cityPreset.id,
+              cityLabel: cityPreset.label,
+              sourceName: imageSourceName ?? undefined,
+            },
+            noteStage,
+          );
+        } catch (err) {
+          stageFailed("The design-first artist loop", err);
+        }
         if (artistRoute) {
           applyArtistLoopResult(artistRoute);
           recordSearchEnd("done");
@@ -1160,15 +1190,19 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
         }
 
         noteStage("Design-first route did not return a usable route - checking strict route-native fallbacks...");
-        const routeNative = await autoFindTop5(contour, cityPreset, {
-          anchorSource: "image",
-          imageBase64,
-          imageSourceName: imageSourceName ?? undefined,
-          topK: 5,
-        });
-        if (applyAutoFindResult(routeNative)) {
-          recordSearchEnd("done");
-          return;
+        try {
+          const routeNative = await autoFindTop5(contour, cityPreset, {
+            anchorSource: "image",
+            imageBase64,
+            imageSourceName: imageSourceName ?? undefined,
+            topK: 5,
+          });
+          if (applyAutoFindResult(routeNative)) {
+            recordSearchEnd("done");
+            return;
+          }
+        } catch (err) {
+          stageFailed("The route-native fallback", err);
         }
       }
       const exhaustedMessage = `We tried your art as-drawn plus ${roundsTried} fresh street-ready redraws${lastInterp?.subject ? ` (as ${lastInterp.subject})` : ""} - nothing cleared the blind judge's bar. ${lastPlaced?.message ?? lastInterp?.message ?? ""} You can place it yourself: drag the art where you want it and continue, and we'll fit it to the streets faithfully.`;

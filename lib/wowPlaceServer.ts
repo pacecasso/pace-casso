@@ -579,9 +579,22 @@ export async function runWowPlacement(args: {
    */
   uprightOnly?: boolean;
   onProgress?: WowPlaceProgress;
+  /** Wall-clock budget for the placement sweep (ms). Default 170 s leaves
+   * room for judging inside the platform's 300 s function limit. */
+  sweepBudgetMs?: number;
 }): Promise<WowPlaceResult> {
   const progress = args.onProgress ?? (() => {});
-  const strokes = contourToStrokes(args.contour);
+  // Sweep cost scales with contour length and photo uploads send up to 600
+  // points; 240 is all the street lattice can resolve (same cap as the
+  // studio lane). Aug 30: a real upload died at 24/100 areas when the
+  // function hit its 300 s limit - this and the budget below fix that.
+  const contourIn =
+    args.contour.length > 240
+      ? args.contour.filter((_, i) => i % Math.ceil(args.contour.length / 240) === 0)
+      : args.contour;
+  const strokes = contourToStrokes(contourIn);
+  const sweepDeadline = Date.now() + (args.sweepBudgetMs ?? 170_000);
+  let areasSwept = 0;
   if (!strokes.length || strokes.flat().length < 8) {
     return { picks: [], subject: null, subjectConfidence: null, message: "Not enough sketch detail to place." };
   }
@@ -646,10 +659,25 @@ export async function runWowPlacement(args: {
 
   const runSweep = async (centers: LatLng[], rotationsDeg?: number[]): Promise<WowCandidate[]> => {
     const found: WowCandidate[] = [];
+    // Visit areas in a strided order so a budget-cut partial sweep still
+    // spans the whole island instead of one end of it.
+    const order: number[] = [];
+    const stride = 37 % centers.length || 1;
+    for (let k = 0, idx = 0; k < centers.length; k++, idx = (idx + stride) % centers.length) {
+      while (order.includes(idx)) idx = (idx + 1) % centers.length;
+      order.push(idx);
+    }
     for (let i = 0; i < centers.length; i++) {
+      if (Date.now() > sweepDeadline) {
+        progress(
+          `Time budget reached after ${areasSwept} areas - judging the best placements found so far…`,
+        );
+        break;
+      }
+      areasSwept++;
       found.push(
         ...sweepPlacements(g, strokes, {
-          centers: [centers[i]!],
+          centers: [centers[order[i]!]!],
           extentsM: extents,
           rotationsDeg,
           mirrors: [false], // mirrored art can't round-trip through the manual editor

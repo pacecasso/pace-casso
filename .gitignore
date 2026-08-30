@@ -34,3 +34,6 @@ playwright/.cache
 
 # local async job store (dev fallback for Vercel Blob)
 /.route-jobs/
+
+# first-user audit artifacts (screenshots), local only
+/ux-audit/
