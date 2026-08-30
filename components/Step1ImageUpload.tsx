@@ -773,7 +773,7 @@ export default function Step1ImageUpload({
           ) as NormalizedPoint[] | null;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          setContourHint(`Couldn't build your route line: ${msg}`);
+          setContourHint(`Couldn't turn that into a route line — try the Detail slider, or a bolder image. (${msg})`);
         }
         if (id !== contourReqIdRef.current) return;
         setNormalizedContour(pts);
@@ -806,8 +806,8 @@ export default function Step1ImageUpload({
       setNormalizedContour(points);
       setContourHint(
         mode === "svg"
-          ? "SVG trace ready. Edit the line art if any bridge or detail feels wrong."
-          : "Transparent PNG trace ready. Edit the line art if any bridge or detail feels wrong.",
+          ? "Traced! Touch up the middle panel with Draw and Erase if anything looks off."
+          : "Traced! Touch up the middle panel with Draw and Erase if anything looks off.",
       );
       replaceLineUndoWithCurrent();
       requestAnimationFrame(() => {
@@ -842,7 +842,7 @@ export default function Step1ImageUpload({
       }
       if (d.id !== contourReqIdRef.current) return;
       if (!d.ok) {
-        setContourHint(`Couldn’t build your route line: ${d.error}`);
+        setContourHint(`Couldn’t turn that into a route line — try the Detail slider, or a bolder image. (${d.error})`);
         return;
       }
       setContourHint(d.healthHint);
@@ -1519,13 +1519,14 @@ export default function Step1ImageUpload({
                 <p className="mt-2 max-w-[min(100vw-1rem,280px)] rounded border-l-2 border-pace-blue bg-pace-blue/5 px-2 py-1.5 text-center font-dm text-[11px] leading-snug text-pace-ink sm:text-[11px]">
                   {oneLineAnalysis.connectorCount > 0 ? (
                     <>
-                      <strong>Yellow</strong> shows where the pen jumps between
-                      shapes. Keep it, or erase and redraw.
+                      The <strong>yellow dashes</strong> are short hops you&apos;d
+                      run between parts of your drawing. Fine to keep — or erase
+                      and connect the parts.
                     </>
                   ) : (
                     <>
-                      This reads as one clean{" "}
-                      {oneLineAnalysis.isClosed ? "closed" : "open"} line.
+                      Your drawing works as one continuous
+                      line — ready to place on the map.
                     </>
                   )}
                 </p>

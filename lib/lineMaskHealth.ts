@@ -81,22 +81,22 @@ export function describeLineMaskHealth(
     // are far smaller than a city block. Say so instead of sending the user
     // through six more steps to find out.
     hint =
-      "Lots of separate pieces — this usually means words or fine detail, which don't survive being drawn on real streets. Keep one bold symbol and erase the rest for a route people can actually recognize.";
+      "Your drawing is in lots of separate pieces — usually words or fine detail, which don't survive being drawn on real streets. Keep one bold symbol and erase the rest.";
   } else if (inkBlobCount === 4) {
     hint =
-      "Several disconnected strokes — erase gaps or connect islands so one path can follow your art.";
+      "Your drawing is in a few separate pieces. Connect them with the Draw tool — or erase the extras — so one running path can follow it.";
   } else if (inkBlobCount === 2) {
     hint =
-      "Two separate ink blobs — use draw to bridge them, or erase strays so the route follows one outline.";
+      "Your drawing is in two separate pieces. Connect them with the Draw tool, or erase the smaller one, so the route can follow one outline.";
   } else if (inkBlobCount === 3) {
     hint =
-      "Three ink regions — consider merging with the pen or removing extras for a cleaner run.";
+      "Your drawing is in three separate pieces. Connect them with the Draw tool, or erase the extras, for a cleaner route.";
   } else if (largestBlobShare < 0.55 && inkBlobCount > 1) {
     hint =
-      "Ink is split across regions — the largest stroke should carry most of your design.";
+      "Most of your design should be one main shape — right now it's split into pieces. Erase the small extras or connect them.";
   } else {
     hint =
-      "Line topology looks workable — refine thickness if the preview contour wanders.";
+      "Looking good — this can be run as one continuous line. Touch it up with Draw and Erase if anything looks off.";
   }
 
   return { inkBlobCount, largestBlobShare, hint };
