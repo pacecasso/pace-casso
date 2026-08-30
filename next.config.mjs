@@ -12,6 +12,13 @@ const nextConfig = {
   turbopack: {
     root: path.dirname(fileURLToPath(import.meta.url)),
   },
+  async redirects() {
+    return [
+      // Visitors guess this URL from the "How it works" nav label; it 404ed
+      // on both domains (caught by the Aug 30 user audit).
+      { source: "/how-it-works", destination: "/how", permanent: true },
+    ];
+  },
 };
 
 export default nextConfig;

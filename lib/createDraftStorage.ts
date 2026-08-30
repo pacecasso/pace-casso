@@ -72,6 +72,7 @@ function sanitizeRoute(value: unknown): RouteLineString | null {
       : undefined,
     preserveBlockWaypoints:
       route.preserveBlockWaypoints === true ? true : undefined,
+    verified: route.verified === true ? true : undefined,
   };
 }
 
