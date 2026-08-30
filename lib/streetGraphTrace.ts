@@ -1470,6 +1470,16 @@ export async function traceShapeOnStreets(
     });
   }
   traced.sort((a, b) => {
+    // Eyes-vs-scorer bench (Aug 30, six shapes): once similarity is within
+    // a few points, human ranking follows DELIBERATENESS — the old
+    // vis-first sort buried an obviously cleaner heart (+3.6 clean, -1.2
+    // vis) and arrow (+6.5 clean, -2.5 vis) behind wigglier siblings.
+    // Blend cleanliness into the primary key; ties fall through as before.
+    const blend = (c: StreetTraceCandidate) => c.visualScore + 0.5 * c.visualCleanliness;
+    const blendDelta = blend(b) - blend(a);
+    // near-strict: the measured inversions sit at blend gaps of 0.6-0.75,
+    // inside the old 1-point dead zone — a composite key must decide them
+    if (Math.abs(blendDelta) > 0.2) return blendDelta;
     const visualDelta = b.visualScore - a.visualScore;
     if (Math.abs(visualDelta) > 1) return visualDelta;
     const cleanlinessDelta = b.visualCleanliness - a.visualCleanliness;
