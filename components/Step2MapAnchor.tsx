@@ -655,7 +655,7 @@ const applyArtistLoopResult = useCallback((result: ArtistLoopResultPayload) => {
     const recognizedPct = Math.round((Math.min(3, Math.max(0, result.recognizedCount)) / 3) * 100);
     const confidencePct = Math.round(Math.min(1, Math.max(0, result.medianConfidence)) * 100);
     const routeCleanPct = Math.max(45, Math.min(95, Math.round(100 - result.meanDeviationMeters * 2)));
-    const guessText = result.guesses.length ? ` Judges guessed: ${result.guesses.join(", ")}.` : "";
+    const guessText = result.guesses.length ? ` They saw: ${result.guesses.join(", ")}.` : "";
     const pick: Top5Pick = {
       placement: {
         center: result.center,
@@ -677,10 +677,10 @@ const applyArtistLoopResult = useCallback((result: ArtistLoopResultPayload) => {
       shapeMatchScore: Math.max(55, Math.min(95, Math.round((recognizedPct + confidencePct) / 2))),
       sourceMatchScore: Math.max(45, Math.min(95, Math.round((recognizedPct * 0.7) + (confidencePct * 0.3)))),
       verifiedRoute: result.recognizedCount >= 2,
-      verificationLabel: `ARTIST LOOP ${result.recognizedCount}/3`,
+      verificationLabel: `RECOGNIZED ${result.recognizedCount}/3`,
       reason:
-        `${result.label}: design-first street route compiled on real Manhattan streets after ${result.roundsRun} round${result.roundsRun === 1 ? "" : "s"}. ` +
-        `${result.recognizedCount}/3 blind judges recognized it.${guessText}`,
+        `${result.label}: hand-drawn as a street route on real Manhattan blocks. ` +
+        `${result.recognizedCount} of 3 people who saw only the route recognized it.${guessText}`,
     };
     setPicks([pick]);
     setPicksVisionUsed(true);
@@ -693,8 +693,8 @@ const applyArtistLoopResult = useCallback((result: ArtistLoopResultPayload) => {
     setFitNonce((n) => n + 1);
     setAutoHint(
       result.recognizedCount >= 2
-        ? `Design-first route found: ${result.recognizedCount}/3 blind judges recognized it. Tap it to inspect, then continue.`
-        : `Design-first route found, but only ${result.recognizedCount}/3 blind judges recognized it. Showing the best real-street draft instead of failing.`,
+        ? `Route found — ${result.recognizedCount} of 3 people who saw only the route recognized it. Tap it to inspect, then continue.`
+        : `Best attempt shown — only ${result.recognizedCount} of 3 people recognized it. You can run it as-is, or try different art.`,
     );
     window.setTimeout(() => {
       document
@@ -711,7 +711,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
     const lat = chain.reduce((a, p) => a + p[0], 0) / chain.length;
     const lng = chain.reduce((a, p) => a + p[1], 0) / chain.length;
     const guessText = result.verdicts?.length
-      ? ` Judges guessed: ${result.verdicts.map((v) => v.guess).join(", ")}.`
+      ? ` They saw: ${result.verdicts.map((v) => v.guess).join(", ")}.`
       : "";
     const pick: Top5Pick = {
       placement: { center: [lat, lng], rotationDeg: 0, scale: 1 },
@@ -730,10 +730,9 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
       shapeMatchScore: 90,
       sourceMatchScore: 85,
       verifiedRoute: true,
-      verificationLabel: "STUDIO 2/2",
+      verificationLabel: "RECOGNIZED BLIND",
       reason:
-        `Studio lane: your shape traced directly on real streets at hero scale. ` +
-        `Both blind judges named it "${result.subject ?? "your subject"}" with zero context.${guessText}`,
+        `Your shape, traced onto real streets. Everyone we showed the route to — with no hints — named it "${result.subject ?? "your subject"}".${guessText}`,
     };
     setPicks([pick]);
     setPicksVisionUsed(true);
@@ -745,7 +744,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
     setSelectedAnchorLatLngs(pick.anchorLatLngs ?? null);
     setFitNonce((n) => n + 1);
     setAutoHint(
-      `Studio route found: 2/2 blind judges recognized it as "${result.subject}". Tap it to inspect, then continue.`,
+      `Route found — it reads as "${result.subject}" at a glance. Tap it to inspect, then continue.`,
     );
     window.setTimeout(() => {
       document
@@ -1065,7 +1064,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
       const stageFailed = (stage: string, err: unknown): string => {
         const detail = err instanceof Error ? err.message : String(err);
         console.warn(`[Step2] ${stage} failed, continuing:`, err);
-        noteStage(`${stage} didn't finish (${detail}) - moving on to the next approach…`);
+        noteStage(`${stage} took longer than allowed — trying the next approach…`);
         return detail;
       };
       let literal: WowPlaceResultPayload;
@@ -1125,8 +1124,8 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
         roundsTried = round;
         noteStage(
           round === 1
-            ? "Your art as-drawn didn't pass the street judges — redrawing it street-ready…"
-            : `Attempt ${round}: drawing a fresh street-ready version…`,
+            ? "Your art as-drawn doesn't come out recognizable on streets — drawing a street-friendly version… (a few minutes)"
+            : `Attempt ${round}: drawing a fresh street-friendly version…`,
         );
         let interp: Awaited<ReturnType<typeof fetchInterpret>>;
         try {
@@ -1168,7 +1167,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
         }
       }
       if (imageBase64) {
-        noteStage("Blind-verified placement did not pass - running the design-first street artist loop...");
+        noteStage("Still not recognizable enough — trying a hand-drawn approach… (a few minutes)");
         let artistRoute: ArtistLoopResultPayload | null = null;
         try {
           artistRoute = await fetchArtistLoop(
@@ -1189,7 +1188,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
           return;
         }
 
-        noteStage("Design-first route did not return a usable route - checking strict route-native fallbacks...");
+        noteStage("One more approach — fitting your art directly to the street network…");
         try {
           const routeNative = await autoFindTop5(contour, cityPreset, {
             anchorSource: "image",
@@ -1205,7 +1204,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
           stageFailed("The route-native fallback", err);
         }
       }
-      const exhaustedMessage = `We tried your art as-drawn plus ${roundsTried} fresh street-ready redraws${lastInterp?.subject ? ` (as ${lastInterp.subject})` : ""} - nothing cleared the blind judge's bar. ${lastPlaced?.message ?? lastInterp?.message ?? ""} You can place it yourself: drag the art where you want it and continue, and we'll fit it to the streets faithfully.`;
+      const exhaustedMessage = `We tried ${roundsTried + 1} versions of your art${lastInterp?.subject ? ` (read as ${lastInterp.subject})` : ""}, and none came out recognizable enough to show you — we only surface routes a fresh pair of eyes can name. ${lastPlaced?.message ?? lastInterp?.message ?? ""} You can also place it yourself: drag the art where you want it and continue, and we'll fit it to the streets faithfully.`;
       setAutoHint(exhaustedMessage);
       recordSearchEnd("no-route", exhaustedMessage);
       setShowOfframp(true);

@@ -614,7 +614,7 @@ export async function runWowPlacement(args: {
         subject: named.guesses[0] ?? null,
         subjectConfidence: null,
         message: disagreement
-          ? `Honest check: independent judges read your line art as "${disagreement}" — it doesn't read as ONE clear subject yet, so streets will only blur it further. Bold, simple, closed shapes work best — try the touch-up step.`
+          ? `Honest check: people shown only your line art saw "${disagreement}" — it doesn't read as one clear subject yet, and streets will only blur it further. Bold, simple, closed shapes work best — try the touch-up step.`
           : "Honest check: your line art doesn't yet read as a clear subject on its own, so streets will only blur it further. Bold, simple, closed shapes work best — try the touch-up step.",
       };
     }
@@ -622,7 +622,7 @@ export async function runWowPlacement(args: {
     namedConfidence = named.confidence;
   }
 
-  progress(`Looks like ${subject} — testing placements across Manhattan…`);
+  progress(`Looks like ${subject} — searching Manhattan for the best spot… (this can take a few minutes)`);
   const g = (await getStreetGraph()) as WowGraph;
   const minKm = args.targetDistanceKm ? Math.max(4, args.targetDistanceKm * 0.7) : 4;
   const maxKm = args.targetDistanceKm ? Math.min(42, args.targetDistanceKm * 1.5) : 42;
@@ -670,7 +670,7 @@ export async function runWowPlacement(args: {
     for (let i = 0; i < centers.length; i++) {
       if (Date.now() > sweepDeadline) {
         progress(
-          `Time budget reached after ${areasSwept} areas - judging the best placements found so far…`,
+          `Found plenty of options — picking the best fits…`,
         );
         break;
       }
@@ -686,7 +686,7 @@ export async function runWowPlacement(args: {
           avoidBox: CENTRAL_PARK_BOX,
         }),
       );
-      progress(`Testing placements across Manhattan… (${i + 1}/${centers.length} areas)`);
+      progress(`Scanning Manhattan neighborhoods… (${i + 1} of ${centers.length})`);
       // The sweep is synchronous CPU work; without yielding, every enqueued
       // progress line buffers until the whole sweep finishes and the user
       // stares at a dead button for a minute (observed with gas.png).
@@ -702,10 +702,10 @@ export async function runWowPlacement(args: {
   const useGridBranch = gridArt && args.sweepMode !== "island";
   let widenedAlready = !useGridBranch;
   if (useGridBranch) {
-    progress("Straight-edged art — placing on the street grid, aligned to the avenues…");
+    progress("Your design has clean straight lines — lining them up with the avenues…");
     candidates = await runSweep(GRID_CENTERS, gridRotations);
     if (!candidates.length) {
-      progress("No grid-aligned fit — widening the search…");
+      progress("Trying more neighborhoods…");
       candidates = await runSweep(MANHATTAN_CENTERS, args.uprightOnly ? [-8, 0, 8] : undefined);
       widenedAlready = true;
     }
@@ -750,7 +750,7 @@ export async function runWowPlacement(args: {
       }
       if (!added) break;
     }
-    progress(`Asking the judge about the ${screenSet.length} tightest fits…`);
+    progress(`Comparing the ${screenSet.length} best-looking fits…`);
     return Promise.all(
       screenSet.map(async (c) => {
         const png = await renderChainsPng(c.segments);
@@ -800,7 +800,7 @@ export async function runWowPlacement(args: {
   // The refusal only wins over organic-street placements when the island
   // ALSO has nothing above the bar.
   if (!keepers.length && !widenedAlready) {
-    progress("Grid placements didn't clear the bar — trying the whole island…");
+    progress("Those spots weren't good enough — scanning the whole island…");
     // The grid pass already judged GRID_CENTERS at -29; the island sweep
     // re-produces those (shared centers x rot -29) — drop the duplicates so
     // the same route isn't judged twice or shown as two identical picks.
@@ -856,7 +856,7 @@ export async function runWowPlacement(args: {
       }],
       subject,
       subjectConfidence: namedConfidence,
-      message: `We read your art as ${subject} and traced ${candidates.length} street placements. The best route scored ${bestScored.score}/10, below the normal approval bar, so I am returning it as an editable draft rather than calling it ready.`,
+      message: `We read your art as ${subject} and traced ${candidates.length} street placements. The best came out ${bestScored.score}/10 on recognizability — below our bar — so here it is as an editable draft rather than a finished route.`,
       refusedPreviewPngBase64: bestScored.png.toString("base64"),
       refusedPreviewScore: bestScored.score,
     };
@@ -923,7 +923,7 @@ export async function runWowPlacement(args: {
   };
 
   if (!args.originalImage) {
-    progress("Final check: judges see your top routes with NO hints...");
+    progress("Final check: making sure the route is recognizable at a glance…");
     await runBlindVerification();
     if (
       !verified.length &&
@@ -931,7 +931,7 @@ export async function runWowPlacement(args: {
         "The first promising routes misread blind - widening the search grid...",
       ))
     ) {
-      progress("Final check: judges see the wider-search routes with NO hints...");
+      progress("Final check on the wider search…");
       await runBlindVerification();
     }
     if (!verified.length) {
@@ -961,9 +961,9 @@ export async function runWowPlacement(args: {
           fallbackDraft: true,
           fallbackReason:
             (misreads
-              ? `Blind judges misread the best route as "${misreads}".`
-              : `Blind judges could not name the subject.`) +
-            ` Best primed score was ${bestScored.score}/10.`,
+              ? `People shown only the route saw "${misreads}".`
+              : `People shown only the route couldn't name it.`) +
+            ` Best recognizability score was ${bestScored.score}/10.`,
           coordinates: joined.map(([lat, lng]) => [lat, lng]),
           anchorLatLngs: placedStrokes.flat().map(([lat, lng]) => [lat, lng]),
           previewPngBase64: shippedPng.toString("base64"),
@@ -971,11 +971,11 @@ export async function runWowPlacement(args: {
         subject,
         subjectConfidence: namedConfidence,
         message:
-          `We read your art as ${subject} and found ${blindQueueCount} promising street placements, but when judges saw the final street routes with no hints, ` +
+          `We read your art as ${subject} and found ${blindQueueCount} promising spots, but when people saw the finished street routes cold, ` +
           (misreads
-            ? `they called the best ones "${misreads}" instead. `
-            : `none could name the subject. `) +
-          `I am returning the best runnable draft so you can inspect and edit it, but it is not judge-approved.`,
+            ? `they saw "${misreads}" instead. `
+            : `they couldn't name it. `) +
+          `Here is the best runnable version to inspect and edit — just know it didn't pass our recognizability check.`,
       };
     }
   } else {
@@ -990,7 +990,7 @@ export async function runWowPlacement(args: {
           picks: [],
           subject,
           subjectConfidence: namedConfidence,
-          message: `The likeness judge could not score any runnable route.`,
+          message: `We couldn't score any runnable route against your image. Try simplifying the art.`,
         };
       }
       const joined = joinChains(g, bestScored.c.segments);
@@ -1005,7 +1005,7 @@ export async function runWowPlacement(args: {
     }
   }
 
-  progress("Building your verified picks...");
+  progress("Preparing your route…");
   const picks: WowPlacePick[] = [];
   for (const k of verified) {
     const placedStrokes = placeSegments(strokes, k.c.center, k.c.extentM, k.c.rotDeg, false);

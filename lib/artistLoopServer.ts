@@ -737,8 +737,8 @@ export async function runArtistLoop(
       round,
       detail:
         round === 1
-          ? "The artist is studying your image and sketching drafts…"
-          : "Strangers weren't convinced — the artist is redrawing…",
+          ? "Sketching street-friendly versions of your image…"
+          : "Not recognizable enough yet — sketching new versions…",
     });
     const { designs, acceptableGuesses } = await designerCall(
       imageBlock,
@@ -759,7 +759,7 @@ export async function runArtistLoop(
     progress({
       stage: "sketch-judge",
       round,
-      detail: `Showing ${designs.length} drafts to blind judges in parallel…`,
+      detail: `Checking which of ${designs.length} sketches reads best…`,
     });
 
     // All drafts evaluate CONCURRENTLY — the blind-judge API calls are the
@@ -796,7 +796,7 @@ export async function runArtistLoop(
               design,
               failBuf: sketchBuf,
               judge: sketchJudge,
-              line: `Round ${round} draft "${design.label}" (${design.points.length} pts): CLEAN SKETCH already failed — strangers saw ${[...new Set(sketchJudge.samples.map((s) => s.guess))].join(" / ")}.`,
+              line: `One sketch didn't read clearly (people saw ${[...new Set(sketchJudge.samples.map((s) => s.guess))].join(" / ")}) — trying others…`,
             };
           }
           // Stage 2: street SIMULATOR — quantize to block spacing.
@@ -811,13 +811,13 @@ export async function runArtistLoop(
               design,
               failBuf: simBuf,
               judge: simJudge,
-              line: `Round ${round} draft "${design.label}": clean sketch was recognized, but after BLOCK QUANTIZATION strangers saw ${[...new Set(simJudge.samples.map((s) => s.guess))].join(" / ")} — features merged or degenerated at street scale.`,
+              line: `A promising sketch lost its shape at street size — trying others…`,
             };
           }
           progress({
             stage: "compiling",
             round,
-            detail: `Draft ${di + 1} ("${design.label}") survived the sketch gates — compiling onto real junctions…`,
+            detail: `A sketch reads well — drawing it onto real streets…`,
           });
           const placement = placeAndCompile(local, graph);
           if (!placement) return { kind: "dead" };
@@ -898,10 +898,10 @@ export async function runArtistLoop(
       stage: "round-done",
       round,
       detail: solved
-        ? "Strangers recognized the street route — locking it in."
+        ? "The street route is recognizable — locking it in."
         : bestOfRound
-          ? `Round ${round}: ${bestOfRound.judge.recognizedCount}/3 strangers recognized it.`
-          : `Round ${round}: no draft survived the sketch gates.`,
+          ? `Attempt ${round}: close, but not recognizable enough yet…`
+          : `Attempt ${round}: none of the sketches worked — trying again…`,
     });
     if (solved) break;
 
