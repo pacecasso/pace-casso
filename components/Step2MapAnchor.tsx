@@ -324,6 +324,46 @@ async function fetchArtistLoop(
   return cleanArtistLoopResult(rec);
 }
 
+type PaintRoutePayload = {
+  ok: boolean;
+  reason?: string;
+  layout?: string;
+  chain?: [number, number][];
+  km?: number;
+  fidelity?: number;
+};
+
+async function fetchPaintRoute(
+  body: Record<string, unknown>,
+  onProgress: (detail: string) => void,
+): Promise<PaintRoutePayload | null> {
+  // The instant draft budgets itself to ~55 s server-side; if nothing
+  // arrives by 100 s the stage is dead — move on without a draft.
+  const abort = new AbortController();
+  const timer = window.setTimeout(() => abort.abort(), 100_000);
+  try {
+    onProgress("Drawing a first draft on real streets… (under a minute)");
+    const res = await fetch("/api/paint-route", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: abort.signal,
+    });
+    if (!res.ok) return null;
+    const type = res.headers.get("content-type") ?? "";
+    if (!type.includes("ndjson")) {
+      const rec = (await res.json()) as PaintRoutePayload;
+      return rec && typeof rec === "object" ? rec : null;
+    }
+    const result = await readNdjsonResult(res, onProgress);
+    return result as PaintRoutePayload;
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 type StudioRoutePayload = {
   ok: boolean;
   verified?: boolean;
@@ -376,9 +416,11 @@ type RouteJobStatusPayload = {
   status?: string;
   stage?: string;
   stageNote?: string;
+  draft?: PaintRoutePayload | null;
   result?: {
     kind?: string;
     studio?: StudioRoutePayload;
+    paint?: PaintRoutePayload;
     wow?: { picks?: unknown[]; subject?: unknown; message?: unknown };
     redrawn?: boolean;
     composite?: boolean;
@@ -706,6 +748,59 @@ const applyArtistLoopResult = useCallback((result: ArtistLoopResultPayload) => {
     return result.recognizedCount >= 2;
   }, [routeFromPick]);
 
+const applyPaintResult = useCallback((result: PaintRoutePayload, stillSearching: boolean) => {
+    const chain = result.chain ?? [];
+    if (chain.length < 8) return false;
+    const distanceMeters = Math.round((result.km ?? 0) * 1000);
+    const lat = chain.reduce((a, p) => a + p[0], 0) / chain.length;
+    const lng = chain.reduce((a, p) => a + p[1], 0) / chain.length;
+    const rearranged = result.layout === "stack";
+    const pick: Top5Pick = {
+      placement: { center: [lat, lng], rotationDeg: 0, scale: 1 },
+      anchorLatLngs: chain,
+      designIntent: "your art, painted on real streets",
+      routeCoords: chain,
+      snappedRoute: {
+        coordinates: chain,
+        distanceMeters,
+        blockWaypoints: chain,
+        preserveBlockWaypoints: true,
+        verified: true,
+      },
+      previewDataUrl: renderRouteToDataUrl(chain, 640, { padding: 96 }) ?? "",
+      distanceKm: result.km ?? distanceMeters / 1000,
+      qualityScore: 75,
+      shapeMatchScore: 75,
+      sourceMatchScore: 70,
+      verifiedRoute: false,
+      verificationLabel: "FIRST DRAFT",
+      reason:
+        `Your shape painted onto real streets: outline, a little shading, and the details drawn as lines.${
+          rearranged ? " The parts were re-arranged to fit the street grid." : ""
+        } Tweak anything in the next step.`,
+    };
+    setPicks([pick]);
+    setPicksVisionUsed(true);
+    setCenter([...pick.placement.center] as [number, number]);
+    setRotationDeg(0);
+    setScale(1);
+    setSelectedPickIdx(0);
+    setPreferredSnappedRoute(routeFromPick(pick));
+    setSelectedAnchorLatLngs(pick.anchorLatLngs ?? null);
+    setFitNonce((n) => n + 1);
+    setAutoHint(
+      stillSearching
+        ? "First draft ready. Tap it to inspect. We are still looking for a version strangers recognize at a glance; it will replace this one if found."
+        : "First draft ready. Tap it to inspect, then continue to tweak it on the map.",
+    );
+    window.setTimeout(() => {
+      document
+        .getElementById("step2-picks")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+    return true;
+  }, [routeFromPick]);
+
 const applyStudioResult = useCallback((result: StudioRoutePayload) => {
     const chain = result.chain ?? [];
     if (chain.length < 8) return false;
@@ -814,6 +909,11 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
         recordSearchEnd("done");
         return;
       }
+      if (r.kind === "paint" && r.paint && applyPaintResult(r.paint, false)) {
+        keepPointer();
+        recordSearchEnd("done");
+        return;
+      }
       if (r.kind === "wow" && r.wow) {
         const picks = Array.isArray(r.wow.picks)
           ? r.wow.picks.map(cleanWowPick).filter((p): p is WowPlacePickPayload => p !== null)
@@ -851,9 +951,10 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
       recordSearchEnd("no-route", message);
       setShowOfframp(true);
     },
-    [applyStudioResult, applyResult, applyArtistLoopResult, recordSearchEnd],
+    [applyStudioResult, applyPaintResult, applyResult, applyArtistLoopResult, recordSearchEnd],
   );
 
+  const draftShownRef = useRef<string | null>(null);
   const watchRouteJob = useCallback(
     (jobId: string, email: string | null) => {
       stopJobWatch();
@@ -886,14 +987,20 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
           );
           return;
         }
-        if (typeof payload.stageNote === "string" && payload.stageNote) {
+        if (payload.draft?.ok && payload.draft.chain && draftShownRef.current !== jobId) {
+          // the first draft lands long before the judged search ends
+          draftShownRef.current = jobId;
+          applyPaintResult(payload.draft, true);
+          return;
+        }
+        if (typeof payload.stageNote === "string" && payload.stageNote && draftShownRef.current !== jobId) {
           setAutoHint(`${searchRunningLine(email)} Now: ${payload.stageNote}`);
         }
       };
       void poll();
       jobPollRef.current = window.setInterval(() => void poll(), 20_000);
     },
-    [applyJobResult, stopJobWatch],
+    [applyJobResult, applyPaintResult, stopJobWatch],
   );
 
   // Pick up a job from the email link (?job=) or a previous visit.
@@ -1040,7 +1147,19 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
     };
 
     try {
-      // Stage 0: the studio lane — trace the approved shape directly on the
+      // Stage 0: the instant first draft — the stroke painter seats the
+      // upload as a filled silhouette on real streets in under a minute.
+      // It is shown immediately; the judged studio lane may replace it.
+      let drafted = false;
+      if (cityPreset.id === "manhattan") {
+        const paint = await fetchPaintRoute(
+          { contour, cityId: cityPreset.id, imageBase64: imageBase64 ?? undefined },
+          noteStage,
+        );
+        if (paint?.ok) drafted = applyPaintResult(paint, true);
+      }
+
+      // Stage 1: the studio lane — trace the approved shape directly on the
       // street graph at hero scale and blind-judge the rendered route. This
       // is the offline pipeline that produced the verified keeper batch;
       // only a fully verified result (both judges correct) is shown, and
@@ -1059,6 +1178,15 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
           recordSearchEnd("done");
           return;
         }
+      }
+      if (drafted) {
+        // A draft in hand beats a long cascade that usually ends in a
+        // refusal: keep it and let the runner tweak it in the next step.
+        setAutoHint(
+          "This is our first draft. Nobody we showed it to named it cold, so tweak it on the map in the next step, or run the search again.",
+        );
+        recordSearchEnd("done");
+        return;
       }
 
       // Stage 1: the user's art, exactly as approved. A stage that dies
@@ -1239,7 +1367,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
       }
       setAutoBusy(false);
     }
-  }, [contour, cityPreset, imageBase64, imageSourceName, interpretedSubject, routeFromPick, armHintClear, noteStage, recordSearchEnd, applyResult, applyArtistLoopResult, applyStudioResult, notifyEmail, watchRouteJob]);
+  }, [contour, cityPreset, imageBase64, imageSourceName, interpretedSubject, routeFromPick, armHintClear, noteStage, recordSearchEnd, applyResult, applyArtistLoopResult, applyStudioResult, applyPaintResult, notifyEmail, watchRouteJob]);
 
   const applyPick = useCallback((pick: Top5Pick, idx: number) => {
     setCenter([...pick.placement.center] as [number, number]);
@@ -1609,6 +1737,14 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
                           </span>
                         ) : (
                           <>
+                            {p.verificationLabel ? (
+                              <span
+                                className="w-fit rounded-full bg-amber-50 px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] text-amber-700"
+                                title="A first draft: painted on real streets, not yet recognized by strangers."
+                              >
+                                {p.verificationLabel}
+                              </span>
+                            ) : null}
                             <span
                               className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
                                 p.shapeMatchScore >= 78

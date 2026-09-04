@@ -113,7 +113,7 @@ export async function POST(req: Request) {
     cityId,
     cityLabel: typeof body.cityLabel === "string" ? body.cityLabel.slice(0, 60) : "Manhattan",
     status: "queued",
-    stage: "studio",
+    stage: "paint",
     round: 0,
     stageNote: "Queued…",
     input: {
@@ -158,6 +158,8 @@ export async function GET(req: Request) {
     round: job.round,
     stageNote: job.stageNote,
     result: job.status === "done" ? job.result : null,
+    // the first draft is available before the search finishes
+    draft: job.draft?.ok ? { chain: job.draft.chain, km: job.draft.km, layout: job.draft.layout } : null,
     error: job.error,
     // lets a fresh browser (email link on another device) reconstruct the
     // flow: contour → Step 2 → the pickup effect applies the result.

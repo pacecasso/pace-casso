@@ -4,6 +4,7 @@ import { interpretSketch } from "./sketchInterpretServer";
 import { runArtistLoop } from "./artistLoopServer";
 import type { ArtistLoopRouteResult } from "./artistLoopCore";
 import { loadJobRecord, saveJobRecord } from "./routeJobStore";
+import { runPaint, type PaintRouteResult } from "./strokePainterServer";
 import type { NormalizedPoint } from "./streetGraphTrace";
 
 /**
@@ -15,6 +16,7 @@ import type { NormalizedPoint } from "./streetGraphTrace";
  */
 
 export type RouteJobStage =
+  | "paint"
   | "studio"
   | "literal"
   | "redraw"
@@ -24,6 +26,7 @@ export type RouteJobStage =
 
 export type RouteJobResult =
   | { kind: "studio"; studio: StudioResult }
+  | { kind: "paint"; paint: PaintRouteResult }
   | { kind: "wow"; wow: WowPlaceResult; redrawn: boolean; composite: boolean }
   | { kind: "artist"; artist: ArtistLoopRouteResult }
   | { kind: "none"; message: string };
@@ -47,6 +50,12 @@ export type RouteJob = {
   };
   /** carried between rounds: best refusal message for the honest ending */
   lastMessage: string | null;
+  /**
+   * The instant first draft from the stroke painter (stage 0). Shown to the
+   * user as soon as it exists and kept as the ending when no later stage
+   * clears the judges' bar — the search never ends empty-handed.
+   */
+  draft?: PaintRouteResult | null;
   /** the current round's interpreted redraw, between its two stages */
   pendingRedraw: {
     contour: NormalizedPoint[];
@@ -111,6 +120,23 @@ export async function advanceJob(job: RouteJob): Promise<RouteJob> {
   job.leaseUntil = Date.now() + 330_000;
 
   try {
+    if (job.stage === "paint") {
+      job.stageNote = "Drawing a first draft on real streets…";
+      await saveJob(job);
+      try {
+        const paint = await runPaint(
+          { contour: job.input.contour, imageBase64: job.input.imageBase64 ?? undefined, cityId: job.cityId },
+          () => {},
+        );
+        if (paint.ok && paint.chain && paint.chain.length >= 8) job.draft = paint;
+      } catch {
+        /* no draft — the cascade still runs */
+      }
+      job.stage = "studio";
+      await saveJob(job);
+      return job;
+    }
+
     if (job.stage === "studio") {
       job.stageNote = "Tracing your shape directly on real streets…";
       await saveJob(job);
@@ -267,6 +293,9 @@ export async function advanceJob(job: RouteJob): Promise<RouteJob> {
 }
 
 async function finishJob(job: RouteJob, result: RouteJobResult): Promise<RouteJob> {
+  if (result.kind === "none" && job.draft?.ok && job.draft.chain) {
+    result = { kind: "paint", paint: job.draft };
+  }
   job.result = result;
   job.status = "done";
   job.stage = "finished";
