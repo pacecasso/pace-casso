@@ -185,6 +185,7 @@ export default function Step3StreetSnap({
         interpretationScore: interpretationPct,
         routeSource,
         verifiedRoute: route?.verified === true,
+        draftRoute: route?.draft === true,
       }),
     [cleanLineScore, interpretationPct, route, routeSource, streetForMatch.length],
   );

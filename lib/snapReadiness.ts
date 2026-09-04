@@ -12,6 +12,7 @@ type Options = {
   interpretationScore: number | null;
   routeSource: "image" | "freehand";
   verifiedRoute?: boolean;
+  draftRoute?: boolean;
 };
 
 export const MIN_CLEAN_ROUTE_SCORE = 35;
@@ -25,6 +26,7 @@ export function classifySnapReadiness({
   interpretationScore,
   routeSource,
   verifiedRoute = false,
+  draftRoute = false,
 }: Options): SnapReadinessVerdict {
   if (!hasRoute) {
     return {
@@ -34,6 +36,14 @@ export function classifySnapReadiness({
     };
   }
 
+  if (draftRoute && !verifiedRoute) {
+    return {
+      tone: "check",
+      title: "First draft — not yet recognized",
+      detail:
+        "Painted on real streets and runnable as-is, but no stranger named it at a glance. Tweak it in the editor, or go back and search again.",
+    };
+  }
   if (verifiedRoute) {
     return {
       tone: "ready",

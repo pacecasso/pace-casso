@@ -24,6 +24,7 @@ import type { CuratedRun } from "../lib/curatedManhattanRuns";
 import { useLeafletContainerId } from "../lib/useLeafletContainerId";
 import type { RouteLineString } from "../lib/routeTypes";
 import { renderRouteToDataUrl } from "../lib/renderRouteImage";
+import { routeQualityScore } from "../lib/routeQuality";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
 import MapChunkFallback from "./MapChunkFallback";
 import MapStepSplitLayout from "./MapStepSplitLayout";
@@ -765,13 +766,16 @@ const applyPaintResult = useCallback((result: PaintRoutePayload, stillSearching:
         distanceMeters,
         blockWaypoints: chain,
         preserveBlockWaypoints: true,
-        verified: true,
+        // never "verified": no stranger has named this route
+        verified: false,
+        draft: true,
       },
       previewDataUrl: renderRouteToDataUrl(chain, 640, { padding: 96 }) ?? "",
       distanceKm: result.km ?? distanceMeters / 1000,
-      qualityScore: 75,
-      shapeMatchScore: 75,
-      sourceMatchScore: 70,
+      // the only number we can honestly put on a draft is how clean the line is
+      qualityScore: Math.round(routeQualityScore(chain)),
+      shapeMatchScore: 0,
+      sourceMatchScore: 0,
       verifiedRoute: false,
       verificationLabel: "FIRST DRAFT",
       reason:
@@ -1668,6 +1672,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
                   const selected = selectedPickIdx === idx;
                   const isTopPick = picksVisionUsed && idx === 0;
                   const isVerifiedRoute = p.verifiedRoute === true;
+                  const isDraft = !isVerifiedRoute && p.verificationLabel === "FIRST DRAFT";
                   const isRunnableStarter =
                     !isVerifiedRoute &&
                     (p.qualityScore < 25 || p.sourceMatchScore < 45);
@@ -1710,7 +1715,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
                       </span>
                       {isTopPick && (
                         <span className="absolute right-1.5 top-1.5 rounded-full bg-pace-yellow px-2 py-0.5 font-bebas text-[10px] tracking-[0.1em] text-pace-ink shadow-sm">
-                          {isRunnableStarter ? "RUNNABLE STARTER" : "TOP PICK"}
+                          {isDraft ? "FIRST DRAFT" : isRunnableStarter ? "RUNNABLE STARTER" : "TOP PICK"}
                         </span>
                       )}
                       <div className="flex flex-col gap-1 px-2 py-2">
@@ -1737,14 +1742,15 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
                           </span>
                         ) : (
                           <>
-                            {p.verificationLabel ? (
+                            {isDraft ? (
                               <span
                                 className="w-fit rounded-full bg-amber-50 px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] text-amber-700"
                                 title="A first draft: painted on real streets, not yet recognized by strangers."
                               >
-                                {p.verificationLabel}
+                                NOT YET RECOGNIZED
                               </span>
                             ) : null}
+                            {!isDraft && (
                             <span
                               className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
                                 p.shapeMatchScore >= 78
@@ -1757,6 +1763,8 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
                             >
                               Shape {p.shapeMatchScore}%
                             </span>
+                            )}
+                            {!isDraft && (
                             <span
                               className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
                                 p.sourceMatchScore >= 72
@@ -1769,6 +1777,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
                             >
                               Looks like your art {p.sourceMatchScore}%
                             </span>
+                            )}
                             <span
                               className={`w-fit rounded-full px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] ${
                                 p.qualityScore >= 78
@@ -1813,8 +1822,10 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
             title={
               autoBusy
                 ? "Finding your route — this continues automatically when it's done."
-                : preferredSnappedRoute
+                : preferredSnappedRoute?.verified
                   ? "Continue with the verified route shown on the map."
+                  : preferredSnappedRoute
+                    ? "Continue with the first draft shown on the map."
                   : "Skip the search and fit your art to the streets exactly where you placed it."
             }
             onClick={() =>

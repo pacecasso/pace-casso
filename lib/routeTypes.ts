@@ -14,4 +14,10 @@ export type RouteLineString = {
    * screens later (caught by the Aug 30 user audit).
    */
   verified?: boolean;
+  /**
+   * The stroke painter's instant first draft: street-native and runnable,
+   * but no stranger has named it. Never "verified"; downstream banners say
+   * "first draft" instead.
+   */
+  draft?: boolean;
 };

@@ -73,4 +73,18 @@ assert.equal(
   "freehand sketches should not be blocked by image-art interpretation thresholds",
 );
 
+{
+  const draft = classifySnapReadiness({
+    hasRoute: true,
+    cleanLineScore: 13,
+    interpretationScore: 99,
+    routeSource: "image",
+    verifiedRoute: false,
+    draftRoute: true,
+  });
+  assert.equal(draft.tone, "check", "a first draft is never blocked and never ready");
+  assert.ok(/first draft/i.test(draft.title), "a first draft says so");
+  assert.ok(!/verified/i.test(draft.title), "a first draft is never called verified");
+}
+
 console.log("snapReadiness tests ok");
