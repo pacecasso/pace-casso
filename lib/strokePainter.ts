@@ -22,7 +22,7 @@
  *
  * Offline rig with rendering + blind judges: scripts/stroke-painter.ts.
  */
-import { traceContour, place, type LatLng, type NormalizedPoint } from "./streetGraphTrace";
+import { traceContour, trimNubs, place, type LatLng, type NormalizedPoint } from "./streetGraphTrace";
 import { centerlinePolylinesFromLineMask } from "./centerlineFromMask";
 import { rasterizeNormalizedPathToLineMask } from "./artPathMask";
 import * as d3 from "d3-contour";
@@ -93,6 +93,15 @@ export type PaintOptions = {
   picks?: number;
   timeBudgetMs?: number;
   onProgress?: (detail: string) => void;
+  /**
+   * "paint" (default): filled silhouette — outline + hatch rows, seated only
+   * on a uniform grid above 14th St, grid-aligned, lattice-quantized runs.
+   * "ink": line art the way the reference pieces are drawn — outline +
+   * interior lines, no hatch; seats anywhere on the graph (downtown fine
+   * grid included, parks allowed); grid rotation plus free angles;
+   * curvature-weighted seat score; organic tracing with nub trimming.
+   */
+  style?: "paint" | "ink";
 };
 
 // ---------------------------------------------------------------------------
@@ -513,6 +522,28 @@ function quantizeTarget(target: LatLng[], L: Lattice, closed: boolean): LatLng[]
 export let BLOCKIFY = false;
 export function setBlockify(on: boolean): void {
   BLOCKIFY = on;
+}
+
+/** Tracer parameters for the organic fallback (outline rings, thin centerlines, curvy links). */
+export type TraceLeg = { anchorM: number; lambda: number; corridorM: number; bendWeight: number };
+export type TraceProfile = {
+  outline: TraceLeg;
+  thin: TraceLeg;
+  curvy: TraceLeg;
+  /** splice out incidental out-and-back nubs on traced pieces */
+  trimNubs: boolean;
+  /** max walk used to bridge a gap the tracer left inside one stroke */
+  gapWalkM: number;
+};
+export const TRACE: TraceProfile = {
+  outline: { anchorM: 200, lambda: 30, corridorM: 65, bendWeight: 60 },
+  thin: { anchorM: 170, lambda: 26, corridorM: 65, bendWeight: 50 },
+  curvy: { anchorM: 150, lambda: 12, corridorM: 110, bendWeight: 16 },
+  trimNubs: false,
+  gapWalkM: 3000,
+};
+export function setTraceProfile(p: Partial<TraceProfile>): void {
+  Object.assign(TRACE, p);
 }
 function blockifyRing(target: LatLng[], L: Lattice): LatLng[] | null {
   const xs = L.xLines.slice().sort((a, b) => a - b);
@@ -1382,27 +1413,20 @@ export function routePlacement(
       if (ok && ids.length >= 2) piece = ids.map((i) => g.coord[i]!);
     }
     if (!piece && s.kind !== "hatch") {
-      const res = traceContour(
-        g,
-        target,
-        s.kind === "outline"
-          ? { anchorM: 200, lambda: 30, corridorM: 65, bendWeight: 60, closeLoop: true, preserveRetraces: false }
-          : curvy
-            ? { anchorM: 150, lambda: 12, corridorM: 110, bendWeight: 16, closeLoop: false, preserveRetraces: false }
-            : { anchorM: 170, lambda: 26, corridorM: 65, bendWeight: 50, closeLoop: false, preserveRetraces: false },
-      );
+      const leg = s.kind === "outline" ? TRACE.outline : curvy ? TRACE.curvy : TRACE.thin;
+      const res = traceContour(g, target, { ...leg, closeLoop: s.kind === "outline", preserveRetraces: false });
       if (res.chain.length >= 2 && res.coverage > 0.6) {
         const fixed: LatLng[] = [res.chain[0]!];
         for (let i = 1; i < res.chain.length; i++) {
           const prev = fixed[fixed.length - 1]!;
           const cur = res.chain[i]!;
           if (meters(prev, cur) > 120) {
-            const w = walk(g, nearestNode(g, prev).id, nearestNode(g, cur).id, 3000);
+            const w = walk(g, nearestNode(g, prev).id, nearestNode(g, cur).id, TRACE.gapWalkM);
             if (w) fixed.push(...w.map((k) => g.coord[k]!));
           }
           fixed.push(cur);
         }
-        piece = fixed;
+        piece = TRACE.trimNubs ? trimNubs(fixed) : fixed;
       }
     }
     if (!piece || piece.length < 2) {
@@ -1484,13 +1508,16 @@ export function paintOnStreets(g: PainterGraph, maskIn: Uint8Array, wIn: number,
   const budget = options.timeBudgetMs ?? 50_000;
   const timeLeft = () => budget - (Date.now() - started);
   const progress = options.onProgress ?? (() => {});
-  const rows = options.rows ?? 3;
+  const ink = options.style === "ink";
+  const rows = options.rows ?? (ink ? 0 : 3);
   const openM = options.openM ?? 60;
   const pitchM = options.pitchM ?? 160;
   const picks = options.picks ?? 3;
-  const [LAT0, LAT1] = options.latRange ?? [40.735, 40.8];
-  const [LNG0, LNG1] = options.lngRange ?? [-74.005, -73.945];
+  const [LAT0, LAT1] = options.latRange ?? (ink ? [40.70, 40.80] : [40.735, 40.8]);
+  const [LNG0, LNG1] = options.lngRange ?? (ink ? [-74.02, -73.93] : [-74.005, -73.945]);
   const latFloor = 40.737;
+  const prevTrim = TRACE.trimNubs;
+  if (ink) TRACE.trimNubs = true;
 
   type Cand = { center: LatLng; scale: number; rot: number; score: number; plan: Plan };
   const sweep = (layoutMode: "keep" | "stack" | "none"): Cand[] => {
@@ -1532,6 +1559,7 @@ export function paintOnStreets(g: PainterGraph, maskIn: Uint8Array, wIn: number,
       const plan = makePlan(mask, w, h, scale, { pitchM, rows, openM }, extraThin);
       if (!plan.strokes.length) continue;
       const samples: UnitPt[] = [];
+      const sampleW: number[] = [];
       const linkSamples: UnitPt[] = [];
       for (const s of plan.strokes) {
         for (let i = 1; i < s.pts.length; i++) {
@@ -1539,71 +1567,102 @@ export function paintOnStreets(g: PainterGraph, maskIn: Uint8Array, wIn: number,
           const b = s.pts[i]!;
           const len = Math.hypot(b[0] - a[0], b[1] - a[1]) * scale;
           const n = Math.max(1, Math.round(len / 60));
-          for (let k = 0; k <= n; k++) (s.link ? linkSamples : samples).push([a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n]);
+          // ink: the vertex weight grows with the turn at a — features must land on junctions
+          let wv = 1;
+          if (ink && i >= 2) {
+            const z = s.pts[i - 2]!;
+            const a1 = Math.atan2(a[1] - z[1], a[0] - z[0]);
+            const a2 = Math.atan2(b[1] - a[1], b[0] - a[0]);
+            let dd = Math.abs(a2 - a1);
+            if (dd > Math.PI) dd = 2 * Math.PI - dd;
+            wv = 1 + 2.5 * Math.min(1, dd / (Math.PI / 2));
+          }
+          for (let k = 0; k <= n; k++) {
+            const p: UnitPt = [a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n];
+            if (s.link) linkSamples.push(p);
+            else {
+              samples.push(p);
+              sampleW.push(k === 0 ? wv : 1);
+            }
+          }
         }
       }
       if (!samples.length) continue;
+      const wsum = sampleW.reduce((a, b) => a + b, 0);
       const ext: [number, number] = [
         Math.max(...samples.map((p) => Math.abs(p[0]))) * 0.85,
         Math.max(...samples.map((p) => Math.abs(p[1]))) * 0.85,
       ];
-      for (let lat = LAT0; lat <= LAT1; lat += 0.004) {
-        for (let lng = LNG0; lng <= LNG1; lng += 0.005) {
+      const stepLat = ink ? 0.0035 : 0.004;
+      const stepLng = ink ? 0.0045 : 0.005;
+      for (let lat = LAT0; lat <= LAT1; lat += stepLat) {
+        // the sweep may use at most half the budget; routing needs the rest
+        if (timeLeft() < budget * 0.5 && cands.length) break;
+        for (let lng = LNG0; lng <= LNG1; lng += stepLng) {
           const info = localGridInfo(g, [lat, lng]);
-          if (!info || info.uniform < 0.55) continue;
-          const rot = info.rot;
-          let mixed = false;
-          for (const fx of [-1, 0, 1]) {
-            for (const fy of [-1, 0, 1]) {
-              if (!fx && !fy) continue;
-              const pr = place([[fx * ext[0], fy * ext[1]]], [lat, lng], scale, rot)[0]!;
-              const q = localGridInfo(g, pr);
-              if (!q || q.uniform < 0.45) {
-                mixed = true;
+          if (!info) continue;
+          if (!ink && info.uniform < 0.55) continue;
+          const rots: number[] = [info.rot];
+          if (ink) for (const r of [0, 30, -30]) if (!rots.some((x) => Math.abs(x - r) < 8)) rots.push(r);
+          for (const rot of rots) {
+            if (!ink) {
+              let mixed = false;
+              for (const fx of [-1, 0, 1]) {
+                for (const fy of [-1, 0, 1]) {
+                  if (!fx && !fy) continue;
+                  const pr = place([[fx * ext[0], fy * ext[1]]], [lat, lng], scale, rot)[0]!;
+                  const q = localGridInfo(g, pr);
+                  if (!q || q.uniform < 0.45) {
+                    mixed = true;
+                    break;
+                  }
+                  const da = Math.min(Math.abs(q.axis - info.axis), 90 - Math.abs(q.axis - info.axis));
+                  if (da > 10) {
+                    mixed = true;
+                    break;
+                  }
+                }
+                if (mixed) break;
+              }
+              if (mixed) continue;
+            }
+            const placed = place(samples, [lat, lng], scale, rot);
+            if (!ink) {
+              let below = false;
+              for (const p of placed) {
+                const floor = p[1] > -73.96 ? 0 : p[1] > -73.992 ? 40.7225 : latFloor;
+                if (p[0] < floor) {
+                  below = true;
+                  break;
+                }
+              }
+              if (below) continue;
+            }
+            let sum = 0;
+            let miss = 0;
+            let park = false;
+            const missCap = Math.max(3, Math.floor(placed.length * 0.03));
+            for (let i = 0; i < placed.length; i++) {
+              const p = placed[i]!;
+              if (!ink && inPoly(p, PARK)) {
+                park = true;
                 break;
               }
-              const da = Math.min(Math.abs(q.axis - info.axis), 90 - Math.abs(q.axis - info.axis));
-              if (da > 10) {
-                mixed = true;
-                break;
+              const { d } = nearestNode(g, p);
+              if (d > 130) {
+                miss++;
+                if (miss > missCap) break;
               }
+              sum += Math.min(d, 130) * sampleW[i]!;
             }
-            if (mixed) break;
-          }
-          if (mixed) continue;
-          const placed = place(samples, [lat, lng], scale, rot);
-          let below = false;
-          for (const p of placed) {
-            const floor = p[1] > -73.96 ? 0 : p[1] > -73.992 ? 40.7225 : latFloor;
-            if (p[0] < floor) {
-              below = true;
-              break;
+            if (park || miss > missCap) continue;
+            if (linkSamples.length) {
+              let lmiss = 0;
+              for (const p of place(linkSamples, [lat, lng], scale, rot)) if (nearestNode(g, p).d > 130) lmiss++;
+              if (lmiss > Math.max(2, linkSamples.length * 0.05)) continue;
             }
+            cands.push({ center: [lat, lng], scale, rot, score: sum / wsum, plan });
           }
-          if (below) continue;
-          let sum = 0;
-          let miss = 0;
-          let park = false;
-          const missCap = Math.max(3, Math.floor(placed.length * 0.03));
-          for (const p of placed) {
-            if (inPoly(p, PARK)) {
-              park = true;
-              break;
-            }
-            const { d } = nearestNode(g, p);
-            if (d > 130) {
-              miss++;
-              if (miss > missCap) break;
-            }
-            sum += Math.min(d, 130);
-          }
-          if (park || miss > missCap) continue;
-          if (linkSamples.length) {
-            let lmiss = 0;
-            for (const p of place(linkSamples, [lat, lng], scale, rot)) if (nearestNode(g, p).d > 130) lmiss++;
-            if (lmiss > Math.max(2, linkSamples.length * 0.05)) continue;
-          }
-          cands.push({ center: [lat, lng], scale, rot, score: sum / placed.length, plan });
         }
       }
     }
@@ -1624,14 +1683,14 @@ export function paintOnStreets(g: PainterGraph, maskIn: Uint8Array, wIn: number,
   const shortlist: Cand[] = [];
   for (const c of cands) {
     if (shortlist.length >= 24) break;
-    if (shortlist.some((p) => meters(p.center, c.center) < 500 && p.scale === c.scale)) continue;
+    if (shortlist.some((p) => meters(p.center, c.center) < 500 && p.scale === c.scale && Math.abs(p.rot - c.rot) < 10)) continue;
     shortlist.push(c);
   }
   progress(`Drawing ${shortlist.length} candidate seats on real streets…`);
   const routed: { c: Cand; r: Routed }[] = [];
   for (const c of shortlist) {
     if (timeLeft() < 4000 && routed.length) break;
-    const r = routePlacement(g, orderStrokes(c.plan.strokes), c.center, c.scale, c.rot);
+    const r = routePlacement(g, orderStrokes(c.plan.strokes), c.center, c.scale, c.rot, !ink);
     if (r) routed.push({ c, r });
   }
   routed.sort((a, b) => a.r.fidelity - b.r.fidelity);
@@ -1648,7 +1707,7 @@ export function paintOnStreets(g: PainterGraph, maskIn: Uint8Array, wIn: number,
         for (const dg of [-0.0008, 0, 0.0008]) {
           if ((!dl && !dg) || timeLeft() < 4000) continue;
           const c2: LatLng = [x.c.center[0] + dl, x.c.center[1] + dg];
-          const r2 = routePlacement(g, ordered, c2, x.c.scale, x.c.rot);
+          const r2 = routePlacement(g, ordered, c2, x.c.scale, x.c.rot, !ink);
           if (r2 && r2.fidelity < best.fidelity) {
             best = r2;
             center = c2;
@@ -1658,5 +1717,6 @@ export function paintOnStreets(g: PainterGraph, maskIn: Uint8Array, wIn: number,
     }
     out.push({ ...best, center, scaleM: x.c.scale, rotDeg: x.c.rot, layout });
   }
+  TRACE.trimNubs = prevTrim;
   return { candidates: out, layout, legalSeats: cands.length, routedSeats: routed.length };
 }

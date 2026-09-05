@@ -3,12 +3,14 @@ import { getStreetGraph, type NormalizedPoint } from "./streetGraphTrace";
 import { filledMaskFromContour, paintOnStreets, type PainterGraph, type PaintCandidate } from "./strokePainter";
 
 /**
- * The instant first draft: paint the upload as a filled silhouette on the
- * cached Manhattan walk graph — outline, sparse hatching, centerlines —
- * seated where the street grid is uniform. No Mapbox, no language model;
- * a request finishes in well under a minute. The mask comes from the
- * uploaded image when we have it (alpha or dark ink), else from the
- * approved Step 1 line art with its enclosed regions filled.
+ * The instant first draft: draw the upload as LINE ART on the cached
+ * Manhattan walk graph — outline plus interior lines, the way the reference
+ * GPS-art pieces are drawn — seated anywhere on the island (the downtown
+ * fine grid included), grid-aligned or freely rotated, traced organically.
+ * No Mapbox, no language model; a request finishes in well under a minute.
+ * The mask comes from the uploaded image when we have it (alpha or dark
+ * ink), else from the approved Step 1 line art with its enclosed regions
+ * filled. (`style: "paint"` is the older hatch-filled Midtown draft.)
  */
 
 const MAX_POINTS = 600;
@@ -120,6 +122,7 @@ export async function runPaint(
   onProgress("Loading the street grid…");
   const g = (await getStreetGraph()) as unknown as PainterGraph;
   const res = paintOnStreets(g, masked.mask, masked.w, masked.h, {
+    style: "ink",
     timeBudgetMs: PAINT_TIME_BUDGET_MS,
     picks: 3,
     onProgress,

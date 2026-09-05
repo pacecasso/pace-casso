@@ -118,7 +118,25 @@ function rect(mask: Uint8Array, w: number, x0: number, y0: number, x1: number, y
   assert.ok(best!.maxGap < 400, `no teleports (max gap ${best!.maxGap.toFixed(0)} m)`);
   assert.ok(best!.km > 8 && best!.km < 60, `plausible distance, got ${best!.km.toFixed(1)} km`);
   assert.ok(best!.devM < 60, `stays close to the intended strokes (dev ${best!.devM.toFixed(0)} m)`);
-  console.log(`strokePainter tests passed (heart routed in ${Date.now() - t0} ms, ${best!.km.toFixed(1)} km)`);
+
+  // --- style "ink": line art seated downtown (below the paint style's 14th St floor), no hatch rows
+  const t1 = Date.now();
+  const inkRes = paintOnStreets(g, mask, w, h, {
+    style: "ink",
+    scales: [1000],
+    latRange: [40.72, 40.73],
+    lngRange: [-74.0, -73.99],
+    picks: 1,
+    timeBudgetMs: 40_000,
+  });
+  assert.ok(inkRes.legalSeats > 0, "ink style finds downtown seats");
+  const inkBest = inkRes.candidates[0];
+  assert.ok(inkBest, "an ink candidate");
+  assert.strictEqual(inkBest!.strokes, 1, `ink style draws the heart as one outline stroke, got ${inkBest!.strokes}`);
+  assert.ok(inkBest!.center[0] < 40.735, "ink seat is downtown");
+  assert.ok(inkBest!.dropped === 0 && inkBest!.maxGap < 400, "ink route is continuous");
+  assert.ok(inkBest!.km > 5 && inkBest!.km < 30, `plausible ink distance, got ${inkBest!.km.toFixed(1)} km`);
+  console.log(`strokePainter tests passed (heart routed in ${Date.now() - t0} ms, ${best!.km.toFixed(1)} km; ink ${Date.now() - t1} ms, ${inkBest!.km.toFixed(1)} km)`);
 })().catch((err) => {
   console.error(err);
   process.exit(1);
