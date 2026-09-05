@@ -14,6 +14,7 @@ const SOURCES = [
   "lib/data/manhattan-walk-graph.json",
   "tmp-wow/brooklyn-walk-graph.json",
   "tmp-wow/queens-walk-graph.json",
+  "tmp-wow/queens-west-walk-graph.json",
 ];
 
 const index = new Map(); // "lat:lng" -> merged index

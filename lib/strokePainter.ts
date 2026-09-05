@@ -28,6 +28,11 @@ import { rasterizeNormalizedPathToLineMask } from "./artPathMask";
 import * as d3 from "d3-contour";
 
 export type UnitPt = [number, number];
+/** thin strokes closer than this to a mass ring are dropped (they would draw on the same streets) */
+export let HUG_TOL_M = 165;
+export function setHugTolerance(m: number): void {
+  HUG_TOL_M = m;
+}
 export type PainterGraph = {
   coord: LatLng[];
   adj: { to: number; w: number }[][];
@@ -109,7 +114,7 @@ function distToSeg(p: LatLng, a: LatLng, b: LatLng): number {
   const t = Math.max(0, Math.min(1, (px * bx + py * by) / (bx * bx + by * by || 1)));
   return Math.hypot(px - t * bx, py - t * by);
 }
-function nearestNode(g: PainterGraph, p: LatLng): { id: number; d: number } {
+export function nearestNode(g: PainterGraph, p: LatLng): { id: number; d: number } {
   let best = -1;
   let bd = Infinity;
   const clat = Math.round(p[0] / CELL);
@@ -194,7 +199,7 @@ class Heap {
 const edgeKey = (u: number, v: number) => (u < v ? u * NODE_STRIDE + v : v * NODE_STRIDE + u);
 
 /** Shortest walk between two nodes; already-painted streets are nearly free (connectors hide on the ink). */
-function walk(g: PainterGraph, a: number, b: number, maxM: number, painted?: Set<number>): number[] | null {
+export function walk(g: PainterGraph, a: number, b: number, maxM: number, painted?: Set<number>): number[] | null {
   if (a < 0 || b < 0) return null;
   if (a === b) return [a];
   const dist = new Map<number, number>([[a, 0]]);
@@ -498,6 +503,93 @@ function quantizeTarget(target: LatLng[], L: Lattice, closed: boolean): LatLng[]
   return keep.map((v) => fromLocal(v, L.center, L.rot));
 }
 
+/**
+ * Pixel art on the block grid: fill every block whose centre lies inside the
+ * placed ring, then trace the boundary of the filled blocks. Every edge is a
+ * whole street run with corners at intersections — the way the reference
+ * lion/elephant pieces are drawn. Returns null when the ring is smaller than
+ * a couple of blocks.
+ */
+export let BLOCKIFY = false;
+export function setBlockify(on: boolean): void {
+  BLOCKIFY = on;
+}
+function blockifyRing(target: LatLng[], L: Lattice): LatLng[] | null {
+  const xs = L.xLines.slice().sort((a, b) => a - b);
+  const ys = L.yLines.slice().sort((a, b) => a - b);
+  if (xs.length < 3 || ys.length < 3) return null;
+  const poly = target.map((p) => toLocal(p, L.center, L.rot));
+  const inside = (x: number, y: number): boolean => {
+    let c = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i]![0], yi = poly[i]![1], xj = poly[j]![0], yj = poly[j]![1];
+      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  };
+  const nx = xs.length - 1, ny = ys.length - 1;
+  const cell = new Uint8Array(nx * ny);
+  let filled = 0;
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < ny; j++) {
+      const x0 = xs[i]!, x1 = xs[i + 1]!, y0 = ys[j]!, y1 = ys[j + 1]!;
+      if (x1 - x0 > 600 || y1 - y0 > 600) continue; // not a block, a gap in the measured lines
+      let n = 0;
+      for (const [fx, fy] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]] as [number, number][]) {
+        if (inside(x0 + fx * (x1 - x0), y0 + fy * (y1 - y0))) n++;
+      }
+      if (n >= 3) {
+        cell[i * ny + j] = 1;
+        filled++;
+      }
+    }
+  }
+  if (filled < 2) return null;
+  // directed boundary edges, interior on the left (counter-clockwise loops)
+  const at = (i: number, j: number) => (i >= 0 && j >= 0 && i < nx && j < ny ? cell[i * ny + j]! : 0);
+  const key = (i: number, j: number) => i * 4096 + j;
+  const next = new Map<number, [number, number]>(); // from corner -> to corner
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < ny; j++) {
+      if (!at(i, j)) continue;
+      if (!at(i, j - 1)) next.set(key(i, j), [i + 1, j]); // bottom edge, going east
+      if (!at(i + 1, j)) next.set(key(i + 1, j), [i + 1, j + 1]); // right edge, going north
+      if (!at(i, j + 1)) next.set(key(i + 1, j + 1), [i, j + 1]); // top edge, going west
+      if (!at(i - 1, j)) next.set(key(i, j + 1), [i, j]); // left edge, going south
+    }
+  }
+  // follow the longest loop
+  const seen = new Set<number>();
+  let best: [number, number][] = [];
+  for (const [startKey] of next) {
+    if (seen.has(startKey)) continue;
+    const loop: [number, number][] = [];
+    let k = startKey;
+    let guard = 0;
+    while (!seen.has(k) && guard++ < 100000) {
+      seen.add(k);
+      const to = next.get(k);
+      if (!to) break;
+      loop.push(to);
+      k = key(to[0], to[1]);
+    }
+    if (loop.length > best.length) best = loop;
+  }
+  if (best.length < 4) return null;
+  // drop collinear corners, close, convert
+  const pts: [number, number][] = best.map(([i, j]) => [xs[i]!, ys[j]!]);
+  const keep: [number, number][] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[(i + pts.length - 1) % pts.length]!, b = pts[i]!, c = pts[(i + 1) % pts.length]!;
+    const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+    if (Math.abs(cross) < 1) continue;
+    keep.push(b);
+  }
+  if (keep.length < 4) return null;
+  keep.push(keep[0]!);
+  return keep.map((v) => fromLocal(v, L.center, L.rot));
+}
+
 // ---------------------------------------------------------------------------
 // mask operations
 // ---------------------------------------------------------------------------
@@ -753,7 +845,7 @@ export function makePlan(
   const ringPts: UnitPt[] = strokes.filter((s) => s.kind === "outline").flatMap((s) => s.pts);
   const hugsRing = (pts: UnitPt[]) => {
     if (!ringPts.length) return false;
-    const tol = 165 / scaleM;
+    const tol = HUG_TOL_M / scaleM;
     let near = 0;
     for (const p of pts) {
       let m = Infinity;
@@ -979,6 +1071,91 @@ export function relayout(
   return { mask: mask2, w: w2, h: h2, links, bodies: bodies.length, smallestBodyWidthPx };
 }
 
+/**
+ * Split a logo into its bodies and the thin links joining them, keeping
+ * everything in the original pixel frame. A composition search can then
+ * seat each body on its own street grid (the reference lion sits half on
+ * Manhattan's grid and half on Long Island City's) and route each link
+ * between the seated attachment points.
+ */
+export type BodySplit = {
+  bodies: { mask: Uint8Array; w: number; h: number; x0: number; y0: number; x1: number; y1: number; px: number }[];
+  links: { a: number; b: number; A: [number, number]; B: [number, number]; polyline: [number, number][] }[];
+};
+export function splitBodies(mask: Uint8Array, w: number, h: number): BodySplit | null {
+  let ink = 0;
+  for (let i = 0; i < w * h; i++) if (mask[i] === 255) ink++;
+  const r = Math.max(3, Math.round(Math.sqrt(ink) / 20));
+  const core = dilate(erode(mask, w, h, r), w, h, r, mask);
+  const bodiesRaw = components(core, w, h).filter((c) => c.length >= ink * 0.04);
+  if (bodiesRaw.length < 2) return null;
+  const label = new Int32Array(w * h).fill(-1);
+  const queue: number[] = [];
+  bodiesRaw.forEach((c, bi) => {
+    for (const p of c) {
+      label[p] = bi;
+      queue.push(p);
+    }
+  });
+  for (let qi = 0; qi < queue.length; qi++) {
+    const p = queue[qi]!;
+    for (const q of neighbors4(p, w, h)) {
+      if (mask[q] === 255 && label[q]! < 0) {
+        label[q] = label[p]!;
+        queue.push(q);
+      }
+    }
+  }
+  const residue = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) if (mask[i] === 255 && core[i] !== 255) residue[i] = 255;
+  const linkPx = new Uint8Array(w * h);
+  const links: BodySplit["links"] = [];
+  for (const c of components(residue, w, h)) {
+    const contact = new Map<number, { x: number; y: number; n: number }>();
+    for (const p of c) {
+      const x = p % w;
+      const yy = (p / w) | 0;
+      for (const q of neighbors4(p, w, h)) {
+        if (core[q] !== 255) continue;
+        const bi = label[q]!;
+        const e = contact.get(bi) ?? { x: 0, y: 0, n: 0 };
+        e.x += x;
+        e.y += yy;
+        e.n++;
+        contact.set(bi, e);
+      }
+    }
+    const tb = [...contact.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 2);
+    if (tb.length < 2 || c.length <= 30) continue;
+    for (const p of c) linkPx[p] = 255;
+    const lm = new Uint8Array(w * h);
+    for (const p of c) lm[p] = 255;
+    const polys = centerlinePolylinesFromLineMask(lm, w, h).sort((a, b) => b.length - a.length);
+    const pl = polys[0] ?? [];
+    links.push({
+      a: tb[0]![0],
+      b: tb[1]![0],
+      A: [tb[0]![1].x / tb[0]![1].n, tb[0]![1].y / tb[0]![1].n],
+      B: [tb[1]![1].x / tb[1]![1].n, tb[1]![1].y / tb[1]![1].n],
+      polyline: pl,
+    });
+  }
+  const bodies: BodySplit["bodies"] = bodiesRaw.map(() => ({ mask: new Uint8Array(w * h), w, h, x0: w, y0: h, x1: 0, y1: 0, px: 0 }));
+  for (let i = 0; i < w * h; i++) {
+    if (mask[i] !== 255 || linkPx[i] === 255 || label[i]! < 0) continue;
+    const b = bodies[label[i]!]!;
+    b.mask[i] = 255;
+    b.px++;
+    const x = i % w;
+    const y = (i / w) | 0;
+    if (x < b.x0) b.x0 = x;
+    if (x > b.x1) b.x1 = x;
+    if (y < b.y0) b.y0 = y;
+    if (y > b.y1) b.y1 = y;
+  }
+  return { bodies, links };
+}
+
 // ---------------------------------------------------------------------------
 // stroke order: bodies are units drawn in a fixed internal order; thin
 // strokes may be reversed; the unit tour minimizes connector length
@@ -1149,7 +1326,15 @@ export function routePlacement(
   for (const s of strokes) {
     let target = place(s.pts, center, scaleM, rot);
     const curvy = isCurvy(s);
-    if (L && s.kind !== "hatch" && !curvy) {
+    let blockified = false;
+    if (L && BLOCKIFY && s.kind === "outline" && s.closed) {
+      const blocky = blockifyRing(target, L);
+      if (blocky) {
+        target = blocky;
+        blockified = true;
+      }
+    }
+    if (L && s.kind !== "hatch" && !curvy && !blockified) {
       const dense: LatLng[] = [target[0]!];
       for (let i = 1; i < target.length; i++) {
         const a = target[i - 1]!;
