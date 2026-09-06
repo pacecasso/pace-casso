@@ -190,12 +190,13 @@ export default function Step3StreetSnap({
     [cleanLineScore, interpretationPct, route, routeSource, streetForMatch.length],
   );
 
-  const canTuneRoute =
-    !!route &&
-    !snapping &&
-    (routeSource === "image"
-      ? snapVerdict.tone === "ready" || route.preserveBlockWaypoints === true
-      : snapVerdict.tone !== "blocked");
+  // The verdict banner is advice, not a wall. Once Mapbox has snapped a
+  // walkable route the runner can always open it in the editor; the banner
+  // stays up to say why it may not read. Image uploads used to need a
+  // "ready" verdict here, which left every imperfect logo on this step
+  // with a disabled Tune button under a message saying "tune the route"
+  // (Sep 6 phone test). Only "no route yet" blocks.
+  const canTuneRoute = !!route && !snapping && streetForMatch.length >= 2;
 
   const matchMeterLabel =
     routeSource === "freehand"

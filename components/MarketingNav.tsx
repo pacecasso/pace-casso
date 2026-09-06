@@ -10,42 +10,46 @@ export default function MarketingNav() {
       <div className="pace-app-nav flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
         <Link
           href="/landing.html"
+
+          prefetch={false}
           className="inline-block shrink-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2"
           aria-label="PaceCasso home"
         >
           <BrandLogo />
         </Link>
         <nav
-          className="order-3 flex w-full flex-wrap items-center justify-center gap-x-[clamp(1rem,3vw,2rem)] gap-y-2 border-t border-pace-line pt-3 lg:order-1 lg:flex-1 lg:w-auto lg:border-t-0 lg:pt-0"
+          className="order-3 flex w-full flex-wrap items-center justify-center gap-x-[clamp(0.6rem,2.2vw,2rem)] gap-y-2 border-t border-pace-line pt-3 lg:order-1 lg:flex-1 lg:w-auto lg:border-t-0 lg:pt-0"
           aria-label="Main"
         >
           <Link
             href="/landing.html"
-            className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
+
+            prefetch={false}
+            className="pace-nav-link font-bebas text-[0.92rem] tracking-[0.08em] text-pace-ink transition hover:text-pace-yellow sm:text-[1.05rem] sm:tracking-[0.12em]"
           >
             Home
           </Link>
           <Link
             href="/gallery"
-            className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
+            className="pace-nav-link font-bebas text-[0.92rem] tracking-[0.08em] text-pace-ink transition hover:text-pace-yellow sm:text-[1.05rem] sm:tracking-[0.12em]"
           >
             Gallery
           </Link>
           <Link
             href="/how"
-            className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
+            className="pace-nav-link font-bebas text-[0.92rem] tracking-[0.08em] text-pace-ink transition hover:text-pace-yellow sm:text-[1.05rem] sm:tracking-[0.12em]"
           >
             How It Works
           </Link>
           <Link
             href="/community"
-            className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
+            className="pace-nav-link font-bebas text-[0.92rem] tracking-[0.08em] text-pace-ink transition hover:text-pace-yellow sm:text-[1.05rem] sm:tracking-[0.12em]"
           >
             Community
           </Link>
           <Link
             href="/help"
-            className="pace-nav-link font-bebas text-[1.05rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
+            className="pace-nav-link font-bebas text-[0.92rem] tracking-[0.08em] text-pace-ink transition hover:text-pace-yellow sm:text-[1.05rem] sm:tracking-[0.12em]"
           >
             Help
           </Link>

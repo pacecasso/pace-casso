@@ -34,6 +34,8 @@ export default function Error({
         </button>
         <Link
           href="/landing.html"
+
+          prefetch={false}
           className="rounded-lg bg-pace-yellow px-5 py-2.5 text-sm font-semibold text-pace-ink transition hover:opacity-90"
         >
           Home

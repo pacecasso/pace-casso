@@ -41,6 +41,8 @@ export default function CreateError({
         </Link>
         <Link
           href="/landing.html"
+
+          prefetch={false}
           className="text-sm font-medium text-pace-blue underline-offset-2 hover:underline"
         >
           Home

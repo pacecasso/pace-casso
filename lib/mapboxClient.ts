@@ -143,7 +143,7 @@ export async function fetchMapboxReverseGeocodeJson(input: {
   const url = new URL(
     `https://api.mapbox.com/geocoding/v5/mapbox.places/${input.lng},${input.lat}.json`,
   );
-  url.searchParams.set("types", "address,street");
+  url.searchParams.set("types", "address");
   url.searchParams.set("language", "en");
   const lim =
     input.limit != null &&

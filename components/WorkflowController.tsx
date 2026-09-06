@@ -492,6 +492,8 @@ export default function WorkflowController() {
         <div className="pace-app-nav--create flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
           <Link
             href="/landing.html"
+
+            prefetch={false}
             className="inline-block shrink-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-pace-yellow focus-visible:ring-offset-2"
             aria-label="PaceCasso home"
           >
@@ -511,6 +513,8 @@ export default function WorkflowController() {
           >
             <Link
               href="/landing.html"
+
+              prefetch={false}
               className="pace-nav-link font-bebas text-[0.95rem] tracking-[0.12em] text-pace-ink transition hover:text-pace-yellow"
             >
               Home
@@ -864,6 +868,8 @@ export default function WorkflowController() {
         <footer className="mt-auto border-t border-pace-line bg-pace-warm px-[clamp(1.25rem,4vw,2.5rem)] py-8 pb-[max(2rem,env(safe-area-inset-bottom))] text-center text-xs text-pace-muted font-dm">
         <Link
           href="/landing.html"
+
+          prefetch={false}
           className="font-bebas tracking-[0.18em] text-pace-yellow transition hover:text-pace-ink"
         >
           PaceCasso

@@ -51,7 +51,7 @@ export async function POST(req: Request) {
   const url = new URL(
     `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json`,
   );
-  url.searchParams.set("types", "address,street");
+  url.searchParams.set("types", "address");
   url.searchParams.set("language", "en");
   url.searchParams.set("limit", String(limit));
   url.searchParams.set("access_token", token);
