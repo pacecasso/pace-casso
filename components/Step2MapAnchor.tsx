@@ -794,8 +794,8 @@ const applyPaintResult = useCallback((result: PaintRoutePayload, stillSearching:
     setFitNonce((n) => n + 1);
     setAutoHint(
       stillSearching
-        ? "First draft ready. Tap it to inspect. We are still looking for a version strangers recognize at a glance; it will replace this one if found."
-        : "First draft ready. Tap it to inspect, then continue to tweak it on the map.",
+        ? "First draft ready — you can continue with it now. We keep looking for a version strangers recognize at a glance; it will replace this one if found."
+        : "First draft ready. Tap “Continue with this draft” to tweak it on the map.",
     );
     window.setTimeout(() => {
       document
@@ -1187,7 +1187,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
         // A draft in hand beats a long cascade that usually ends in a
         // refusal: keep it and let the runner tweak it in the next step.
         setAutoHint(
-          "This is our first draft. Nobody we showed it to named it cold, so tweak it on the map in the next step, or run the search again.",
+          "This is our first draft — not yet recognized by strangers. Tap “Continue with this draft” to tweak it on the map, or run the search again.",
         );
         recordSearchEnd("done");
         return;
@@ -1818,10 +1818,16 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
           </button>
           <button
             type="button"
-            disabled={!anchorLatLngs.length || autoBusy}
+            // A draft on the map is always continuable, even while the
+            // longer search is still running: on a phone a disabled
+            // Continue under a "not yet recognized" draft read as a dead
+            // end (Sep 6). Only a search with nothing to show yet blocks.
+            disabled={!anchorLatLngs.length || (autoBusy && !preferredSnappedRoute)}
             title={
-              autoBusy
+              autoBusy && !preferredSnappedRoute
                 ? "Finding your route — this continues automatically when it's done."
+                : autoBusy
+                  ? "Continue with the first draft now; the search keeps looking in the background."
                 : preferredSnappedRoute?.verified
                   ? "Continue with the verified route shown on the map."
                   : preferredSnappedRoute
@@ -1848,7 +1854,11 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
             }
             className="pace-toolbar-btn-primary flex-1 font-bebas tracking-[0.08em] disabled:opacity-40"
           >
-            {preferredSnappedRoute ? "Continue with this route →" : "Place it myself →"}
+            {preferredSnappedRoute
+              ? preferredSnappedRoute.verified
+                ? "Continue with this route →"
+                : "Continue with this draft →"
+              : "Place it myself →"}
           </button>
         </div>
       }

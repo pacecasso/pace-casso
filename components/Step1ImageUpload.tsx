@@ -1099,6 +1099,11 @@ export default function Step1ImageUpload({
     lineArtDirtyRef.current = false;
     replaceLineUndoWithCurrent();
     bumpLineMaskVersion();
+    // Build the route line right away. Waiting for a "Done" tap left the
+    // Next button disabled with no visible reason on phones, where Done
+    // sits in the toolbar above the fold (Sep 6 mobile dead end). Done
+    // stays as an explicit re-trace after touching up.
+    if (nComp > 0) setContourBuilt(true);
     requestAnimationFrame(() => drawLineMaskToCanvas());
   }, [
     threshold,
@@ -1559,7 +1564,7 @@ export default function Step1ImageUpload({
                   <span className="text-[11px] leading-snug text-pace-muted">
                     {contourBuilt
                       ? "Adjust until the outline looks right."
-                      : "Tap Done first, then adjust."}
+                      : "Raise the Detail slider until a shape appears, then adjust."}
                   </span>
                 </label>
               </div>
