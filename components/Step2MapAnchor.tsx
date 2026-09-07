@@ -958,7 +958,6 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
     [applyStudioResult, applyPaintResult, applyResult, applyArtistLoopResult, recordSearchEnd],
   );
 
-  const draftShownRef = useRef<string | null>(null);
   const watchRouteJob = useCallback(
     (jobId: string, email: string | null) => {
       stopJobWatch();
@@ -991,20 +990,17 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
           );
           return;
         }
-        if (payload.draft?.ok && payload.draft.chain && draftShownRef.current !== jobId) {
-          // the first draft lands long before the judged search ends
-          draftShownRef.current = jobId;
-          applyPaintResult(payload.draft, true);
-          return;
-        }
-        if (typeof payload.stageNote === "string" && payload.stageNote && draftShownRef.current !== jobId) {
+        // The server's first draft (payload.draft) is deliberately NOT
+        // shown while the search runs: it is the fallback ending the job
+        // runner applies itself when nothing clears the bar (finishJob).
+        if (typeof payload.stageNote === "string" && payload.stageNote) {
           setAutoHint(`${searchRunningLine(email)} Now: ${payload.stageNote}`);
         }
       };
       void poll();
       jobPollRef.current = window.setInterval(() => void poll(), 20_000);
     },
-    [applyJobResult, applyPaintResult, stopJobWatch],
+    [applyJobResult, stopJobWatch],
   );
 
   // Pick up a job from the email link (?job=) or a previous visit.
@@ -1150,19 +1146,30 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
       return true;
     };
 
-    try {
-      // Stage 0: the instant first draft — the stroke painter seats the
-      // upload as a filled silhouette on real streets in under a minute.
-      // It is shown immediately; the judged studio lane may replace it.
-      let drafted = false;
-      if (cityPreset.id === "manhattan") {
-        const paint = await fetchPaintRoute(
-          { contour, cityId: cityPreset.id, imageBase64: imageBase64 ?? undefined },
-          noteStage,
-        );
-        if (paint?.ok) drafted = applyPaintResult(paint, true);
-      }
+    /**
+     * Last resort, never the first thing shown (Ralph, Sep 7: the draft
+     * "just threw it up on the map immediately" and "didn't try any
+     * areas"). The stroke painter's draft is drawn only after every judged
+     * stage has failed, and it is labelled as unrecognized. Returns true
+     * when a draft was shown. Sep 4-6 ran this FIRST and ended the search
+     * on it, which skipped the placement search entirely.
+     */
+    const finishWithDraft = async (): Promise<boolean> => {
+      if (cityPreset.id !== "manhattan") return false;
+      noteStage("Nothing cleared the bar — drawing your shape on real streets as a first draft… (under a minute)");
+      const paint = await fetchPaintRoute(
+        { contour, cityId: cityPreset.id, imageBase64: imageBase64 ?? undefined },
+        noteStage,
+      );
+      if (!paint?.ok || !applyPaintResult(paint, false)) return false;
+      setAutoHint(
+        "Nothing we tried was recognized by strangers, so this is a first draft of your shape on real streets — not yet recognized. Tap “Continue with this draft” to tweak it on the map, or run the search again.",
+      );
+      recordSearchEnd("done");
+      return true;
+    };
 
+    try {
       // Stage 1: the studio lane — trace the approved shape directly on the
       // street graph at hero scale and blind-judge the rendered route. This
       // is the offline pipeline that produced the verified keeper batch;
@@ -1183,16 +1190,6 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
           return;
         }
       }
-      if (drafted) {
-        // A draft in hand beats a long cascade that usually ends in a
-        // refusal: keep it and let the runner tweak it in the next step.
-        setAutoHint(
-          "This is our first draft — not yet recognized by strangers. Tap “Continue with this draft” to tweak it on the map, or run the search again.",
-        );
-        recordSearchEnd("done");
-        return;
-      }
-
       // Stage 1: the user's art, exactly as approved. A stage that dies
       // (function limit, network) must fall through to the next stage -
       // Aug 30: a real upload ended the whole search at "24/100 areas".
@@ -1223,6 +1220,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
 
       // Stage 2: automatic street-ready redraw, then place that.
       if (!imageBase64) {
+        if (await finishWithDraft()) return;
         const noRouteMessage =
           literal.message ??
           "Nothing cleared the judge's bar. Bold, simple shapes work best — or drag the art where you want it and continue; we'll fit it to the streets.";
@@ -1339,6 +1337,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
           stageFailed("The route-native fallback", err);
         }
       }
+      if (await finishWithDraft()) return;
       const exhaustedMessage = `We tried ${roundsTried + 1} versions of your art${lastInterp?.subject ? ` (read as ${lastInterp.subject})` : ""}, and none came out recognizable enough to show you — we only surface routes a fresh pair of eyes can name. ${lastPlaced?.message ?? lastInterp?.message ?? ""} You can also place it yourself: drag the art where you want it and continue, and we'll fit it to the streets faithfully.`;
       setAutoHint(exhaustedMessage);
       recordSearchEnd("no-route", exhaustedMessage);
