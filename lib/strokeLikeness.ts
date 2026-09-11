@@ -24,7 +24,9 @@ export type LikenessOpts = {
   px?: number;
   /** unit-space half-extent covered by the grid (default 1.3 → 30 % margin) */
   marginU?: number;
-  /** distance at which credit reaches zero, metres (default 120) */
+  /** distance at which credit reaches zero, as a fraction of the drawing's half-span (default 0.09: ~117 m at scale 1300, ~200 m at 2200 — the eye judges the whole picture, so a bigger drawing earns the same credit for the same relative deviation) */
+  tolU?: number;
+  /** override: tolerance in metres (converted with the placement scale) */
   tolM?: number;
   /** precision credit for route inside a filled mass but off its boundary (default 0.5; 1 = neutral, for hatch styles) */
   interiorCredit?: number;
@@ -184,9 +186,14 @@ export function rasterizeChain(chain: LatLng[], pl: Placement, t: Target): Uint8
 }
 
 /** Score a routed chain against a prebuilt target. */
+export function tolCellsFor(t: Target, pl: Placement, opts: LikenessOpts): number {
+  const tolU = opts.tolM !== undefined ? opts.tolM / pl.scale : (opts.tolU ?? 0.09);
+  return (tolU * (t.n - 1)) / (2 * t.marginU);
+}
+
 export function likenessAgainst(t: Target, chain: LatLng[], pl: Placement, opts: LikenessOpts = {}): Likeness {
   const mPerCell = (2 * t.marginU * pl.scale) / (t.n - 1);
-  const tolCells = (opts.tolM ?? 120) / mPerCell;
+  const tolCells = tolCellsFor(t, pl, opts);
   const credit = (d: number) => {
     const r = d / tolCells;
     return r >= 1 ? 0 : 1 - r * r;
@@ -221,8 +228,7 @@ export function strokeLikeness(mask: Uint8Array, w: number, h: number, chain: La
 
 /** Per-boundary-cell credit (0..1) for a routed chain — for a coverage picture of what the streets missed. */
 export function coverageMap(t: Target, chain: LatLng[], pl: Placement, opts: LikenessOpts = {}): Float32Array {
-  const mPerCell = (2 * t.marginU * pl.scale) / (t.n - 1);
-  const tolCells = (opts.tolM ?? 120) / mPerCell;
+  const tolCells = tolCellsFor(t, pl, opts);
   const route = rasterizeChain(chain, pl, t);
   const out = new Float32Array(t.n * t.n);
   let any = false;

@@ -6,14 +6,14 @@
  * uploaded drawing, distance transforms, ~5 ms) instead of by the vision
  * judge (several paid calls per move). ZERO model calls. Because scoring is
  * free the search can be much wider: a city-wide seat sweep over several
- * sizes and both grid orientations, then a long greedy climb on the best
+ * sizes and every near-upright grid orientation, then a long greedy climb on the best
  * seats. The output is a draft for a human to look at and edit
  * (scripts/finisher-edit.ts takes the summary.json).
  *
  * Usage:
  *   npx tsx scripts/finisher-geo.ts gas.png --mask=blue --name=gas-geo --sweep=1
  *       [--scales=1300,1700,2200] [--step=700] [--bbox=40.56,-74.05,40.81,-73.75]
- *       [--top=4] [--iters=500] [--minutes=120] [--maxkm=45] [--tol=120] [--seed=1]
+ *       [--top=4] [--iters=500] [--minutes=120] [--maxkm=45] [--tol=0.09] [--maxrot=40] [--seed=1]
  *   npx tsx scripts/finisher-geo.ts gas.png --mask=blue --name=gas-geo2 \
  *       --resume=tmp-finisher/gas-fin2/summary.json --iters=800 [--fixed=1]
  *   npx tsx scripts/finisher-geo.ts gas.png --mask=blue --center=40.73,-73.992 --scale=1300 --rot=-28
@@ -23,7 +23,7 @@ import path from "node:path";
 import { place, type LatLng } from "../lib/streetGraphTrace";
 import { localGridInfo, makePlan, nearestNode, orderStrokes, routePlacement, setHugTolerance, setTraceProfile, type PainterGraph, type Routed, type Stroke } from "../lib/strokePainter";
 import { buildTarget, coverageMap, likenessAgainst, type Likeness, type Target } from "../lib/strokeLikeness";
-import { loadMask, loadPackedGraph, makeRng, paleRender, propose, sharp, sideBySide, writeGpx, type State } from "./finisher-shared";
+import { loadMask, loadPackedGraph, makeRng, paleRender, propose, rdp, sharp, sideBySide, writeGpx, type State } from "./finisher-shared";
 
 const argv = process.argv.slice(2);
 const IMG = argv.find((a) => !a.startsWith("--"));
@@ -40,7 +40,8 @@ const HUG_M = Number(opt("hug", "90"));
 const ITERS = Number(opt("iters", "500"));
 const MINUTES = Number(opt("minutes", "120"));
 const MAX_KM = Number(opt("maxkm", "45"));
-const TOL_M = Number(opt("tol", "120"));
+const TOL_U = Number(opt("tol", "0.09")); // fraction of the drawing's half-span
+const MAX_ROT = Number(opt("maxrot", "40")); // degrees from north-up; a sideways logo is unreadable whatever the score says
 const SWEEP = opt("sweep", "0") === "1";
 const SCALES = opt("scales", "1300,1700,2200").split(",").map(Number);
 const STEP_M = Number(opt("step", "700"));
@@ -48,6 +49,7 @@ const BBOX = opt("bbox", "40.56,-74.05,40.81,-73.75").split(",").map(Number) as 
 const TOP = Number(opt("top", "4"));
 const RESUME = opt("resume", "");
 const FIXED = opt("fixed", "0") === "1";
+const SIMPLIFY = Number(opt("simplify", "0")); // pre-simplify strokes: RDP tolerance in short blocks (0 = off)
 const OUT = path.join(process.cwd(), "tmp-finisher", NAME);
 const rnd = makeRng(Number(opt("seed", "1")));
 
@@ -60,10 +62,21 @@ const t0 = Date.now();
 const minutes = () => (Date.now() - t0) / 60000;
 
 type Eval = { r: Routed; lk: Likeness };
+const normRot = (d: number) => ((((d + 180) % 360) + 360) % 360) - 180;
+/** grid-aligned orientations that keep the drawing near upright */
+function uprightRots(gridRot: number): number[] {
+  const out: number[] = [];
+  for (const k of [0, 90, -90, 180]) {
+    const a = normRot(gridRot + k);
+    if (Math.abs(a) <= MAX_ROT && !out.some((b) => Math.abs(b - a) < 1)) out.push(a);
+  }
+  return out;
+}
 function evaluate(g: PainterGraph, t: Target, st: State): Eval | null {
+  if (Math.abs(normRot(st.rot)) > MAX_ROT) return null;
   const r = routePlacement(g, orderStrokes(st.strokes), st.center, st.scale, st.rot, false);
   if (!r || r.dropped > 0 || r.maxGap > 400 || r.km > MAX_KM) return null;
-  return { r, lk: likenessAgainst(t, r.chain, { center: st.center, scale: st.scale, rot: st.rot }, { tolM: TOL_M }) };
+  return { r, lk: likenessAgainst(t, r.chain, { center: st.center, scale: st.scale, rot: st.rot }, { tolU: TOL_U }) };
 }
 const fmt = (e: Eval) => `geo ${e.lk.score.toFixed(1)} (r ${e.lk.recall.toFixed(2)} p ${e.lk.precision.toFixed(2)}) ${e.r.km.toFixed(1)} km`;
 
@@ -86,7 +99,7 @@ async function sweep(g: PainterGraph, t: Target, mask: Uint8Array, w: number, h:
       for (let lng = lng1; lng <= lng2; lng += dLng) {
         const c: LatLng = [lat, lng];
         const gi = localGridInfo(g, c);
-        const rots = gi ? [gi.rot, gi.rot + 90] : [0, 90];
+        const rots = uprightRots(gi ? gi.rot : 0);
         for (const rot of rots) {
           if (!onLand(g, c, scale, rot)) { skipped++; continue; }
           tried++;
@@ -148,7 +161,7 @@ async function climb(g: PainterGraph, t: Target, start: State, startEv: Eval, it
 }
 
 async function coveragePng(t: Target, chain: LatLng[], st: State, file: string): Promise<void> {
-  const cov = coverageMap(t, chain, { center: st.center, scale: st.scale, rot: st.rot }, { tolM: TOL_M });
+  const cov = coverageMap(t, chain, { center: st.center, scale: st.scale, rot: st.rot }, { tolU: TOL_U });
   const n = t.n, k = 4;
   const rects: string[] = [];
   for (let y = 0; y < n; y++)
@@ -179,7 +192,7 @@ async function main() {
   const { mask, w, h } = await loadMask(IMG!, MASK_MODE);
   const t = buildTarget(mask, w, h);
   const g = await loadPackedGraph(GRAPH);
-  say(`${NAME}: mask ${MASK_MODE}, ${t.targetCells} target cells, graph ${g.coord.length} nodes, tol ${TOL_M} m, model calls 0`);
+  say(`${NAME}: mask ${MASK_MODE}, ${t.targetCells} target cells, graph ${g.coord.length} nodes, tol ${TOL_U} of half-span, max rot ${MAX_ROT}°, model calls 0`);
 
   let seeds: { st: State; ev: Eval }[] = [];
   if (RESUME) {
@@ -205,6 +218,25 @@ async function main() {
     seeds = [{ st, ev }];
   }
   if (!seeds.length) throw new Error("no routable seed");
+  if (SIMPLIFY > 0) {
+    // deliberate lines: drop the mask's pixel wobble so every run is a real street run
+    for (const seed of seeds) {
+      const eps = (SIMPLIFY * 110) / seed.st.scale;
+      const before = seed.st.strokes.reduce((a, k) => a + k.pts.length, 0);
+      const strokes: Stroke[] = seed.st.strokes.map((k) => {
+        const pts = rdp(k.pts, eps);
+        if (k.closed && pts.length > 2) pts[pts.length - 1] = [pts[0]![0], pts[0]![1]];
+        return pts.length >= (k.closed ? 4 : 2) ? { ...k, pts } : k;
+      });
+      const st: State = { ...seed.st, strokes };
+      const ev = evaluate(g, t, st);
+      if (ev) {
+        say(`simplify ${SIMPLIFY} blocks: ${before} -> ${strokes.reduce((a, k) => a + k.pts.length, 0)} pts, ${fmt(seed.ev)} -> ${fmt(ev)}`);
+        seed.st = st;
+        seed.ev = ev;
+      } else say(`simplify ${SIMPLIFY} blocks: did not route, keeping the original strokes`);
+    }
+  }
 
   const per = Math.max(50, Math.floor(ITERS / seeds.length));
   let best: { st: State; ev: Eval; accepted: number } | null = null;
