@@ -15,11 +15,11 @@ async function main() {
   let t0 = Date.now();
   const g = await loadPackedGraph(`${ROOT}/tmp-painter/nyc-core-walk-graph.json`);
   console.log("graph load ms", Date.now() - t0);
-  const states = ["gas-fin", "gas-ralph", "gas-geo-fresh", "gas-geo-fresh-ralph"];
+  const states = ["gas-geo-fresh", "gas-geo-fresh-compose"];
   for (const name of states) {
-    const s = JSON.parse(await fs.readFile(`${ROOT}/tmp-finisher/${name}/summary.json`, "utf8")) as { strokes: Stroke[]; center: LatLng; scale: number; rot: number; final?: number[]; start?: number[] };
+    const s = JSON.parse(await fs.readFile(`${ROOT}/tmp-finisher/${name}/summary.json`, "utf8")) as { strokes: Stroke[]; center: LatLng; scale: number; rot: number; final?: number[]; start?: number[]; composed?: boolean };
     t0 = Date.now();
-    const r = routePlacement(g, orderStrokes(s.strokes), s.center, s.scale, s.rot, false);
+    const r = routePlacement(g, s.composed ? s.strokes : orderStrokes(s.strokes), s.center, s.scale, s.rot, false);
     const ms = Date.now() - t0;
     if (!r) { console.log(name, "did not route"); continue; }
     t0 = Date.now();
