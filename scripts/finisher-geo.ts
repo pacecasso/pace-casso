@@ -189,10 +189,12 @@ async function main() {
   await fs.mkdir(OUT, { recursive: true });
   setHugTolerance(HUG_M);
   setTraceProfile({ trimNubs: true });
-  const { mask, w, h } = await loadMask(IMG!, MASK_MODE);
+  const loaded = await loadMask(IMG!, MASK_MODE);
+  const { mask, w, h } = loaded;
+  const maskUsed = (loaded as { mode?: string }).mode ?? MASK_MODE;
   const t = buildTarget(mask, w, h);
   const g = await loadPackedGraph(GRAPH);
-  say(`${NAME}: mask ${MASK_MODE}, ${t.targetCells} target cells, graph ${g.coord.length} nodes, tol ${TOL_U} of half-span, max rot ${MAX_ROT}°, model calls 0`);
+  say(`${NAME}: mask ${maskUsed}, ${t.targetCells} target cells, graph ${g.coord.length} nodes, tol ${TOL_U} of half-span, max rot ${MAX_ROT}°, model calls 0`);
 
   let seeds: { st: State; ev: Eval }[] = [];
   if (RESUME) {
