@@ -14,6 +14,7 @@
  *
  *   npx tsx scripts/corpus-catalog.ts --sample=100            # estimate only
  *   npx tsx scripts/corpus-catalog.ts --sample=100 --run --approved-by-ralph
+ *   npx tsx scripts/corpus-catalog.ts --run --approved-by-ralph --exclude=<pilot request.json>
  *   npx tsx scripts/corpus-catalog.ts --collect=<batch_id>    # fetch results, no new spend
  */
 import fs from "node:fs";
@@ -116,11 +117,13 @@ const SCHEMA = {
 };
 
 const PROMPT = `This is a piece of GPS art: a runner or cyclist recorded a route whose line draws a picture on the map.
-The gallery filed it under "{category}". Study the line, not the caption.
-Describe how the artist made it recognizable using real streets: which features carry the identity, which street trick draws each one, what they left out, and how the parts connect into one route.
-Be concrete and short. Judge honestly: if the line cuts straight across blocks, say so; if it does not read, say so.`;
+Gallery label: "{title}". Filename hint: "{hint}". Category: "{category}".
+Take the label as the artist's intended subject (it can be vague or a pun; if the line clearly shows something else, say what it shows).
+Explain how the artist drew that subject with real streets: which features carry the identity, which street trick draws each one, what they left out, and how the parts connect into one route.
+Describe positions and geometry (e.g. \"small loop at the top left\", \"long diagonal through the middle\"). Do not name streets or places.
+Rate stranger_would_name_it as if the viewer had NO label. Be concrete and short. Judge honestly: if the line cuts straight across blocks, say so.`;
 
-type Piece = { file: string; category: string; subject_hint: string };
+type Piece = { file: string; category: string; subject_hint: string; title?: string };
 
 function loadPieces(): Piece[] {
   const all = fs
@@ -128,10 +131,16 @@ function loadPieces(): Piece[] {
     .trim()
     .split("\n")
     .map((l) => JSON.parse(l) as Piece);
-  if (!Number.isFinite(SAMPLE)) return all;
+  // --exclude=<batch request.json>[,<...>]: skip pieces already catalogued so nothing is paid for twice.
+  const done = new Set<string>();
+  for (const x of (args.exclude ?? "").split(",").filter(Boolean)) {
+    for (const file of (JSON.parse(fs.readFileSync(x, "utf8")) as { files: string[] }).files) done.add(file);
+  }
+  const todo = all.filter((p) => !done.has(p.file));
+  if (!Number.isFinite(SAMPLE)) return todo;
   // Stratified: round-robin across categories so a small pilot covers everything.
   const byCat = new Map<string, Piece[]>();
-  for (const p of all) byCat.set(p.category, [...(byCat.get(p.category) ?? []), p]);
+  for (const p of todo) byCat.set(p.category, [...(byCat.get(p.category) ?? []), p]);
   const lists = [...byCat.values()].map((l) => l.filter((_, i) => i % 7 === 3));
   const out: Piece[] = [];
   for (let round = 0; out.length < SAMPLE; round++) {
@@ -148,19 +157,22 @@ function loadPieces(): Piece[] {
 }
 
 async function imageBlock(file: string): Promise<Anthropic.ImageBlockParam> {
-  const png = await sharp(path.join(DIR, "images", file)).resize({ width: 1000, withoutEnlargement: true }).png().toBuffer();
-  return { type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } };
+  const png = await sharp(path.join(DIR, "images", file)).resize({ width: 1000, withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
+  // JPEG keeps each request small (batches cap at 256 MB); image tokens depend on pixel size, not format.
+  return { type: "image", source: { type: "base64", media_type: "image/jpeg", data: png.toString("base64") } };
 }
 
 async function params(p: Piece): Promise<Anthropic.MessageCreateParamsNonStreaming> {
   return {
     model: MODEL,
-    max_tokens: 4000,
+    max_tokens: 8000,
     output_config: { effort: "low", format: { type: "json_schema", schema: SCHEMA } },
     messages: [
       {
         role: "user",
-        content: [await imageBlock(p.file), { type: "text", text: PROMPT.replace("{category}", p.category) }],
+        content: [await imageBlock(p.file), { type: "text", text: PROMPT.replace("{category}", p.category)
+              .replace("{hint}", p.subject_hint || "none")
+              .replace("{title}", (p.title ?? "").replace(/^HOME - [^-]+ - /, "").replace(/\s*\(Copy\)$/, "") || "none") }],
       },
     ],
   } as Anthropic.MessageCreateParamsNonStreaming;
@@ -233,14 +245,19 @@ async function main() {
     return;
   }
 
-  const requests = [];
-  for (const p of pieces) requests.push({ custom_id: p.file.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64), params: await params(p) });
-  const batch = await client.messages.batches.create({ requests });
-  fs.writeFileSync(
-    path.join(OUT, `${batch.id}.request.json`),
-    JSON.stringify({ batch_id: batch.id, model: MODEL, files: pieces.map((p) => p.file), created: new Date().toISOString() }, null, 2),
-  );
-  console.log(`batch ${batch.id} submitted (${requests.length} requests). Collect with --collect=${batch.id}`);
+  // Submit in chunks: a batch is capped at 256 MB, and chunks limit the blast radius of any mistake.
+  const CHUNK = Number(args.chunk ?? 500);
+  for (let start = 0; start < pieces.length; start += CHUNK) {
+    const chunk = pieces.slice(start, start + CHUNK);
+    const requests = [];
+    for (const p of chunk) requests.push({ custom_id: p.file.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64), params: await params(p) });
+    const batch = await client.messages.batches.create({ requests });
+    fs.writeFileSync(
+      path.join(OUT, `${batch.id}.request.json`),
+      JSON.stringify({ batch_id: batch.id, model: MODEL, files: chunk.map((p) => p.file), created: new Date().toISOString() }, null, 2),
+    );
+    console.log(`batch ${batch.id} submitted (${requests.length} requests). Collect with --collect=${batch.id}`);
+  }
 }
 
 main().catch((e) => {
