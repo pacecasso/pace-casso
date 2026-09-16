@@ -135,12 +135,17 @@ export default function Step5RouteComplete({
     [originalArt, anchorLocation?.connectorSegmentIndices],
   );
   const artworkConnectorCount = originalArtConnectorSegments.length;
+  // A first draft hands its own route over as the "art", so comparing the
+  // route to it always says ~100% (Sep 16 whale test: "Looks like your art
+  // 100%" on a blob). No likeness-to-upload number exists on this path yet,
+  // so show none rather than a false one.
+  const artIsDraftRoute = anchorLocation?.preferredSnappedRoute?.draft === true;
   const artworkMatchScore = useMemo(() => {
-    if (routeSource !== "image" || originalArt.length < 2 || routeLine.length < 2) {
+    if (artIsDraftRoute || routeSource !== "image" || originalArt.length < 2 || routeLine.length < 2) {
       return null;
     }
     return interpretationMatchPercent(originalArt, routeLine);
-  }, [originalArt, routeLine, routeSource]);
+  }, [artIsDraftRoute, originalArt, routeLine, routeSource]);
   const exportMetadata = useMemo(
     () => ({
       artworkConnectorCount,

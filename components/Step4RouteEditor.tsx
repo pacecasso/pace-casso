@@ -725,6 +725,11 @@ export default function Step4RouteEditor({
     [originalArt, anchorLocation?.connectorSegmentIndices],
   );
 
+  // A first draft hands its own route over as the "art", so comparing the
+  // route to it always says ~100% (Sep 16 whale test: "Looks like your art
+  // 100%" on a blob). No likeness-to-upload number exists on this path yet,
+  // so show none rather than a false one.
+  const artIsDraftRoute = anchorLocation?.preferredSnappedRoute?.draft === true;
   const routeInterpretationPct = useMemo(
     () => interpretationMatchPercent(originalArt, streetLine),
     [originalArt, streetLine],
@@ -1802,6 +1807,7 @@ export default function Step4RouteEditor({
                   original art, just for reference.
                 </p>
               ) : null}
+              {!artIsDraftRoute && (
               <ShapeMatchMeter
                 label={matchMeterLabel}
                 percent={routeInterpretationPct}
@@ -1810,6 +1816,7 @@ export default function Step4RouteEditor({
                 secondaryLabel="Tight fit"
                 secondaryTitle={tightMeterTitle}
               />
+              )}
               <ShapeMatchMeter
                 label="Clean route"
                 percent={routeCleanLineScore}

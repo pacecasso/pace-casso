@@ -163,10 +163,15 @@ export default function Step3StreetSnap({
     return c.map(([lat, lng]) => [lat, lng] as [number, number]);
   }, [route?.coordinates]);
 
+  // A first draft hands its own route over as the "art", so comparing the
+  // route to it always says ~100% (Sep 16 whale test: "Looks like your art
+  // 100%" on a blob). No likeness-to-upload number exists on this path yet,
+  // so show none rather than a false one.
+  const artIsDraftRoute = anchorLocation?.preferredSnappedRoute?.draft === true;
   const interpretationPct = useMemo(() => {
-    if (outlineForMatch.length < 2 || streetForMatch.length < 2) return null;
+    if (artIsDraftRoute || outlineForMatch.length < 2 || streetForMatch.length < 2) return null;
     return interpretationMatchPercent(outlineForMatch, streetForMatch);
-  }, [outlineForMatch, streetForMatch]);
+  }, [artIsDraftRoute, outlineForMatch, streetForMatch]);
 
   const tightFitPct = useMemo(() => {
     if (outlineForMatch.length < 2 || streetForMatch.length < 2) return null;
@@ -270,6 +275,7 @@ export default function Step3StreetSnap({
                 <span className="mt-0.5 block font-dm">{snapVerdict.detail}</span>
               </span>
             </div>
+            {!artIsDraftRoute && (
             <ShapeMatchMeter
               label={matchMeterLabel}
               percent={interpretationPct}
@@ -279,6 +285,7 @@ export default function Step3StreetSnap({
               secondaryLabel="Tight fit"
               secondaryTitle={tightTitle}
             />
+            )}
             <div className="mt-3">
               <ShapeMatchMeter
                 label="Clean route"
