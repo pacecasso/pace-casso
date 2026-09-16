@@ -365,6 +365,44 @@ async function fetchPaintRoute(
   }
 }
 
+type GeoDraftPayload = {
+  ok: boolean;
+  reason?: string;
+  chain?: [number, number][];
+  km?: number;
+  score?: number;
+  seatsRouted?: number;
+};
+
+async function fetchGeoDraft(
+  body: Record<string, unknown>,
+  onProgress: (detail: string) => void,
+): Promise<GeoDraftPayload | null> {
+  // The server budgets itself to ~4 min; past 290 s the function is dead.
+  const abort = new AbortController();
+  const timer = window.setTimeout(() => abort.abort(), 290_000);
+  try {
+    onProgress("Fitting your drawing to Manhattan's streets… (about 3 minutes)");
+    const res = await fetch("/api/geo-draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: abort.signal,
+    });
+    if (!res.ok) return null;
+    const type = res.headers.get("content-type") ?? "";
+    if (!type.includes("ndjson")) {
+      const rec = (await res.json()) as GeoDraftPayload;
+      return rec && typeof rec === "object" ? rec : null;
+    }
+    return (await readNdjsonResult(res, onProgress)) as GeoDraftPayload;
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 type StudioRoutePayload = {
   ok: boolean;
   verified?: boolean;
@@ -805,6 +843,56 @@ const applyPaintResult = useCallback((result: PaintRoutePayload, stillSearching:
     return true;
   }, [routeFromPick]);
 
+const applyGeoResult = useCallback((result: GeoDraftPayload) => {
+    const chain = result.chain ?? [];
+    if (chain.length < 8) return false;
+    const distanceMeters = Math.round((result.km ?? 0) * 1000);
+    const lat = chain.reduce((a, p) => a + p[0], 0) / chain.length;
+    const lng = chain.reduce((a, p) => a + p[1], 0) / chain.length;
+    const clean = Math.round(routeQualityScore(chain));
+    const pick: Top5Pick = {
+      placement: { center: [lat, lng], rotationDeg: 0, scale: 1 },
+      anchorLatLngs: chain,
+      designIntent: "your art, drawn on real streets",
+      routeCoords: chain,
+      snappedRoute: {
+        coordinates: chain,
+        distanceMeters,
+        blockWaypoints: chain,
+        preserveBlockWaypoints: true,
+        // no stranger has named it; it is the system's first draft
+        verified: false,
+        draft: true,
+      },
+      previewDataUrl: renderRouteToDataUrl(chain, 640, { padding: 96 }) ?? "",
+      distanceKm: result.km ?? distanceMeters / 1000,
+      qualityScore: clean,
+      shapeMatchScore: 0,
+      sourceMatchScore: 0,
+      verifiedRoute: false,
+      verificationLabel: "FIRST DRAFT",
+      reason: `Your drawing fitted to real streets${
+        result.seatsRouted ? ` — the best of ${result.seatsRouted} spots we tried` : ""
+      }. Tweak anything in the next steps.`,
+    };
+    setPicks([pick]);
+    setPicksVisionUsed(true);
+    setCenter([...pick.placement.center] as [number, number]);
+    setRotationDeg(0);
+    setScale(1);
+    setSelectedPickIdx(0);
+    setPreferredSnappedRoute(routeFromPick(pick));
+    setSelectedAnchorLatLngs(pick.anchorLatLngs ?? null);
+    setFitNonce((n) => n + 1);
+    setAutoHint("Your first draft is ready. Tap “Continue with this draft” to tweak it and export.");
+    window.setTimeout(() => {
+      document
+        .getElementById("step2-picks")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+    return true;
+  }, [routeFromPick]);
+
 const applyStudioResult = useCallback((result: StudioRoutePayload) => {
     const chain = result.chain ?? [];
     if (chain.length < 8) return false;
@@ -1056,6 +1144,52 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
       }
     } catch {
       /* storage unavailable — proceed to a fresh submit */
+    }
+
+    // Stage 0: the zero-cost first draft (Ralph approved this engine's gas
+    // route, Sep 12). No model or Mapbox calls; it ends the search when it
+    // returns a route. The judged cascade below (paid) runs only if it
+    // could not seat the drawing at all.
+    if (imageBase64 || contour.length >= 8) {
+      if (hintTimerRef.current !== null) window.clearTimeout(hintTimerRef.current);
+      setAutoBusy(true);
+      setPicks([]);
+      setShowOfframp(false);
+      setOfframpRun(null);
+      setSelectedPickIdx(null);
+      setPreferredSnappedRoute(null);
+      setSelectedAnchorLatLngs(null);
+      let geoLock: WakeLockSentinel | null = null;
+      try {
+        geoLock = (await navigator.wakeLock?.request("screen")) ?? null;
+      } catch {
+        /* unsupported or denied — search still runs */
+      }
+      window.setTimeout(() => {
+        document
+          .getElementById("step2-status")
+          ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }, 80);
+      let drafted = false;
+      try {
+        const geo = await fetchGeoDraft(
+          { contour, cityId: cityPreset.id, imageBase64: imageBase64 ?? undefined },
+          noteStage,
+        );
+        drafted = Boolean(geo?.ok && applyGeoResult(geo));
+      } finally {
+        try {
+          void geoLock?.release();
+        } catch {
+          /* already released */
+        }
+        setAutoBusy(false);
+      }
+      if (drafted) {
+        recordSearchEnd("done");
+        return;
+      }
+      noteStage("Couldn't fit that drawing directly — trying other approaches…");
     }
     {
       const email = notifyEmail.trim();
@@ -1370,7 +1504,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
       }
       setAutoBusy(false);
     }
-  }, [contour, cityPreset, imageBase64, imageSourceName, interpretedSubject, routeFromPick, armHintClear, noteStage, recordSearchEnd, applyResult, applyArtistLoopResult, applyStudioResult, applyPaintResult, notifyEmail, watchRouteJob]);
+  }, [contour, cityPreset, imageBase64, imageSourceName, interpretedSubject, routeFromPick, armHintClear, noteStage, recordSearchEnd, applyResult, applyArtistLoopResult, applyStudioResult, applyPaintResult, applyGeoResult, notifyEmail, watchRouteJob]);
 
   const applyPick = useCallback((pick: Top5Pick, idx: number) => {
     setCenter([...pick.placement.center] as [number, number]);
@@ -1744,9 +1878,9 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
                             {isDraft ? (
                               <span
                                 className="w-fit rounded-full bg-amber-50 px-1.5 py-0.5 font-bebas text-[10px] tracking-[0.1em] text-amber-700"
-                                title="A first draft: painted on real streets, not yet recognized by strangers."
+                                title="A first draft on real streets — tweak it in the next steps."
                               >
-                                NOT YET RECOGNIZED
+                                TWEAK IT NEXT
                               </span>
                             ) : null}
                             {!isDraft && (

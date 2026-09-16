@@ -39,9 +39,9 @@ export function classifySnapReadiness({
   if (draftRoute && !verifiedRoute) {
     return {
       tone: "check",
-      title: "First draft — not yet recognized",
+      title: "First draft — make it yours",
       detail:
-        "Painted on real streets and runnable as-is, but no stranger named it at a glance. Tweak it in the editor, or go back and search again.",
+        "Drawn on real streets and runnable as-is. Tweak anything in the editor, or go back and search again.",
     };
   }
   if (verifiedRoute) {
