@@ -1583,6 +1583,30 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
     [anchorLatLngs, oneLineAnalysis.connectorSegmentIndices, selectedAnchorLatLngs],
   );
 
+  const continueToSnap = useCallback(() => {
+    onComplete({
+      anchorLatLngs,
+      center,
+      rotationDeg,
+      scale,
+      connectorSegmentIndices:
+        !selectedAnchorLatLngs &&
+        oneLineAnalysis.connectorSegmentIndices.length > 0
+          ? oneLineAnalysis.connectorSegmentIndices
+          : undefined,
+      preferredSnappedRoute:
+        preferredSnappedRoute &&
+        preferredSnappedRoute.coordinates.length >= 2
+          ? preferredSnappedRoute
+          : undefined,
+    });
+  }, [onComplete, anchorLatLngs, center, rotationDeg, scale, selectedAnchorLatLngs, oneLineAnalysis.connectorSegmentIndices, preferredSnappedRoute]);
+  // Phone test (Sep 16): the fixed bottom bar offered "Place it myself" while
+  // the main search button sat below the fold. Before a search has produced
+  // a route, the bottom bar's primary action is the search itself.
+  const findIsPrimary =
+    !preferredSnappedRoute && !autoBusy && cityPreset.id === "manhattan" && contour.length > 0;
+
   return (
     <MapStepSplitLayout
       railCollapsed={railCollapsed}
@@ -1660,25 +1684,19 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
                 className="w-full border border-pace-line bg-pace-white px-2 py-1.5 text-xs text-pace-ink placeholder:text-pace-muted/50"
               />
             </label>
-            <button
-              type="button"
-              disabled={
-                autoBusy || !contour.length || cityPreset.id !== "manhattan"
-              }
-              onClick={() => void runWowFind()}
-              className="pace-toolbar-btn-primary mt-1 w-full py-2.5 text-[11px] font-semibold disabled:opacity-50 sm:text-xs"
-              title={
-                cityPreset.id === "manhattan"
-                  ? "Tries your art exactly as drawn, and if the street judges refuse, automatically redraws it street-ready and tries again. Shows only routes an AI judge verified — or one honest answer."
-                  : "Route finding currently supports Manhattan only."
-              }
-            >
-              {autoBusy ? "Finding your route…" : "Find my route"}
-            </button>
-            <p className="text-[10px] leading-snug text-pace-muted">
-              Prefer to place it yourself? Drag the yellow dot, then continue —
+            <p className="mt-1 text-[10px] leading-snug text-pace-muted">
+              Prefer to place it yourself? Drag the yellow dot, then tap below —
               we&apos;ll fit your art to the streets exactly where you put it.
             </p>
+            <button
+              type="button"
+              disabled={autoBusy || !anchorLatLngs.length}
+              onClick={continueToSnap}
+              className="pace-toolbar-btn w-full py-2 text-[11px] font-semibold disabled:opacity-50 sm:text-xs"
+              title="Skip the search and fit your art to the streets exactly where you placed it."
+            >
+              Place it myself →
+            </button>
             <div id="step2-status">
               {autoHint ? (
                 <p className="text-[11px] leading-snug text-pace-muted">{autoHint}</p>
@@ -1957,7 +1975,9 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
             // end (Sep 6). Only a search with nothing to show yet blocks.
             disabled={!anchorLatLngs.length || (autoBusy && !preferredSnappedRoute)}
             title={
-              autoBusy && !preferredSnappedRoute
+              findIsPrimary
+                ? "Find the best spot for your art on Manhattan's streets."
+                : autoBusy && !preferredSnappedRoute
                 ? "Finding your route — this continues automatically when it's done."
                 : autoBusy
                   ? "Continue with the first draft now; the search keeps looking in the background."
@@ -1967,31 +1987,18 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
                     ? "Continue with the first draft shown on the map."
                   : "Skip the search and fit your art to the streets exactly where you placed it."
             }
-            onClick={() =>
-              onComplete({
-                anchorLatLngs,
-                center,
-                rotationDeg,
-                scale,
-                connectorSegmentIndices:
-                  !selectedAnchorLatLngs &&
-                  oneLineAnalysis.connectorSegmentIndices.length > 0
-                    ? oneLineAnalysis.connectorSegmentIndices
-                    : undefined,
-                preferredSnappedRoute:
-                  preferredSnappedRoute &&
-                  preferredSnappedRoute.coordinates.length >= 2
-                    ? preferredSnappedRoute
-                    : undefined,
-              })
-            }
+            onClick={() => (findIsPrimary ? void runWowFind() : continueToSnap())}
             className="pace-toolbar-btn-primary flex-1 font-bebas tracking-[0.08em] disabled:opacity-40"
           >
             {preferredSnappedRoute
               ? preferredSnappedRoute.verified
                 ? "Continue with this route →"
                 : "Continue with this draft →"
-              : "Place it myself →"}
+              : findIsPrimary
+                ? "Find my route →"
+                : autoBusy
+                  ? "Finding your route…"
+                  : "Place it myself →"}
           </button>
         </div>
       }
