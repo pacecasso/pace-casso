@@ -38,13 +38,17 @@ assert.strictEqual(rdp([[0, 0], [0.5, 0.5], [1, 0]], 0.01).length, 3);
   assert.strictEqual(JSON.stringify(st), before);
 }
 
-// --- the closing walk back to the start is trimmed, ink is kept
+// --- a drawing that ends far from its start loses the walk back; ink is kept
 {
-  const chain: LatLng[] = [[40.7, -74], [40.701, -74], [40.702, -74], [40.7015, -74.0005], [40.7005, -74.0005]];
-  const r = { chain, isInk: [true, true, true, false, false], km: 0.6 } as unknown as Routed;
+  const chain: LatLng[] = [[40.7, -74], [40.705, -74], [40.71, -74], [40.705, -74.0005], [40.7005, -74.0005]];
+  const r = { chain, isInk: [true, true, true, false, false], km: 2.2 } as unknown as Routed;
   const t = trimClosingWalk(r);
   assert.strictEqual(t.chain.length, 3);
   assert.ok(Math.abs(t.km - meters(chain[0]!, chain[2]!) / 1000) < 1e-9);
+  // an outline whose ink ends ~150 m from its start keeps the walk that closes it
+  const loop: LatLng[] = [[40.7, -74], [40.705, -74], [40.705, -74.005], [40.7, -74.002], [40.7, -74.001], [40.7, -74]];
+  const closed = { chain: loop, isInk: [true, true, true, true, false, false], km: 2 } as unknown as Routed;
+  assert.strictEqual(trimClosingWalk(closed), closed);
   const allInk = { chain, isInk: chain.map(() => true), km: 1 } as unknown as Routed;
   assert.strictEqual(trimClosingWalk(allInk), allInk);
 }

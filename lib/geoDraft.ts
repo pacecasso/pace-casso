@@ -249,13 +249,18 @@ function withPainterKnobs<T>(hugM: number, fn: () => T): T {
 }
 
 /**
- * Drop the builder's walk back to the start: it rides adjacent streets and
- * reads as a stray line (learned on the approved gas route).
+ * Drop the builder's walk back to the start when the drawing ends far from
+ * where it began: that walk rides adjacent streets and reads as a stray line
+ * (learned on the approved gas route). When the ink already ends near the
+ * start, the walk is what closes the outline, so it stays (Sep 16 whale
+ * test: trimming it left a 280 m gap in a single-loop shape).
  */
+export const CLOSE_LOOP_M = 400;
 export function trimClosingWalk(r: Routed): Routed {
   let last = r.chain.length - 1;
   while (last > 0 && !r.isInk[last]) last--;
   if (last <= 0 || last >= r.chain.length - 1) return r;
+  if (meters(r.chain[last]!, r.chain[0]!) <= CLOSE_LOOP_M) return r;
   const chain = r.chain.slice(0, last + 1);
   let m = 0;
   for (let i = 1; i < chain.length; i++) m += meters(chain[i - 1]!, chain[i]!);
