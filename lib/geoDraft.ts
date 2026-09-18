@@ -198,8 +198,13 @@ export type GeoDraftOptions = {
   grid?: { tolM: number };
   /** areas the drawing must not touch (e.g. Central Park, where paths curve and the grid breaks) */
   avoid?: LatLng[][];
-  /** called between chunks of work; await it so a stream can flush */
-  onProgress?: (detail: string) => void | Promise<void>;
+  /**
+   * Called between chunks of work; await it so a stream can flush. `pct` is
+   * how far through the whole draft we are (0-100), so the UI can show a real
+   * progress bar instead of narrating what the search is doing (Ralph, Sep 18:
+   * "just show a clear pronounced progress bar").
+   */
+  onProgress?: (detail: string, pct?: number) => void | Promise<void>;
 };
 
 /** Sep 12 approved recipe: Manhattan core sweep, two sizes, three seeds */
@@ -361,8 +366,8 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
   const elapsed = () => Date.now() - t0;
   const rnd = makeRng(opts.seed);
   const t: Target = buildTarget(mask, w, h);
-  const progress = async (s: string) => {
-    await opts.onProgress?.(s);
+  const progress = async (s: string, pct?: number) => {
+    await opts.onProgress?.(s, pct);
     await yieldTick();
   };
 
@@ -407,7 +412,7 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
     }
   // interleave by distance from the window centre so any prefix is spread over the whole core
   seats.sort((a, b) => Math.hypot(a.center[0] - midLat, a.center[1] - midLng) - Math.hypot(b.center[0] - midLat, b.center[1] - midLng));
-  await progress(`Trying your drawing at ${seats.length} spots across the city…`);
+  await progress("Finding the best spot on the map", 4);
 
   // ---- sweep
   const found: { st: State; ev: GeoEval }[] = [];
@@ -420,8 +425,13 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
     if (ev) found.push({ st, ev });
     if (Date.now() - lastNote > 1500) {
       lastNote = Date.now();
-      const best = found.reduce<number>((a, x) => Math.max(a, x.ev.score), 0);
-      await progress(`Tried ${routed} of ${seats.length} spots — best match so far ${Math.round(best)}%`);
+      // the sweep owns 4-60% of the bar, by seats tried. The bar carries the
+      // signal now, so the label stays a plain, stable phrase (Ralph, Sep 18:
+      // the running commentary about polishing and matching was noise).
+      await progress(
+        "Finding the best spot on the map",
+        4 + 56 * Math.min(1, routed / Math.max(1, seats.length)),
+      );
     }
   }
   if (!found.length) return { ok: false, reason: "no-seat", seatsRouted: routed, ms: elapsed() };
@@ -434,7 +444,7 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
   }
 
   // ---- climb: split the remaining time evenly over the seeds
-  await progress(`Polishing the ${seeds.length} best fits…`);
+  await progress("Fitting your drawing to the streets", 60);
   let best: { st: State; ev: GeoEval; accepted: number } | null = null;
   let climbIters = 0;
   const per = Math.max(50, Math.floor(opts.iters / seeds.length));
@@ -456,7 +466,12 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
         accepted++;
         stale = 0;
       } else if (++stale >= 250) break;
-      if (it % 20 === 0) await progress(`Polishing fit ${i + 1} of ${seeds.length} — match ${Math.round(Math.max(curEv.score, best?.ev.score ?? 0))}%`);
+      // the climb owns 60-98% of the bar, by time spent against the budget
+      if (it % 20 === 0)
+        await progress(
+          "Fitting your drawing to the streets",
+          60 + 38 * Math.min(1, elapsed() / Math.max(1, opts.totalBudgetMs)),
+        );
     }
     if (!best || curEv.score > best.ev.score) best = { st: cur, ev: curEv, accepted };
   }

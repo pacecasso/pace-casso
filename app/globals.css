@@ -510,6 +510,27 @@ body {
   animation: paceStepPulse 2.4s ease-in-out infinite;
 }
 
+/* Route-search progress bar. Determinate while the $0 geo draft runs (it
+   reports how many seats it has tried and how much of its budget is spent);
+   this sweeping fill is the fallback for the judged cascade, which cannot
+   say how far along it is. */
+@keyframes paceProgressSweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+.pace-progress-indeterminate {
+  animation: paceProgressSweep 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pace-progress-indeterminate {
+    animation: none;
+    width: 100%;
+    opacity: 0.55;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pace-step-active {
     animation: none;

@@ -197,7 +197,7 @@ type ArtistLoopResultPayload = {
 
 async function readNdjsonResult(
   res: Response,
-  onProgress: (detail: string) => void,
+  onProgress: (detail: string, pct?: number) => void,
 ): Promise<Record<string, unknown>> {
   if (!res.ok) {
     let message = `Route search failed (${res.status}).`;
@@ -219,7 +219,12 @@ async function readNdjsonResult(
     if (!line.trim()) return;
     const payload = JSON.parse(line) as Record<string, unknown>;
     if (payload.type === "progress") {
-      if (typeof payload.detail === "string") onProgress(payload.detail);
+      if (typeof payload.detail === "string") {
+        onProgress(
+          payload.detail,
+          typeof payload.pct === "number" ? payload.pct : undefined,
+        );
+      }
       return;
     }
     if (payload.type === "error") {
@@ -252,7 +257,7 @@ const SEARCH_STATE_KEY = "pacecasso.step2.searchState.v1";
 
 async function fetchWowPlace(
   body: Record<string, unknown>,
-  onProgress: (detail: string) => void,
+  onProgress: (detail: string, pct?: number) => void,
 ): Promise<WowPlaceResultPayload> {
   const res = await fetch("/api/wow-place", {
     method: "POST",
@@ -314,7 +319,7 @@ function cleanArtistLoopResult(rec: Record<string, unknown>): ArtistLoopResultPa
 
 async function fetchArtistLoop(
   body: Record<string, unknown>,
-  onProgress: (detail: string) => void,
+  onProgress: (detail: string, pct?: number) => void,
 ): Promise<ArtistLoopResultPayload | null> {
   const res = await fetch("/api/artist-loop", {
     method: "POST",
@@ -336,7 +341,7 @@ type PaintRoutePayload = {
 
 async function fetchPaintRoute(
   body: Record<string, unknown>,
-  onProgress: (detail: string) => void,
+  onProgress: (detail: string, pct?: number) => void,
 ): Promise<PaintRoutePayload | null> {
   // The instant draft budgets itself to ~55 s server-side; if nothing
   // arrives by 100 s the stage is dead — move on without a draft.
@@ -376,13 +381,13 @@ type GeoDraftPayload = {
 
 async function fetchGeoDraft(
   body: Record<string, unknown>,
-  onProgress: (detail: string) => void,
+  onProgress: (detail: string, pct?: number) => void,
 ): Promise<GeoDraftPayload | null> {
   // The server budgets itself to ~4 min; past 290 s the function is dead.
   const abort = new AbortController();
   const timer = window.setTimeout(() => abort.abort(), 290_000);
   try {
-    onProgress("Fitting your drawing to Manhattan's streets… (about 3 minutes)");
+    onProgress("Fitting your drawing to Manhattan's streets… (about 3 minutes)", 1);
     const res = await fetch("/api/geo-draft", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -415,7 +420,7 @@ type StudioRoutePayload = {
 
 async function fetchStudioRoute(
   body: Record<string, unknown>,
-  onProgress: (detail: string) => void,
+  onProgress: (detail: string, pct?: number) => void,
 ): Promise<StudioRoutePayload | null> {
   // Never let this stage stall the cascade: the server budgets itself to
   // ~200 s and streams progress; if neither a result nor the stream's end
@@ -508,7 +513,7 @@ async function fetchRouteJobStatus(jobId: string): Promise<RouteJobStatusPayload
 
 async function fetchInterpret(
   imageBase64: string,
-  onProgress: (detail: string) => void,
+  onProgress: (detail: string, pct?: number) => void,
 ): Promise<{
   contour: NormalizedPoint[] | null;
   subject: string | null;
@@ -557,6 +562,12 @@ export default function Step2MapAnchor({
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [autoBusy, setAutoBusy] = useState(false);
   const [autoHint, setAutoHint] = useState<string | null>(null);
+  /**
+   * How far through the search we are, 0-100, or null when the stage running
+   * cannot say (the paid cascade) — then the bar animates indeterminately.
+   * Ralph, Sep 18: a clear bar, not prose about polishing and matching.
+   */
+  const [autoPct, setAutoPct] = useState<number | null>(null);
   // A failure arms a delayed hint-clear; if the user re-runs within that
   // window the stale timer would wipe the NEW run's message mid-flight.
   const hintTimerRef = useRef<number | null>(null);
@@ -610,9 +621,15 @@ export default function Step2MapAnchor({
    * user with WHAT happened and WHERE, never a silently reset button.
    */
   const lastStageRef = useRef<string>("starting");
-  const noteStage = useCallback((detail: string) => {
+  const noteStage = useCallback((detail: string, pct?: number) => {
     lastStageRef.current = detail;
     setAutoHint(detail);
+    // A bar that slides backwards reads as a bug; only ever move it forward.
+    setAutoPct((prev) =>
+      typeof pct === "number" && Number.isFinite(pct)
+        ? Math.min(99, Math.max(prev ?? 0, pct))
+        : prev,
+    );
     try {
       window.localStorage.setItem(
         SEARCH_STATE_KEY,
@@ -1153,6 +1170,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
     if (imageBase64 || contour.length >= 8) {
       if (hintTimerRef.current !== null) window.clearTimeout(hintTimerRef.current);
       setAutoBusy(true);
+      setAutoPct(0);
       setPicks([]);
       setShowOfframp(false);
       setOfframpRun(null);
@@ -1189,6 +1207,8 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
         recordSearchEnd("done");
         return;
       }
+      // the paid cascade cannot say how far along it is — indeterminate bar
+      setAutoPct(null);
       noteStage("Couldn't fit that drawing directly — trying other approaches…");
     }
     {
@@ -1698,6 +1718,25 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
               Place it myself →
             </button>
             <div id="step2-status">
+              {autoBusy ? (
+                <div className="mt-1">
+                  <div className="h-3 w-full overflow-hidden rounded-full border border-pace-line bg-pace-line/25">
+                    <div
+                      className={`h-full bg-pace-yellow ${
+                        autoPct === null
+                          ? "pace-progress-indeterminate w-1/3"
+                          : "transition-[width] duration-[1500ms] ease-linear"
+                      }`}
+                      style={autoPct === null ? undefined : { width: `${autoPct}%` }}
+                    />
+                  </div>
+                  {autoPct === null ? null : (
+                    <p className="mt-1 text-right font-bebas text-sm tabular-nums tracking-wide text-pace-ink">
+                      {Math.round(autoPct)}%
+                    </p>
+                  )}
+                </div>
+              ) : null}
               {autoHint ? (
                 <p className="text-[11px] leading-snug text-pace-muted">{autoHint}</p>
               ) : null}

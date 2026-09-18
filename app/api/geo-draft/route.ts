@@ -47,7 +47,7 @@ export async function POST(req: Request) {
       try {
         let masked: { mask: Uint8Array; w: number; h: number } | null = null;
         if (typeof body.imageBase64 === "string" && body.imageBase64.length > 100) {
-          send({ type: "progress", detail: "Reading your image…" });
+          send({ type: "progress", detail: "Reading your image…", pct: 2 });
           const raw = body.imageBase64;
           const data = raw.includes(",") ? raw.slice(raw.indexOf(",") + 1) : raw;
           try {
@@ -65,7 +65,8 @@ export async function POST(req: Request) {
           return;
         }
         const g = (await getStreetGraph()) as unknown as PainterGraph;
-        const onProgress = (detail: string) => send({ type: "progress", detail });
+        const onProgress = (detail: string, pct?: number) =>
+          send({ type: "progress", detail, pct });
         // Seat on the regular grid (Chelsea up to Harlem) and keep the drawing out of
         // Central Park: on the irregular downtown streets and the park's curving paths a
         // shape turns into a blob (Sep 18, Ralph's cat on his phone). Same cat here:
@@ -81,7 +82,7 @@ export async function POST(req: Request) {
         // A shape that cannot be seated there (very wide or very tall) still gets a route:
         // fall back to the whole island with the remaining time.
         if (!result.ok) {
-          onProgress("Widening the search to the rest of the island…");
+          onProgress("Widening the search to the rest of the island…", 4);
           result = await geoDraft(g, masked.mask, masked.w, masked.h, {
             ...MANHATTAN_GEO_DEFAULTS,
             sweepBudgetMs: 45_000,
