@@ -1,7 +1,7 @@
 import assert from "node:assert";
-import { geoDraft, makeRng, normRot, propose, rdp, trimClosingWalk, uprightRots, MANHATTAN_GEO_DEFAULTS, type State } from "./geoDraft";
+import { CENTRAL_PARK, combinedScore, featureCoverage, geoDraft, insidePolygon, makeRng, normRot, propose, rdp, trimClosingWalk, uprightRots, MANHATTAN_GEO_DEFAULTS, type State } from "./geoDraft";
 import { HUG_TOL_M, TRACE, meters, type PainterGraph, type Routed } from "./strokePainter";
-import type { LatLng } from "./streetGraphTrace";
+import { place, type LatLng } from "./streetGraphTrace";
 
 // --- rotation helpers
 assert.strictEqual(normRot(190), -170);
@@ -10,6 +10,10 @@ assert.deepStrictEqual(uprightRots(0, 40), [0]);
 // Manhattan's grid leans ~29°: only the near-upright orientations survive
 assert.deepStrictEqual(uprightRots(-29, 40), [-29]);
 assert.deepStrictEqual(uprightRots(60, 40), [-30]);
+
+// --- Central Park test polygon: Bethesda Terrace is inside, Times Square is not
+assert.ok(insidePolygon([40.7741, -73.9713], CENTRAL_PARK));
+assert.ok(!insidePolygon([40.758, -73.9855], CENTRAL_PARK));
 
 // --- rdp keeps endpoints and drops collinear points
 assert.deepStrictEqual(rdp([[0, 0], [0.5, 0.001], [1, 0]], 0.01), [[0, 0], [1, 0]]);
@@ -51,6 +55,22 @@ assert.strictEqual(rdp([[0, 0], [0.5, 0.5], [1, 0]], 0.01).length, 3);
   assert.strictEqual(trimClosingWalk(closed), closed);
   const allInk = { chain, isInk: chain.map(() => true), km: 1 } as unknown as Routed;
   assert.strictEqual(trimClosingWalk(allInk), allInk);
+}
+
+// --- feature coverage: a route through a feature covers it, a route elsewhere does not
+{
+  const pl = { center: [40.73, -73.99] as LatLng, scale: 1300, rot: -29 };
+  const eye = [[-0.5, 0.5], [-0.4, 0.5], [-0.3, 0.5]] as [number, number][];
+  const spout = [[0, 0.9], [0, 1]] as [number, number][];
+  const through = place([[-0.6, 0.5], [-0.2, 0.5], [0, 0.85], [0, 1.05]], pl.center, pl.scale, pl.rot);
+  const both = featureCoverage([eye, spout], through, pl, 0.09);
+  assert.ok(both.mean > 0.99 && both.min > 0.99, JSON.stringify(both));
+  const missSpout = featureCoverage([eye, spout], place([[-0.6, 0.5], [-0.2, 0.5]], pl.center, pl.scale, pl.rot), pl, 0.09);
+  assert.strictEqual(missSpout.min, 0);
+  assert.ok(Math.abs(missSpout.mean - 0.5) < 1e-9);
+  assert.deepStrictEqual(featureCoverage([], through, pl, 0.09), { mean: 1, min: 1 });
+  // losing a feature costs more than half the score
+  assert.ok(combinedScore(90, missSpout) < 45 && combinedScore(90, both) > 89);
 }
 
 // --- end to end on a synthetic north-up street grid: a filled square finds a seat, scores high, leaves the painter knobs alone

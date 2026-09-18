@@ -27,7 +27,7 @@ import {
   type Stroke,
   type UnitPt,
 } from "./strokePainter";
-import { buildTarget, likenessAgainst, type Likeness, type Target } from "./strokeLikeness";
+import { buildTarget, latLngToUnit, likenessAgainst, type Likeness, type Placement, type Target } from "./strokeLikeness";
 
 // ---------------------------------------------------------------------------
 // the drawing state and the edit moves
@@ -181,6 +181,23 @@ export type GeoDraftOptions = {
   sweepBudgetMs: number;
   totalBudgetMs: number;
   seed: number;
+  /**
+   * A designed drawing (the design step's strokes, unit space) instead of the
+   * mask's traced outline, plus sample points of the strokes that carry the
+   * subject's identity. Missing a defining feature costs heavily: the outline
+   * alone scores well on a blob, which is how the whale lost its eye and spout.
+   */
+  design?: { strokes: Stroke[]; features: UnitPt[][] };
+  /**
+   * The design is drawn on the street grid itself (runs along avenues and
+   * streets). Routing snaps every run to the measured lattice, the drawing
+   * is never reshaped (only the seat moves), and likeness / feature checks
+   * use a tight metric tolerance so a feature the streets lost is counted
+   * as lost (Sep 16: the loose check reported 100% on missing features).
+   */
+  grid?: { tolM: number };
+  /** areas the drawing must not touch (e.g. Central Park, where paths curve and the grid breaks) */
+  avoid?: LatLng[][];
   /** called between chunks of work; await it so a stream can flush */
   onProgress?: (detail: string) => void | Promise<void>;
 };
@@ -202,7 +219,51 @@ export const MANHATTAN_GEO_DEFAULTS: GeoDraftOptions = {
   seed: 1,
 };
 
-export type GeoEval = { r: Routed; lk: Likeness };
+export type GeoEval = { r: Routed; lk: Likeness; feature: { mean: number; min: number }; score: number };
+
+/**
+ * How much of each defining feature the route passes near: the share of a
+ * feature's sample points with route within `tolU` (unit space). Returns
+ * the mean and the worst feature; 1/1 when there are no features.
+ */
+export function featureCoverage(features: UnitPt[][], chain: LatLng[], pl: Placement, tolU: number): { mean: number; min: number } {
+  if (!features.length) return { mean: 1, min: 1 };
+  const cell = tolU;
+  const grid = new Map<string, UnitPt[]>();
+  const add = (p: UnitPt) => {
+    const k = `${Math.floor(p[0] / cell)}:${Math.floor(p[1] / cell)}`;
+    let arr = grid.get(k);
+    if (!arr) grid.set(k, (arr = []));
+    arr.push(p);
+  };
+  let prev: UnitPt | null = null;
+  for (const ll of chain) {
+    const u = latLngToUnit(ll, pl);
+    if (prev) {
+      const n = Math.max(1, Math.ceil(Math.hypot(u[0] - prev[0], u[1] - prev[1]) / (cell * 0.5)));
+      for (let i = 1; i <= n; i++) add([prev[0] + ((u[0] - prev[0]) * i) / n, prev[1] + ((u[1] - prev[1]) * i) / n]);
+    } else add(u);
+    prev = u;
+  }
+  const near = (p: UnitPt) => {
+    const gx = Math.floor(p[0] / cell), gy = Math.floor(p[1] / cell);
+    for (let dx = -1; dx <= 1; dx++)
+      for (let dy = -1; dy <= 1; dy++)
+        for (const q of grid.get(`${gx + dx}:${gy + dy}`) ?? []) if (Math.hypot(q[0] - p[0], q[1] - p[1]) <= tolU) return true;
+    return false;
+  };
+  let sum = 0, min = 1;
+  for (const pts of features) {
+    if (!pts.length) continue;
+    const c = pts.filter(near).length / pts.length;
+    sum += c;
+    if (c < min) min = c;
+  }
+  return { mean: sum / features.length, min };
+}
+
+/** likeness scaled by feature coverage: the mean matters, and one lost feature still hurts */
+export const combinedScore = (lk: number, f: { mean: number; min: number }) => lk * (0.25 + 0.75 * f.mean) * (0.5 + 0.5 * f.min);
 export type GeoDraftResult = {
   ok: boolean;
   reason?: "no-strokes" | "no-seat";
@@ -210,6 +271,9 @@ export type GeoDraftResult = {
   km?: number;
   inkKm?: number;
   score?: number;
+  likeness?: number;
+  featureMean?: number;
+  featureMin?: number;
   recall?: number;
   precision?: number;
   crossings?: number;
@@ -267,6 +331,29 @@ export function trimClosingWalk(r: Routed): Routed {
   return { ...r, chain, isInk: r.isInk.slice(0, last + 1), km: m / 1000 };
 }
 
+export function insidePolygon(p: LatLng, poly: LatLng[]): boolean {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i]!, b = poly[j]!;
+    if (a[0] > p[0] !== b[0] > p[0] && p[1] < ((b[1] - a[1]) * (p[0] - a[0])) / (b[0] - a[0]) + a[1]) c = !c;
+  }
+  return c;
+}
+
+/** Central Park (59th-110th, Fifth Ave to Central Park West), slightly inset so its edge avenues stay usable */
+export const CENTRAL_PARK: LatLng[] = [
+  [40.7652, -73.9745],
+  [40.7678, -73.9808],
+  [40.7995, -73.9578],
+  [40.7968, -73.9510],
+];
+
+/** grid designs keep their shape: move the whole seat by up to about one avenue */
+function shiftSeat(st: State, rnd: Rng): State {
+  const dx = (rnd() - 0.5) * 2 * 280, dy = (rnd() - 0.5) * 2 * 280;
+  return { ...st, center: [st.center[0] + dy / 111320, st.center[1] + dx / (111320 * Math.cos((st.center[0] * Math.PI) / 180))] };
+}
+
 const yieldTick = () => new Promise<void>((res) => setTimeout(res, 0));
 
 export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: number, opts: GeoDraftOptions): Promise<GeoDraftResult> {
@@ -281,9 +368,16 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
 
   const evaluate = (st: State): GeoEval | null => {
     if (Math.abs(normRot(st.rot)) > opts.maxRot) return null;
-    const r = withPainterKnobs(opts.hugM, () => routePlacement(g, orderStrokes(st.strokes), st.center, st.scale, st.rot, false));
+    // a grid design only holds its shape where the grid is regular: keep the seat inside the window
+    if (opts.grid && (st.center[0] < opts.bbox[0] || st.center[0] > opts.bbox[2] || st.center[1] < opts.bbox[1] || st.center[1] > opts.bbox[3])) return null;
+    const r = withPainterKnobs(opts.hugM, () => routePlacement(g, orderStrokes(st.strokes), st.center, st.scale, st.rot, Boolean(opts.grid)));
     if (!r || r.dropped > 0 || r.maxGap > 400 || r.km > opts.maxKm) return null;
-    return { r, lk: likenessAgainst(t, r.chain, { center: st.center, scale: st.scale, rot: st.rot }, { tolU: opts.tolU }) };
+    if (opts.avoid?.length && r.chain.some((p) => opts.avoid!.some((poly) => insidePolygon(p, poly)))) return null;
+    const pl = { center: st.center, scale: st.scale, rot: st.rot };
+    const tolU = opts.grid ? opts.grid.tolM / st.scale : opts.tolU;
+    const lk = likenessAgainst(t, r.chain, pl, { tolU });
+    const feature = opts.design ? featureCoverage(opts.design.features, r.chain, pl, tolU) : { mean: 1, min: 1 };
+    return { r, lk, feature, score: opts.design ? combinedScore(lk.score, feature) : lk.score };
   };
   const onLand = (center: LatLng, scale: number, rot: number) =>
     place([[0, 0], [-0.7, -0.7], [0.7, -0.7], [0.7, 0.7], [-0.7, 0.7]], center, scale, rot).every((p) => nearestNode(g, p).d < 250);
@@ -295,6 +389,10 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
   const dLng = opts.stepM / (111320 * Math.cos((midLat * Math.PI) / 180));
   const plans = new Map<number, Stroke[]>();
   for (const scale of opts.scales) {
+    if (opts.design) {
+      if (opts.design.strokes.length) plans.set(scale, opts.design.strokes);
+      continue;
+    }
     const plan = withPainterKnobs(opts.hugM, () => makePlan(mask, w, h, scale, { pitchM: 160, rows: 0, openM: opts.openM }, []));
     if (plan.strokes.length) plans.set(scale, plan.strokes);
   }
@@ -322,12 +420,12 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
     if (ev) found.push({ st, ev });
     if (Date.now() - lastNote > 1500) {
       lastNote = Date.now();
-      const best = found.reduce<number>((a, x) => Math.max(a, x.ev.lk.score), 0);
+      const best = found.reduce<number>((a, x) => Math.max(a, x.ev.score), 0);
       await progress(`Tried ${routed} of ${seats.length} spots — best match so far ${Math.round(best)}%`);
     }
   }
   if (!found.length) return { ok: false, reason: "no-seat", seatsRouted: routed, ms: elapsed() };
-  found.sort((a, b) => b.ev.lk.score - a.ev.lk.score);
+  found.sort((a, b) => b.ev.score - a.ev.score);
   const seeds: { st: State; ev: GeoEval }[] = [];
   for (const f of found) {
     if (seeds.length >= opts.top) break;
@@ -350,17 +448,17 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
     for (let it = 1; it <= per; it++) {
       if (elapsed() - seedStart > seedBudget) break;
       climbIters++;
-      const { next } = propose(cur, blockU, rnd, true);
+      const next = opts.grid ? shiftSeat(cur, rnd) : propose(cur, blockU, rnd, true).next;
       const ev = evaluate(next);
-      if (ev && ev.lk.score > curEv.lk.score + 0.05) {
+      if (ev && ev.score > curEv.score + 0.05) {
         cur = next;
         curEv = ev;
         accepted++;
         stale = 0;
       } else if (++stale >= 250) break;
-      if (it % 20 === 0) await progress(`Polishing fit ${i + 1} of ${seeds.length} — match ${Math.round(Math.max(curEv.lk.score, best?.ev.lk.score ?? 0))}%`);
+      if (it % 20 === 0) await progress(`Polishing fit ${i + 1} of ${seeds.length} — match ${Math.round(Math.max(curEv.score, best?.ev.score ?? 0))}%`);
     }
-    if (!best || curEv.lk.score > best.ev.lk.score) best = { st: cur, ev: curEv, accepted };
+    if (!best || curEv.score > best.ev.score) best = { st: cur, ev: curEv, accepted };
   }
   const b = best!;
   const r = trimClosingWalk(b.ev.r);
@@ -369,7 +467,10 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
     chain: r.chain,
     km: r.km,
     inkKm: r.inkKm,
-    score: b.ev.lk.score,
+    score: b.ev.score,
+    likeness: b.ev.lk.score,
+    featureMean: b.ev.feature.mean,
+    featureMin: b.ev.feature.min,
     recall: b.ev.lk.recall,
     precision: b.ev.lk.precision,
     crossings: b.ev.lk.crossings,

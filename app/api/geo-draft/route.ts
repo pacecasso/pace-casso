@@ -2,7 +2,7 @@ import { rateLimitAllow } from "../../../lib/mapboxRateLimit";
 import { shieldExpensiveRoute, trustedClientIp } from "../../../lib/apiShield";
 import { getStreetGraph, type NormalizedPoint } from "../../../lib/streetGraphTrace";
 import { filledMaskFromContour, type PainterGraph } from "../../../lib/strokePainter";
-import { geoDraft, MANHATTAN_GEO_DEFAULTS } from "../../../lib/geoDraft";
+import { CENTRAL_PARK, geoDraft, MANHATTAN_GEO_DEFAULTS } from "../../../lib/geoDraft";
 import { loadMask } from "../../../lib/geoMask";
 
 export const runtime = "nodejs";
@@ -65,10 +65,30 @@ export async function POST(req: Request) {
           return;
         }
         const g = (await getStreetGraph()) as unknown as PainterGraph;
-        const result = await geoDraft(g, masked.mask, masked.w, masked.h, {
+        const onProgress = (detail: string) => send({ type: "progress", detail });
+        // Seat on the regular grid (Chelsea up to Harlem) and keep the drawing out of
+        // Central Park: on the irregular downtown streets and the park's curving paths a
+        // shape turns into a blob (Sep 18, Ralph's cat on his phone). Same cat here:
+        // 18.3 km of mush -> 13.2 km with the ears readable.
+        let result = await geoDraft(g, masked.mask, masked.w, masked.h, {
           ...MANHATTAN_GEO_DEFAULTS,
-          onProgress: (detail) => send({ type: "progress", detail }),
+          bbox: [40.745, -74.01, 40.83, -73.92],
+          avoid: [CENTRAL_PARK],
+          sweepBudgetMs: 110_000,
+          totalBudgetMs: 170_000,
+          onProgress,
         });
+        // A shape that cannot be seated there (very wide or very tall) still gets a route:
+        // fall back to the whole island with the remaining time.
+        if (!result.ok) {
+          onProgress("Widening the search to the rest of the island…");
+          result = await geoDraft(g, masked.mask, masked.w, masked.h, {
+            ...MANHATTAN_GEO_DEFAULTS,
+            sweepBudgetMs: 45_000,
+            totalBudgetMs: 70_000,
+            onProgress,
+          });
+        }
         send({ type: "result", result });
       } catch (err) {
         send({ type: "error", message: err instanceof Error ? err.message : String(err) });
