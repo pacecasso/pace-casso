@@ -545,6 +545,14 @@ export default function Step1ImageUpload({
   const [brushRadius, setBrushRadius] = useState(DEFAULT_BRUSH);
   const [imageReady, setImageReady] = useState(false);
   const [contourBuilt, setContourBuilt] = useState(false);
+  /**
+   * A mask exists and could be turned into a route line, but the user has not
+   * confirmed it yet. Done is the gate (Ralph, Sep 18: "you should have to hit
+   * DONE before it goes to YOUR ROUTE LINE") — Sep 6 removed the gate to fix a
+   * phone dead end; the gate is back and the dead end stays fixed by the
+   * in-flow Done button under Touch up and the placeholder that names it.
+   */
+  const [maskReady, setMaskReady] = useState(false);
   const [normalizedContour, setNormalizedContour] = useState<
     NormalizedPoint[] | null
   >(null);
@@ -802,6 +810,7 @@ export default function Step1ImageUpload({
       setFastTraceMode(mode);
       setImageReady(true);
       setContourBuilt(true);
+      setMaskReady(true);
       setContourLevel(DEFAULT_CONTOUR_LEVEL);
       setNormalizedContour(points);
       setContourHint(
@@ -898,6 +907,7 @@ export default function Step1ImageUpload({
     setNormalizedContour(null);
     setContourHint(null);
     setContourBuilt(false);
+    setMaskReady(false);
     setContourComputing(false);
     setImageReady(false);
     requestAnimationFrame(() => drawContourPlaceholder());
@@ -1049,6 +1059,7 @@ export default function Step1ImageUpload({
       setNormalizedContour(null);
       setContourHint(null);
       setContourBuilt(false);
+      setMaskReady(false);
       setContourLevel(DEFAULT_CONTOUR_LEVEL);
       setFastTraceMode(null);
       setImageReady(true);
@@ -1099,11 +1110,11 @@ export default function Step1ImageUpload({
     lineArtDirtyRef.current = false;
     replaceLineUndoWithCurrent();
     bumpLineMaskVersion();
-    // Build the route line right away. Waiting for a "Done" tap left the
-    // Next button disabled with no visible reason on phones, where Done
-    // sits in the toolbar above the fold (Sep 6 mobile dead end). Done
-    // stays as an explicit re-trace after touching up.
-    if (nComp > 0) setContourBuilt(true);
+    // The mask is ready to become a route line, but the user confirms it with
+    // Done — cleaning up the drawing before it is traced is the whole point of
+    // this step. Once Done has been tapped, later slider and brush edits keep
+    // updating the line live (contourBuilt stays true).
+    if (nComp > 0) setMaskReady(true);
     requestAnimationFrame(() => drawLineMaskToCanvas());
   }, [
     threshold,
@@ -1127,6 +1138,7 @@ export default function Step1ImageUpload({
 
   function handleDone() {
     setContourBuilt(true);
+    setMaskReady(true);
     refreshContourFromMask(contourLevel);
   }
 
@@ -1136,6 +1148,7 @@ export default function Step1ImageUpload({
     setNormalizedContour(null);
     setContourHint(null);
     setContourBuilt(false);
+    setMaskReady(false);
     setContourLevel(DEFAULT_CONTOUR_LEVEL);
     lineArtDirtyRef.current = false;
     const lum = luminanceRef.current;
@@ -1500,6 +1513,19 @@ export default function Step1ImageUpload({
                 onPointerCancel={handleLineArtPointerUp}
                 onPointerLeave={handleLineArtPointerUp}
               />
+              {/* The Sep 6 dead end was Done living only in the toolbar, above
+                  the fold on phones. It lives here too, under the thumb, and
+                  says what it does. */}
+              <button
+                type="button"
+                disabled={!imageReady || !maskReady}
+                onClick={handleDone}
+                className={`mt-1.5 w-full max-w-[min(100vw-1rem,280px)] px-4 py-2 disabled:opacity-40 ${
+                  contourBuilt ? "pace-toolbar-btn" : "pace-toolbar-btn-primary"
+                }`}
+              >
+                {contourBuilt ? "Done — re-trace my line" : "Done — build my route line"}
+              </button>
             </div>
 
             <div className="flex min-w-0 flex-col items-center">
@@ -1514,6 +1540,12 @@ export default function Step1ImageUpload({
                 height={BOX_SIZE}
                 className={panelCanvasClass}
               />
+              {imageReady && maskReady && !contourBuilt ? (
+                <p className="mt-1 max-w-[min(100vw-1rem,280px)] rounded border-l-2 border-pace-yellow bg-pace-yellow/10 px-2 py-1.5 text-center font-dm text-[11px] leading-snug text-pace-ink">
+                  Clean up the <strong>Touch up</strong> panel first, then tap{" "}
+                  <strong>Done</strong> to build your route line.
+                </p>
+              ) : null}
               {contourHint || contourComputing ? (
                 <p className="mt-1 max-w-[min(100vw-1rem,280px)] text-center font-dm text-[11px] leading-snug text-pace-muted sm:text-[11px]">
                   {contourComputing ? "Updating your line… " : null}
