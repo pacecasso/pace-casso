@@ -25,6 +25,8 @@ import { useLeafletContainerId } from "../lib/useLeafletContainerId";
 import type { RouteLineString } from "../lib/routeTypes";
 import { renderRouteToDataUrl } from "../lib/renderRouteImage";
 import { routeQualityScore } from "../lib/routeQuality";
+import type { Stroke } from "../lib/strokePainter";
+import type { StrokeEditHandoff } from "./StepStrokeEdit";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
 import MapChunkFallback from "./MapChunkFallback";
 import MapStepSplitLayout from "./MapStepSplitLayout";
@@ -105,6 +107,8 @@ type Step2MapAnchorProps = {
     scale: number;
     connectorSegmentIndices?: number[];
     preferredSnappedRoute?: RouteLineString;
+    /** present only when the $0 draft made this route, which is what can be edited */
+    strokeDraft?: StrokeEditHandoff;
   }) => void;
 };
 
@@ -377,6 +381,11 @@ type GeoDraftPayload = {
   km?: number;
   score?: number;
   seatsRouted?: number;
+  /** the drawing behind the route, so the edit step can change it and re-route */
+  strokes?: Stroke[];
+  center?: [number, number];
+  scale?: number;
+  rot?: number;
 };
 
 async function fetchGeoDraft(
@@ -860,6 +869,14 @@ const applyPaintResult = useCallback((result: PaintRoutePayload, stillSearching:
     return true;
   }, [routeFromPick]);
 
+  /**
+   * The drawing behind the $0 draft. Held aside so "Continue with this draft"
+   * can hand it to the edit step - a route on its own cannot be edited AS a
+   * drawing, and stroke edits are the only thing that has ever produced a
+   * route Ralph approved.
+   */
+  const strokeDraftRef = useRef<StrokeEditHandoff | null>(null);
+
 const applyGeoResult = useCallback((result: GeoDraftPayload) => {
     const chain = result.chain ?? [];
     if (chain.length < 8) return false;
@@ -892,6 +909,10 @@ const applyGeoResult = useCallback((result: GeoDraftPayload) => {
         result.seatsRouted ? ` — the best of ${result.seatsRouted} spots we tried` : ""
       }. Tweak anything in the next steps.`,
     };
+    strokeDraftRef.current =
+      result.strokes?.length && result.center && result.scale && typeof result.rot === "number"
+        ? { strokes: result.strokes, center: result.center, scale: result.scale, rot: result.rot }
+        : null;
     setPicks([pick]);
     setPicksVisionUsed(true);
     setCenter([...pick.placement.center] as [number, number]);
@@ -1614,6 +1635,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
         oneLineAnalysis.connectorSegmentIndices.length > 0
           ? oneLineAnalysis.connectorSegmentIndices
           : undefined,
+      strokeDraft: strokeDraftRef.current ?? undefined,
       preferredSnappedRoute:
         preferredSnappedRoute &&
         preferredSnappedRoute.coordinates.length >= 2

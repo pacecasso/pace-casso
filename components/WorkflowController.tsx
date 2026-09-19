@@ -35,6 +35,7 @@ import Step2MapAnchor from "./Step2MapAnchor";
 import Step3StreetSnap from "./Step3StreetSnap";
 import Step4RouteEditor from "./Step4RouteEditor";
 import Step5RouteComplete from "./Step5RouteComplete";
+import StepStrokeEdit, { type StrokeEditHandoff } from "./StepStrokeEdit";
 import StepCityGate from "./StepCityGate";
 import StepFreehandMapDraw from "./StepFreehandMapDraw";
 import StepSourceChoice from "./StepSourceChoice";
@@ -121,6 +122,12 @@ export default function WorkflowController() {
   // reading instead of re-guessing. Null for literal traces.
   const [interpretedSubject, setInterpretedSubject] = useState<string | null>(null);
   const [anchorLocation, setAnchorLocation] = useState<AnchorLocation>(null);
+  /**
+   * The drawing behind the $0 draft. When it is present, step 4 is the edit
+   * step instead of the Mapbox snap - the snap is a pass-through for these
+   * routes anyway, because the draft already hands over street geometry.
+   */
+  const [strokeDraft, setStrokeDraft] = useState<StrokeEditHandoff | null>(null);
   const [snappedRoute, setSnappedRoute] = useState<RouteLineString | null>(
     null,
   );
@@ -772,6 +779,7 @@ export default function WorkflowController() {
               scale,
               connectorSegmentIndices,
               preferredSnappedRoute,
+              strokeDraft,
             }) => {
               setSnappedRoute(null);
               setEditedRoute(null);
@@ -784,12 +792,40 @@ export default function WorkflowController() {
                 connectorSegmentIndices,
                 preferredSnappedRoute,
               });
+              setStrokeDraft(strokeDraft ?? null);
               setCurrentStep(4);
             }}
           />
         )}
 
-        {currentStep === 4 && anchorLocation && (
+        {currentStep === 4 && anchorLocation && strokeDraft && (
+          <StepStrokeEdit
+            draft={strokeDraft}
+            imageBase64={uploadedImageBase64}
+            cityId={selectedCityId}
+            initialRoute={anchorLocation.preferredSnappedRoute?.coordinates ?? anchorLocation.anchorLatLngs}
+            initialKm={(anchorLocation.preferredSnappedRoute?.distanceMeters ?? 0) / 1000}
+            onBack={() => {
+              setStrokeDraft(null);
+              setCurrentStep(3);
+            }}
+            onComplete={({ chain, km }) => {
+              setSnappedRoute({
+                coordinates: chain,
+                distanceMeters: Math.round(km * 1000),
+                blockWaypoints: chain,
+                preserveBlockWaypoints: true,
+                verified: false,
+                draft: true,
+              });
+              setEditedRoute(null);
+              setFinalRoute(null);
+              setCurrentStep(5);
+            }}
+          />
+        )}
+
+        {currentStep === 4 && anchorLocation && !strokeDraft && (
           <Step3StreetSnap
             anchorLocation={anchorLocation}
             routeSource={sourceKind === "freehand" ? "freehand" : "image"}

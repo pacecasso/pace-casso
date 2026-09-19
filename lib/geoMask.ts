@@ -124,3 +124,72 @@ export async function loadMask(file: string | Buffer, mode: string): Promise<{ m
   return { mask, w, h };
 }
 
+
+/**
+ * Fill what a closed outline encloses: flood the background in from the border,
+ * and every non-ink pixel it cannot reach is inside the drawing.
+ *
+ * Line art arrives as a thin ribbon. Measured Sep 18, 2026 on Ralph's
+ * catpic.jpg: the outline is 7 px thick in the 320 box, and strokePainter's
+ * 60 m morphological opening uses a 6 px erode radius at the size the drawing
+ * gets placed - ZERO pixels survive, so the planner sees no silhouette at all
+ * and falls back to a skeleton that has no ears. Filling first turns the ribbon
+ * into a solid shape that survives the opening.
+ *
+ * A drawing whose outline is not closed (an open curve, or a line drawing with
+ * gaps) encloses nothing, so this returns the mask unchanged rather than
+ * flooding the whole box.
+ */
+export function fillEnclosed(mask: Uint8Array, w: number, h: number): Uint8Array {
+  const outside = new Uint8Array(w * h);
+  const stack: number[] = [];
+  const push = (i: number) => {
+    if (mask[i] !== 255 && !outside[i]) {
+      outside[i] = 1;
+      stack.push(i);
+    }
+  };
+  for (let x = 0; x < w; x++) {
+    push(x);
+    push((h - 1) * w + x);
+  }
+  for (let y = 0; y < h; y++) {
+    push(y * w);
+    push(y * w + w - 1);
+  }
+  while (stack.length) {
+    const j = stack.pop()!;
+    const x = j % w;
+    const y = (j / w) | 0;
+    if (x > 0) push(j - 1);
+    if (x < w - 1) push(j + 1);
+    if (y > 0) push(j - w);
+    if (y < h - 1) push(j + w);
+  }
+  const out = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) if (mask[i] === 255 || !outside[i]) out[i] = 255;
+  return out;
+}
+
+/**
+ * How thin the ink is, as the median run of consecutive ink pixels across a
+ * row. Below about twice the planner's erode radius the drawing is line art and
+ * will be erased by the opening unless it is filled first.
+ */
+export function medianInkRun(mask: Uint8Array, w: number, h: number): number {
+  const runs: number[] = [];
+  for (let y = 0; y < h; y++) {
+    let run = 0;
+    for (let x = 0; x < w; x++) {
+      if (mask[y * w + x] === 255) run++;
+      else {
+        if (run) runs.push(run);
+        run = 0;
+      }
+    }
+    if (run) runs.push(run);
+  }
+  if (!runs.length) return 0;
+  runs.sort((a, b) => a - b);
+  return runs[runs.length >> 1]!;
+}

@@ -273,6 +273,15 @@ export type GeoDraftResult = {
   ok: boolean;
   reason?: "no-strokes" | "no-seat";
   chain?: LatLng[];
+  /**
+   * The drawing behind the route, in unit space, at the seat below. The route
+   * alone cannot be edited as a DRAWING - dropping a stroke or adding one means
+   * re-routing, which needs these. The only two routes Ralph has ever approved
+   * (gas and unicorn, Sep 8/12) were a draft plus three or four stroke edits,
+   * and that step has never existed on the site because the draft threw its
+   * strokes away here.
+   */
+  strokes?: Stroke[];
   km?: number;
   inkKm?: number;
   score?: number;
@@ -480,6 +489,7 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
   return {
     ok: true,
     chain: r.chain,
+    strokes: b.st.strokes,
     km: r.km,
     inkKm: r.inkKm,
     score: b.ev.score,
