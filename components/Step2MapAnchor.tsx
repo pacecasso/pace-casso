@@ -2039,7 +2039,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
             disabled={!anchorLatLngs.length || (autoBusy && !preferredSnappedRoute)}
             title={
               findIsPrimary
-                ? "Find the best spot for your art on Manhattan's streets."
+                ? `Find the best spot for your art on ${cityPreset.label}'s streets.`
                 : autoBusy && !preferredSnappedRoute
                 ? "Finding your route — this continues automatically when it's done."
                 : autoBusy
