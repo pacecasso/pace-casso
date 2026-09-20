@@ -80,25 +80,36 @@ export async function POST(req: Request) {
           // never called from the API - the offline rig applied it, the site
           // did not, so the two were never running the same pipeline.
           const mask = fillEnclosed(masked.mask, masked.w, masked.h);
+          // EVERY size is tried and the best-scoring one wins. Taking the
+          // first size that merely SEATS is what broke the heart on Sep 20:
+          // at 4000 it seats with its left lobe off the end of the land (an
+          // open curve, score 79) and the run stopped there, never reaching
+          // the sizes where it closes. Seating is not quality.
           const ladder = [
-            { scale: 4000, sweepBudgetMs: 90_000, totalBudgetMs: 130_000 },
-            { scale: 3200, sweepBudgetMs: 55_000, totalBudgetMs: 75_000 },
-            { scale: 2500, sweepBudgetMs: 40_000, totalBudgetMs: 55_000 },
+            { scale: 4000, sweepBudgetMs: 60_000, totalBudgetMs: 85_000 },
+            { scale: 3200, sweepBudgetMs: 52_000, totalBudgetMs: 75_000 },
+            { scale: 2500, sweepBudgetMs: 45_000, totalBudgetMs: 65_000 },
           ];
-          let result = null as Awaited<ReturnType<typeof geoDraft>> | null;
+          let best = null as Awaited<ReturnType<typeof geoDraft>> | null;
+          let lastFail = null as Awaited<ReturnType<typeof geoDraft>> | null;
           for (let i = 0; i < ladder.length; i++) {
             const rung = ladder[i]!;
-            if (i > 0) onProgress(`Trying a smaller size (${(rung.scale * 2) / 1000} km across)…`, 4);
-            result = await geoDraft(g, mask, masked.w, masked.h, {
+            const r = await geoDraft(g, mask, masked.w, masked.h, {
               ...BROOKLYN_GEO_DEFAULTS,
               scales: [rung.scale],
               sweepBudgetMs: rung.sweepBudgetMs,
               totalBudgetMs: rung.totalBudgetMs,
-              onProgress,
+              onProgress: (detail, pct) =>
+                // three equal thirds, so the bar advances across the whole run
+                onProgress(detail, ((pct ?? 0) + i * 100) / ladder.length),
             });
-            if (result.ok) break;
+            if (!r.ok) {
+              lastFail = r;
+              continue;
+            }
+            if (!best || (r.score ?? 0) > (best.score ?? 0)) best = r;
           }
-          send({ type: "result", result });
+          send({ type: "result", result: best ?? lastFail ?? { ok: false, reason: "no-seat" } });
           return;
         }
 
