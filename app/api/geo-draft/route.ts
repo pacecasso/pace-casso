@@ -2,8 +2,9 @@ import { rateLimitAllow } from "../../../lib/mapboxRateLimit";
 import { shieldExpensiveRoute, trustedClientIp } from "../../../lib/apiShield";
 import { getStreetGraph, type NormalizedPoint } from "../../../lib/streetGraphTrace";
 import { filledMaskFromContour, type PainterGraph } from "../../../lib/strokePainter";
-import { CENTRAL_PARK, geoDraft, MANHATTAN_GEO_DEFAULTS } from "../../../lib/geoDraft";
-import { loadMask } from "../../../lib/geoMask";
+import { BROOKLYN_GEO_DEFAULTS, CENTRAL_PARK, geoDraft, MANHATTAN_GEO_DEFAULTS } from "../../../lib/geoDraft";
+import { fillEnclosed, loadMask } from "../../../lib/geoMask";
+import { supportsRouteFinding } from "../../../lib/cityPresets";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -30,8 +31,8 @@ export async function POST(req: Request) {
     return Response.json({ error: "Invalid JSON" }, { status: 400 });
   }
   const cityId = typeof body.cityId === "string" ? body.cityId : "manhattan";
-  if (cityId !== "manhattan") {
-    return Response.json({ ok: false, reason: "manhattan-only" });
+  if (!supportsRouteFinding(cityId)) {
+    return Response.json({ ok: false, reason: "unsupported-city" });
   }
 
   const encoder = new TextEncoder();
@@ -64,9 +65,44 @@ export async function POST(req: Request) {
           send({ type: "result", result: { ok: false, reason: "no-shape" } });
           return;
         }
-        const g = (await getStreetGraph()) as unknown as PainterGraph;
         const onProgress = (detail: string, pct?: number) =>
           send({ type: "progress", detail, pct });
+
+        if (cityId === "brooklyn") {
+          // Brooklyn + Queens on the 500k-node graph, at sizes Manhattan cannot
+          // hold. Each rung gets the WHOLE budget for one size: sweeping sizes
+          // together starves the big ones, which is why they used to lose.
+          const g = (await getStreetGraph("nyc-core")) as unknown as PainterGraph;
+          // Flood-fill the inside of a closed outline before planning. Without
+          // this a line-art upload is eroded to zero mass by makePlan's 60 m
+          // opening and never reaches the map at all (Sep 18, Ralph's catpic).
+          // `fillEnclosed` has existed and been unit-tested since then but was
+          // never called from the API - the offline rig applied it, the site
+          // did not, so the two were never running the same pipeline.
+          const mask = fillEnclosed(masked.mask, masked.w, masked.h);
+          const ladder = [
+            { scale: 4000, sweepBudgetMs: 90_000, totalBudgetMs: 130_000 },
+            { scale: 3200, sweepBudgetMs: 55_000, totalBudgetMs: 75_000 },
+            { scale: 2500, sweepBudgetMs: 40_000, totalBudgetMs: 55_000 },
+          ];
+          let result = null as Awaited<ReturnType<typeof geoDraft>> | null;
+          for (let i = 0; i < ladder.length; i++) {
+            const rung = ladder[i]!;
+            if (i > 0) onProgress(`Trying a smaller size (${(rung.scale * 2) / 1000} km across)…`, 4);
+            result = await geoDraft(g, mask, masked.w, masked.h, {
+              ...BROOKLYN_GEO_DEFAULTS,
+              scales: [rung.scale],
+              sweepBudgetMs: rung.sweepBudgetMs,
+              totalBudgetMs: rung.totalBudgetMs,
+              onProgress,
+            });
+            if (result.ok) break;
+          }
+          send({ type: "result", result });
+          return;
+        }
+
+        const g = (await getStreetGraph()) as unknown as PainterGraph;
         // Seat on the regular grid (Chelsea up to Harlem) and keep the drawing out of
         // Central Park: on the irregular downtown streets and the park's curving paths a
         // shape turns into a blob (Sep 18, Ralph's cat on his phone). Same cat here:

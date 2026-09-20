@@ -15,7 +15,12 @@ const SOURCES = [
   "tmp-wow/brooklyn-walk-graph.json",
   "tmp-wow/queens-walk-graph.json",
   "tmp-wow/queens-west-walk-graph.json",
+  // Extra packed graphs may be appended on the command line, e.g. Nassau, so a
+  // drawing can grow east past the Queens line instead of hitting `no-seat`.
+  //   node scripts/build-nyc-core-graph.mjs out.json tmp-wow/nassau-walk-graph.json
+  ...process.argv.slice(3),
 ];
+const DEST = process.argv[2] ?? "nyc-core-walk-graph.json";
 
 const index = new Map(); // "lat:lng" -> merged index
 const lat = [];
@@ -44,6 +49,6 @@ for (const src of SOURCES) {
 }
 
 await fs.mkdir(path.join(process.cwd(), "tmp-painter"), { recursive: true });
-const dest = path.join(process.cwd(), "tmp-painter", "nyc-core-walk-graph.json");
+const dest = path.join(process.cwd(), "tmp-painter", DEST);
 await fs.writeFile(dest, JSON.stringify({ scale: 1e5, lat, lng, edges }));
 console.log(`merged: ${lat.length} nodes, ${edges.length / 2} edges -> ${dest}`);

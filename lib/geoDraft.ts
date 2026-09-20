@@ -199,6 +199,42 @@ export type GeoDraftOptions = {
   /** areas the drawing must not touch (e.g. Central Park, where paths curve and the grid breaks) */
   avoid?: LatLng[][];
   /**
+   * How small a part may be, relative to the biggest part, before it is culled.
+   * The painter's default (0.12) deletes a cartoon face's eyebrows for being
+   * 6.6 % of its mouth. Lower it to keep small defining features.
+   */
+  minRelMass?: number;
+  /**
+   * Hard reject a seat whose worst stroke-to-stroke gap exceeds this, in metres.
+   * Historically a flat 400 m, which is 16 % of a 2,500 m drawing but only 7 %
+   * of a 5,600 m one - so the bigger the drawing, the tighter the tolerance
+   * got, and large sizes were rejected as `no-seat` for gaps that are smaller
+   * in proportion than the ones accepted at 2,500 m.
+   */
+  maxGapM?: number;
+  /**
+   * Size-relative form of `maxGapM`: the limit becomes
+   * `max(maxGapM, maxGapFrac * halfSize)`. 0.16 reproduces the historical 400 m
+   * at half-size 2,500 m and grows from there. Defaults to 0, so nothing
+   * changes unless a caller asks.
+   */
+  maxGapFrac?: number;
+  /**
+   * How many strokes a seat may fail to route and still be kept. Historically
+   * 0: ONE unroutable stroke threw away the whole placement, so a multi-part
+   * logo whose thinnest part (the gas pump's hose) will not lie on streets
+   * could never seat at any size where that part survived the cull.
+   */
+  maxDropped?: number;
+  /**
+   * Passed through to `likenessAgainst`. The default 0.1 halves the score at
+   * ten self-crossings, so the search systematically prefers routes that never
+   * cross - which rules out every design whose identity REQUIRES a crossing:
+   * interlocking letters, a looping hose, a tail curling back over a body.
+   * Ralph, Sep 20: backtracking is fine if it improves the art.
+   */
+  crossingWeight?: number;
+  /**
    * Called between chunks of work; await it so a stream can flush. `pct` is
    * how far through the whole draft we are (0-100), so the UI can show a real
    * progress bar instead of narrating what the search is doing (Ralph, Sep 18:
@@ -221,6 +257,40 @@ export const MANHATTAN_GEO_DEFAULTS: GeoDraftOptions = {
   hugM: 90,
   sweepBudgetMs: 150_000,
   totalBudgetMs: 240_000,
+  seed: 1,
+};
+
+/**
+ * Brooklyn + Queens on the `nyc-core` graph: the recipe that first produced a
+ * cat with BOTH EARS AND A TAIL (Sep 19-20). Manhattan cannot hold a drawing
+ * this big — 2,052 full-fidelity placements were swept there and the ears
+ * never appeared — so the wall the project kept hitting was the island, not
+ * the algorithm.
+ *
+ * `scales` holds ONE size on purpose. Sweeping 2500/3200/4000 together splits
+ * one budget three ways, and a big size costs more per iteration (269 s vs
+ * 155 s), so the large sizes were being starved rather than beaten: run alone
+ * with the whole budget, 4000 wins. The API walks a ladder of these instead.
+ *
+ * `minRelMass` 0.02 keeps small defining parts (the painter's 0.12 default
+ * deletes a face's eyebrows for being 6.6 % of its mouth).
+ */
+export const BROOKLYN_GEO_DEFAULTS: GeoDraftOptions = {
+  bbox: [40.58, -74.03, 40.74, -73.78],
+  scales: [4000],
+  stepM: 2500,
+  top: 3,
+  iters: 600,
+  maxRot: 40,
+  tolU: 0.09,
+  // the cat comes out at 33 km; this only rejects seats, and a drawing that
+  // needs more than 100 km is not a route anyone runs
+  maxKm: 100,
+  openM: 60,
+  hugM: 90,
+  minRelMass: 0.02,
+  sweepBudgetMs: 90_000,
+  totalBudgetMs: 130_000,
   seed: 1,
 };
 
@@ -385,11 +455,25 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
     // a grid design only holds its shape where the grid is regular: keep the seat inside the window
     if (opts.grid && (st.center[0] < opts.bbox[0] || st.center[0] > opts.bbox[2] || st.center[1] < opts.bbox[1] || st.center[1] > opts.bbox[3])) return null;
     const r = withPainterKnobs(opts.hugM, () => routePlacement(g, orderStrokes(st.strokes), st.center, st.scale, st.rot, Boolean(opts.grid)));
-    if (!r || r.dropped > 0 || r.maxGap > 400 || r.km > opts.maxKm) return null;
+    const gapLimit = Math.max(opts.maxGapM ?? 400, (opts.maxGapFrac ?? 0) * st.scale);
+    if (process.env.SEATDEBUG) {
+      const d = (globalThis as Record<string, unknown>).__seat as Record<string, number> | undefined
+        ?? ((globalThis as Record<string, unknown>).__seat = { noRoute: 0, dropped: 0, gap: 0, km: 0, rot: 0, ok: 0, maxGapSeen: 0, maxKmSeen: 0 }) as Record<string, number>;
+      if (!r) d.noRoute++;
+      else {
+        d.maxGapSeen = Math.max(d.maxGapSeen, r.maxGap);
+        d.maxKmSeen = Math.max(d.maxKmSeen, r.km);
+        if (r.dropped > (opts.maxDropped ?? 0)) d.dropped++;
+        else if (r.maxGap > gapLimit) d.gap++;
+        else if (r.km > opts.maxKm) d.km++;
+        else d.ok++;
+      }
+    }
+    if (!r || r.dropped > (opts.maxDropped ?? 0) || r.maxGap > gapLimit || r.km > opts.maxKm) return null;
     if (opts.avoid?.length && r.chain.some((p) => opts.avoid!.some((poly) => insidePolygon(p, poly)))) return null;
     const pl = { center: st.center, scale: st.scale, rot: st.rot };
     const tolU = opts.grid ? opts.grid.tolM / st.scale : opts.tolU;
-    const lk = likenessAgainst(t, r.chain, pl, { tolU });
+    const lk = likenessAgainst(t, r.chain, pl, { tolU, crossingWeight: opts.crossingWeight });
     const feature = opts.design ? featureCoverage(opts.design.features, r.chain, pl, tolU) : { mean: 1, min: 1 };
     return { r, lk, feature, score: opts.design ? combinedScore(lk.score, feature) : lk.score };
   };
@@ -407,7 +491,7 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
       if (opts.design.strokes.length) plans.set(scale, opts.design.strokes);
       continue;
     }
-    const plan = withPainterKnobs(opts.hugM, () => makePlan(mask, w, h, scale, { pitchM: 160, rows: 0, openM: opts.openM }, []));
+    const plan = withPainterKnobs(opts.hugM, () => makePlan(mask, w, h, scale, { pitchM: 160, rows: 0, openM: opts.openM, minRelMass: opts.minRelMass }, []));
     if (plan.strokes.length) plans.set(scale, plan.strokes);
   }
   if (!plans.size) return { ok: false, reason: "no-strokes", ms: elapsed() };

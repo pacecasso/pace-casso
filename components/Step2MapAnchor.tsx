@@ -6,7 +6,7 @@ import type { LatLngExpression } from "leaflet";
 import L from "leaflet";
 import { NormalizedPoint } from "./Step1ImageUpload";
 import { autoFindTop5, type Top5Pick } from "../lib/autoFindTop5";
-import { MANHATTAN_PRESET, type CityPreset } from "../lib/cityPresets";
+import { MANHATTAN_PRESET, supportsRouteFinding, type CityPreset } from "../lib/cityPresets";
 import { buildAnchorLatLngsFromContour } from "../lib/placementFromContour";
 import {
   analyzeOneLinePath,
@@ -391,12 +391,13 @@ type GeoDraftPayload = {
 async function fetchGeoDraft(
   body: Record<string, unknown>,
   onProgress: (detail: string, pct?: number) => void,
+  cityLabel: string,
 ): Promise<GeoDraftPayload | null> {
   // The server budgets itself to ~4 min; past 290 s the function is dead.
   const abort = new AbortController();
   const timer = window.setTimeout(() => abort.abort(), 290_000);
   try {
-    onProgress("Fitting your drawing to Manhattan's streets… (about 3 minutes)", 1);
+    onProgress(`Fitting your drawing to ${cityLabel}'s streets… (about 3 minutes)`, 1);
     const res = await fetch("/api/geo-draft", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1157,8 +1158,8 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
   }, []);
 
   const runWowFind = useCallback(async () => {
-    if (cityPreset.id !== "manhattan") {
-      setAutoHint("Route finding currently supports Manhattan only.");
+    if (!supportsRouteFinding(cityPreset.id)) {
+      setAutoHint("Route finding currently supports Manhattan and Brooklyn.");
       armHintClear(6000);
       return;
     }
@@ -1214,6 +1215,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
         const geo = await fetchGeoDraft(
           { contour, cityId: cityPreset.id, imageBase64: imageBase64 ?? undefined },
           noteStage,
+          cityPreset.label,
         );
         drafted = Boolean(geo?.ok && applyGeoResult(geo));
       } finally {
@@ -1647,7 +1649,7 @@ const applyStudioResult = useCallback((result: StudioRoutePayload) => {
   // the main search button sat below the fold. Before a search has produced
   // a route, the bottom bar's primary action is the search itself.
   const findIsPrimary =
-    !preferredSnappedRoute && !autoBusy && cityPreset.id === "manhattan" && contour.length > 0;
+    !preferredSnappedRoute && !autoBusy && supportsRouteFinding(cityPreset.id) && contour.length > 0;
 
   return (
     <MapStepSplitLayout

@@ -534,6 +534,19 @@ export type TraceProfile = {
   trimNubs: boolean;
   /** max walk used to bridge a gap the tracer left inside one stroke */
   gapWalkM: number;
+  /**
+   * Max walk used to CONNECT one stroke to the next. A flat 5,000 m, which is
+   * two whole drawings at half-size 2,500 but less than one at 5,600 - so on a
+   * big multi-part drawing the connector fails, the part is dropped, and
+   * geoDraft rejects the entire seat for `dropped > 0`.
+   */
+  connectorM: number;
+  /**
+   * Size-relative form of `connectorM`: the budget becomes
+   * `max(connectorM, connectorFrac * halfSize)`. Defaults to 0 so nothing
+   * changes unless a caller asks.
+   */
+  connectorFrac: number;
 };
 export const TRACE: TraceProfile = {
   outline: { anchorM: 200, lambda: 30, corridorM: 65, bendWeight: 60 },
@@ -541,6 +554,8 @@ export const TRACE: TraceProfile = {
   curvy: { anchorM: 150, lambda: 12, corridorM: 110, bendWeight: 16 },
   trimNubs: false,
   gapWalkM: 3000,
+  connectorM: 5000,
+  connectorFrac: 0,
 };
 export function setTraceProfile(p: Partial<TraceProfile>): void {
   Object.assign(TRACE, p);
@@ -740,7 +755,7 @@ export function makePlan(
   w: number,
   h: number,
   scaleM: number,
-  opts: { pitchM: number; rows: number; openM: number },
+  opts: { pitchM: number; rows: number; openM: number; minRelMass?: number },
   extraThin: [number, number][][] = [],
 ): Plan {
   let minX = w;
@@ -767,8 +782,18 @@ export function makePlan(
   const minMassPx = (250 / mPerPx) ** 2;
   const compsAll = components(mass, w, h);
   const biggestAll = Math.max(1, ...compsAll.map((c) => c.length));
+  /**
+   * Drop a part for being small RELATIVE to the biggest part. This is what
+   * removes a cartoon face's eyebrows (622 px against a 9,389 px mouth: 6.6 %,
+   * under the old fixed 12 %) even though they are perfectly routable at the
+   * size the drawing gets placed. A drawing whose parts differ a lot in size -
+   * which is most logos - loses exactly the small features that identify it.
+   * `minRelMass` defaults to the historical 0.12 so nothing changes unless a
+   * caller asks.
+   */
+  const minRel = opts.minRelMass ?? 0.12;
   for (const c of compsAll) {
-    if (c.length < minMassPx || c.length < 0.12 * biggestAll) for (const p of c) mass[p] = 0;
+    if (c.length < minMassPx || c.length < minRel * biggestAll) for (const p of c) mass[p] = 0;
   }
   const massGrown = dilate(mass, w, h, 2);
   const thin = new Uint8Array(w * h);
@@ -1436,7 +1461,7 @@ export function routePlacement(
     if (chain.length) {
       const from = nearestNode(g, chain[chain.length - 1]!).id;
       const to = nearestNode(g, piece[0]!).id;
-      const w = walk(g, from, to, 5000, painted);
+      const w = walk(g, from, to, Math.max(TRACE.connectorM, TRACE.connectorFrac * scaleM), painted);
       if (!w) {
         dropped++;
         continue;

@@ -24,6 +24,20 @@ export type CityPreset = {
   dominantGridBearingsDeg?: number[];
 };
 
+/**
+ * Cities the $0 automatic draft engine can seat a drawing in.
+ *
+ * `brooklyn` runs on the 500k-node `nyc-core` walk graph at sizes Manhattan
+ * physically cannot hold (a 8 km drawing vs 3.4 km), which is what first got a
+ * cat's ears and tail onto real streets. Manhattan keeps its own smaller graph
+ * and its own recipe, unchanged.
+ */
+export const ROUTE_FINDING_CITY_IDS: readonly string[] = ["manhattan", "brooklyn"];
+
+export function supportsRouteFinding(cityId: string): boolean {
+  return ROUTE_FINDING_CITY_IDS.includes(cityId);
+}
+
 export const MANHATTAN_PRESET: CityPreset = {
   id: "manhattan",
   label: "Manhattan",

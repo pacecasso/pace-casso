@@ -51,40 +51,55 @@ const CELL = 0.003;
 const cellOf = (lat: number, lng: number) =>
   `${Math.round(lat / CELL)}:${Math.round(lng / CELL)}`;
 
-let cachedGraph: Promise<Graph> | null = null;
+type PackedGraph = { scale: number; lat: number[]; lng: number[]; edges: number[] };
 
-export function getStreetGraph(): Promise<Graph> {
-  if (!cachedGraph) {
-    cachedGraph = import("./data/manhattan-walk-graph.json").then((mod) => {
-      const data = mod.default as unknown as {
-        scale: number;
-        lat: number[];
-        lng: number[];
-        edges: number[];
-      };
-      const n = data.lat.length;
-      const coord: LatLng[] = new Array(n);
-      for (let i = 0; i < n; i++) {
-        coord[i] = [data.lat[i]! / data.scale, data.lng[i]! / data.scale];
-      }
-      const adj: { to: number; w: number }[][] = Array.from({ length: n }, () => []);
-      for (let e = 0; e < data.edges.length; e += 2) {
-        const a = data.edges[e]!;
-        const b = data.edges[e + 1]!;
-        const w = meters(coord[a]!, coord[b]!);
-        adj[a]!.push({ to: b, w });
-        adj[b]!.push({ to: a, w });
-      }
-      const grid = new Map<string, number[]>();
-      for (let i = 0; i < n; i++) {
-        const k = cellOf(coord[i]![0], coord[i]![1]);
-        if (!grid.has(k)) grid.set(k, []);
-        grid.get(k)!.push(i);
-      }
-      return { coord, adj, grid };
-    });
+/**
+ * Which walk graph to draw on.
+ *
+ * `manhattan` (104k nodes, 11.5 x 7.7 km) was the only graph the site ever
+ * used, which capped a drawing at ~3.4 km — small enough that ordinary
+ * features (a cat's ear at 9 % of its height) land inside one block and cannot
+ * be drawn at all. `nyc-core` (500k nodes, ~26 x 23 km, Manhattan + Brooklyn +
+ * Queens) is the graph every offline experiment has used for months.
+ */
+export type StreetGraphId = "manhattan" | "nyc-core";
+
+function buildGraph(data: PackedGraph): Graph {
+  const n = data.lat.length;
+  const coord: LatLng[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    coord[i] = [data.lat[i]! / data.scale, data.lng[i]! / data.scale];
   }
-  return cachedGraph;
+  const adj: { to: number; w: number }[][] = Array.from({ length: n }, () => []);
+  for (let e = 0; e < data.edges.length; e += 2) {
+    const a = data.edges[e]!;
+    const b = data.edges[e + 1]!;
+    const w = meters(coord[a]!, coord[b]!);
+    adj[a]!.push({ to: b, w });
+    adj[b]!.push({ to: a, w });
+  }
+  const grid = new Map<string, number[]>();
+  for (let i = 0; i < n; i++) {
+    const k = cellOf(coord[i]![0], coord[i]![1]);
+    if (!grid.has(k)) grid.set(k, []);
+    grid.get(k)!.push(i);
+  }
+  return { coord, adj, grid };
+}
+
+const cachedGraphs = new Map<StreetGraphId, Promise<Graph>>();
+
+export function getStreetGraph(id: StreetGraphId = "manhattan"): Promise<Graph> {
+  const hit = cachedGraphs.get(id);
+  if (hit) return hit;
+  // literal specifiers on both arms so the bundler traces both JSON files
+  const load = (
+    id === "nyc-core"
+      ? import("./data/nyc-core-walk-graph.json")
+      : import("./data/manhattan-walk-graph.json")
+  ).then((mod) => buildGraph(mod.default as unknown as PackedGraph));
+  cachedGraphs.set(id, load);
+  return load;
 }
 
 function nearestNode(g: Graph, p: LatLng): number {
