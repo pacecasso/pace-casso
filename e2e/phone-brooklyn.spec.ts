@@ -12,6 +12,14 @@ import path from "node:path";
 test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 const BASE = process.env.PHONE_BASE ?? "https://www.pacecasso.com";
 
+/**
+ * Opt-in: this drives the LIVE site and waits out a real route search (~4 min),
+ * which is not something CI should do on every push - it ran on Sep 24 and
+ * failed the build. Run it deliberately:
+ *   PHONE_E2E=1 npx playwright test e2e/phone-brooklyn.spec.ts
+ */
+test.skip(!process.env.PHONE_E2E, "live phone flow: set PHONE_E2E=1 to run");
+
 test("brooklyn draft and edit on a phone", async ({ page }) => {
   test.setTimeout(6 * 60_000);
   await page.goto(BASE, { waitUntil: "domcontentloaded" });
