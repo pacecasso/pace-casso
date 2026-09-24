@@ -64,6 +64,12 @@ export type Routed = {
   connectorKm: number;
   visibleConnKm: number;
   dropped: number;
+  /**
+   * How much INK a drop cost, in metres of the intended drawing. A placement
+   * that loses a cat's tail curl and one that loses its whole body both report
+   * `dropped: 1`; only this tells them apart.
+   */
+  droppedM: number;
   strokes: number;
   maxGap: number;
   devM: number;
@@ -1354,6 +1360,7 @@ export function routePlacement(
   let connM = 0;
   let visM = 0;
   let dropped = 0;
+  let droppedM = 0;
   let maxGap = 0;
   const painted = new Set<number>();
   const append = (pts: LatLng[], ink = false) => {
@@ -1418,10 +1425,15 @@ export function routePlacement(
     } else if (L && !curvy) {
       const ids: number[] = [];
       let ok = true;
+      // How far a drawn point may sit from the nearest intersection before the
+      // whole stroke is abandoned. Fixed at 90 m this is fine for a 2,500 m
+      // drawing and wrong for a 6,000 m one, where the outline crosses parks
+      // and cemeteries: the cat's BODY was abandoned at nearly every big seat.
+      const snapTol = Math.max(90, scaleM / 45);
       for (let i = 1; i < target.length; i++) {
         const a = nearestNode(g, target[i - 1]!);
         const b = nearestNode(g, target[i]!);
-        if (a.d > 90 || b.d > 90) {
+        if (a.d > snapTol || b.d > snapTol) {
           ok = false;
           break;
         }
@@ -1476,6 +1488,7 @@ export function routePlacement(
     }
     if (!piece || piece.length < 2) {
       dropped++;
+      droppedM += pathMeters(target);
       continue;
     }
     if (chain.length) {
@@ -1484,6 +1497,7 @@ export function routePlacement(
       const w = walk(g, from, to, Math.max(TRACE.connectorM, TRACE.connectorFrac * scaleM), painted);
       if (!w) {
         dropped++;
+        droppedM += pathMeters(piece);
         continue;
       }
       const cpts = w.map((k) => g.coord[k]!);
@@ -1531,6 +1545,7 @@ export function routePlacement(
     connectorKm: connM / 1000,
     visibleConnKm: visM / 1000,
     dropped,
+    droppedM,
     strokes: strokes.length,
     maxGap,
     devM,

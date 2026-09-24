@@ -534,7 +534,7 @@ async function main() {
       for (let i = 1; i < chain.length; i++) km += meters(chain[i - 1]!, chain[i]!);
       km /= 1000;
       const fidelity = bodiesRouted.reduce((s, x) => s + x.r.fidelity, 0) / bodiesRouted.length + connM / 300;
-      const routed: Routed = { chain, isInk, km, inkKm: 0, connectorKm: connM / 1000, visibleConnKm: 0, dropped: bodiesRouted.reduce((s, x) => s + x.r.dropped, 0), strokes: 0, maxGap: 0, devM: 0, fidelity };
+      const routed: Routed = { chain, isInk, km, inkKm: 0, connectorKm: connM / 1000, visibleConnKm: 0, dropped: bodiesRouted.reduce((s, x) => s + x.r.dropped, 0), droppedM: bodiesRouted.reduce((s, x) => s + x.r.droppedM, 0), strokes: 0, maxGap: 0, devM: 0, fidelity };
       results.push({ scale, center: comp.center, routed, bodiesRouted, linkKm: linkM / 1000, km, fidelity });
       if (LINKLOG.length) { console.log(`   ${LINKLOG.join(" | ")}`); LINKLOG.length = 0; }
       {

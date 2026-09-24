@@ -27,7 +27,14 @@ async function main() {
     scales,
     sweepBudgetMs: 90_000,
     totalBudgetMs: 140_000,
-    ...(planner === "block" ? { blockPlan: true } : {}),
+    ...(process.env.STEPM ? { stepM: Number(process.env.STEPM) } : {}),
+    ...(process.env.MAXKM ? { maxKm: Number(process.env.MAXKM) } : {}),
+    ...(process.env.SEATGRAPH ? { seatsFromGraph: true } : {}),
+    ...(process.env.ROTS ? { rotOffsets: process.env.ROTS.split(",").map(Number) } : {}),
+    ...(process.env.LANDFRAC ? { landFrac: Number(process.env.LANDFRAC) } : {}),
+    ...(process.env.PREFILTER ? { prefilterTop: Number(process.env.PREFILTER) } : {}),
+    ...(process.env.DROPFRAC ? { maxDropFrac: Number(process.env.DROPFRAC) } : {}),
+    ...(planner === "block" ? { blockPlan: process.env.EXAG ? { exaggerate: Number(process.env.EXAG) } : true } : {}),
     // multi-part logos always lose a stroke somewhere; rejecting the whole
     // placement for one drop is why Chanel and gas never seat at all
     ...(process.env.RELAX ? { maxDropped: Number(process.env.RELAX), maxGapFrac: 0.16, connectorFrac: 2 } : {}),

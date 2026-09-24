@@ -36,10 +36,65 @@ export type BlockPlanOptions = {
   minLenFrac?: number;
   /** drop a mass part smaller than this fraction of all mass */
   minPartFrac?: number;
+  /** push sharp tips outward by this fraction of the drawing's span (0 = off) */
+  exaggerate?: number;
 };
+
+/**
+ * Push sharp extremities (a cat's ears, a tail tip) outward so they survive at
+ * street resolution. At half-size 4,000 an ear is about two blocks; the router
+ * flattens it and the cat loses its ears, which is the whole animal. Real GPS
+ * artists do the same thing by hand: exaggerate the two or three cues that
+ * identify the subject. Straight runs and gentle curves are untouched.
+ */
+export function exaggerateTips(pts: [number, number][], span: number, amount: number, tipsOut?: number[]): [number, number][] {
+  if (pts.length < 5 || (amount <= 0 && !tipsOut)) return pts;
+  // Only tips on the OUTER boundary: a cat's ears sit on the convex hull, the
+  // curl of its tail does not. Pushing every sharp vertex turns the curl into
+  // a spike - it has to be the silhouette's extremities only.
+  const idx = pts.map((_, i) => i).sort((a, b) => pts[a]![0] - pts[b]![0] || pts[a]![1] - pts[b]![1]);
+  const cross = (o: number, a: number, b: number) =>
+    (pts[a]![0] - pts[o]![0]) * (pts[b]![1] - pts[o]![1]) - (pts[a]![1] - pts[o]![1]) * (pts[b]![0] - pts[o]![0]);
+  const half = (order: number[]) => {
+    const st: number[] = [];
+    for (const i of order) {
+      while (st.length >= 2 && cross(st[st.length - 2]!, st[st.length - 1]!, i) <= 0) st.pop();
+      st.push(i);
+    }
+    return st;
+  };
+  const hull = new Set([...half(idx), ...half([...idx].reverse())]);
+
+  const out = pts.map((p) => [p[0], p[1]] as [number, number]);
+  const look = Math.max(2, Math.round(pts.length / 40));
+  for (let i = look; i < pts.length - look; i++) {
+    if (!hull.has(i)) continue;
+    const a = pts[i - look]!;
+    const b = pts[i]!;
+    const c = pts[i + look]!;
+    const v1x = b[0] - a[0], v1y = b[1] - a[1];
+    const v2x = c[0] - b[0], v2y = c[1] - b[1];
+    const n1 = Math.hypot(v1x, v1y) || 1e-9;
+    const n2 = Math.hypot(v2x, v2y) || 1e-9;
+    if ((v1x * v2x + v1y * v2y) / (n1 * n2) > 0.35) continue;   // not a sharp tip
+    const mx = (a[0] + c[0]) / 2, my = (a[1] + c[1]) / 2;
+    const dx = b[0] - mx, dy = b[1] - my;
+    const d = Math.hypot(dx, dy) || 1e-9;
+    tipsOut?.push(i);
+    out[i] = [b[0] + (dx / d) * amount * span, b[1] + (dy / d) * amount * span];
+  }
+  return out;
+}
 
 export type BlockPlanResult = {
   strokes: Stroke[];
+  /**
+   * The drawing's defining cues - the tips of its silhouette (a cat's ears and
+   * tail) - as small clusters of unit-space points. The seat search scores a
+   * placement on area overlap alone, which cannot tell an ear from a bump;
+   * these let it check the features actually survived.
+   */
+  features: UnitPt[][];
   /** true when the upload was an outline drawing and was drawn as centre lines */
   lineArt: boolean;
   parts: number;
@@ -231,14 +286,21 @@ function centrelines(m: Uint8Array, w: number, h: number, minLenPx: number): [nu
   for (let y = 0; y < h && starts.length === 0; y++) for (let x = 0; x < w; x++) {
     if (isOn(x, y)) { starts.push([x, y]); break; }
   }
-  for (const s of starts) {
-    if (used[s[1] * w + s[0]]) continue;
+  /**
+   * Walk until the WHOLE skeleton is consumed, not just the first endpoint's
+   * line. Ralph's cat came back as its tail alone: the walk started at the
+   * tail tip, stopped where the tail meets the body, and nothing resumed on
+   * the remaining 80 % of the skeleton - so the site drew a tail while the
+   * offline rig drew a cat from the same upload.
+   */
+  const walkFrom = (s: [number, number]) => {
     const line: [number, number][] = [s];
     used[s[1] * w + s[0]] = 1;
     let cur = s;
     for (let guard = 0; guard < w * h; guard++) {
       const next = nbrs(cur[0], cur[1]).filter((p) => !used[p[1] * w + p[0]]);
       if (!next.length) break;
+      // prefer a straight-on step (4-connected) over a diagonal
       next.sort((a, b) => (Math.abs(a[0] - cur[0]) + Math.abs(a[1] - cur[1])) - (Math.abs(b[0] - cur[0]) + Math.abs(b[1] - cur[1])));
       cur = next[0]!;
       used[cur[1] * w + cur[0]] = 1;
@@ -246,9 +308,58 @@ function centrelines(m: Uint8Array, w: number, h: number, minLenPx: number): [nu
     }
     let len = 0;
     for (let i = 1; i < line.length; i++) len += Math.hypot(line[i]![0] - line[i - 1]![0], line[i]![1] - line[i - 1]![1]);
+    if (process.env.PLANDEBUG) console.log(`  centreline: ${line.length} px, length ${len.toFixed(0)}, keep ${len >= minLenPx}`);
     if (len >= minLenPx) lines.push(line);
+  };
+  const pending = [...starts];
+  let scan = 0;
+  const nextUnused = (): [number, number] | null => {
+    while (scan < w * h) {
+      const i = scan++;
+      if (img[i] === ON && !used[i]) return [i % w, (i / w) | 0];
+    }
+    return null;
+  };
+  for (let guard = 0; guard < w * h; guard++) {
+    let s = pending.shift() ?? null;
+    while (s && used[s[1] * w + s[0]]) s = pending.shift() ?? null;
+    if (!s) s = nextUnused();
+    if (!s) break;
+    walkFrom(s);
   }
-  return lines;
+  /**
+   * The walk splits at junctions, so one connected outline (the cat: body,
+   * tail, ear notch) comes back as three pieces. Routed separately, one of
+   * them fails at a big size and the whole placement is thrown away - and if
+   * drops are allowed instead, a seat can "win" by discarding the body. Stitch
+   * pieces back together where their ends meet.
+   */
+  const stitched: [number, number][][] = [];
+  const JOIN_PX = 8;
+  const near = (a: [number, number], b: [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1]) <= JOIN_PX;
+  if (process.env.PLANDEBUG) {
+    for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) {
+      const A = lines[i]!, B = lines[j]!;
+      const d = [
+        Math.hypot(A[A.length - 1]![0] - B[0]![0], A[A.length - 1]![1] - B[0]![1]),
+        Math.hypot(A[A.length - 1]![0] - B[B.length - 1]![0], A[A.length - 1]![1] - B[B.length - 1]![1]),
+        Math.hypot(A[0]![0] - B[0]![0], A[0]![1] - B[0]![1]),
+        Math.hypot(A[0]![0] - B[B.length - 1]![0], A[0]![1] - B[B.length - 1]![1]),
+      ].map((v) => v.toFixed(1));
+      console.log(`  gap between piece ${i} and ${j}: ${d.join(" / ")}`);
+    }
+  }
+  for (const line of lines.sort((a, b) => b.length - a.length)) {
+    let merged = false;
+    for (const t of stitched) {
+      if (near(t[t.length - 1]!, line[0]!)) { t.push(...line); merged = true; break; }
+      if (near(t[t.length - 1]!, line[line.length - 1]!)) { t.push(...[...line].reverse()); merged = true; break; }
+      if (near(t[0]!, line[line.length - 1]!)) { t.unshift(...line); merged = true; break; }
+      if (near(t[0]!, line[0]!)) { t.unshift(...[...line].reverse()); merged = true; break; }
+    }
+    if (!merged) stitched.push([...line]);
+  }
+  return stitched;
 }
 
 /** Zhang-Suen thinning (kept local so this file has no import cycle) */
@@ -316,7 +427,7 @@ export function blockPlan(
   const minPartFrac = options.minPartFrac ?? 0.04;
 
   const { minX, maxX, minY, maxY } = bbox(mask, w, h);
-  if (maxX < minX) return { strokes: [], lineArt: false, parts: 0, centrelines: 0 };
+  if (maxX < minX) return { strokes: [], features: [], lineArt: false, parts: 0, centrelines: 0 };
   const span = Math.max(maxX - minX, maxY - minY) || 1;
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
@@ -336,6 +447,7 @@ export function blockPlan(
   const lineArt = thickness < Math.max(3, thinFrac * span);
 
   const strokes: Stroke[] = [];
+  const features: UnitPt[][] = [];
   const thinRadius = Math.max(1, Math.round((thinFrac * span) / 2));
   const mass = lineArt ? new Uint8Array(w * h) : dilateMask(erodeMask(mask, w, h, thinRadius), w, h, thinRadius);
 
@@ -413,12 +525,20 @@ export function blockPlan(
 
   // ---- centre lines for thin ink and gaps
   const lines = centrelines(lineArt ? mask : thin, w, h, minLenFrac * span);
+  if (process.env.PLANDEBUG) console.log(`lineArt=${lineArt} thickness=${thickness.toFixed(1)} span=${span} kept ${lines.length} centrelines`);
   for (const line of lines) {
     const eps = Math.max(1.5, span * 0.01);
     const simple = simplify(line, eps);
     if (simple.length < 2) continue;
-    strokes.push({ kind: "thin", pts: simple.map(([x, y]) => toUnit(x, y)), closed: false });
+    const tipIdx: number[] = [];
+    const shaped = exaggerateTips(simple, span, options.exaggerate ?? 0, tipIdx);
+    const unit = shaped.map(([x, y]) => toUnit(x, y));
+    strokes.push({ kind: "thin", pts: unit, closed: false });
+    for (const i of tipIdx) {
+      const around = [unit[i - 1], unit[i], unit[i + 1]].filter(Boolean) as UnitPt[];
+      if (around.length) features.push(around);
+    }
   }
 
-  return { strokes, lineArt, parts, centrelines: lines.length };
+  return { strokes, features, lineArt, parts, centrelines: lines.length };
 }

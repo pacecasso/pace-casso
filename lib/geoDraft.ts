@@ -184,6 +184,34 @@ export type GeoDraftOptions = {
    * its defaults. Off by default so existing callers are unchanged.
    */
   blockPlan?: boolean | BlockPlanOptions;
+  /**
+   * Take seat centres from real graph nodes instead of a blind lat/lng
+   * lattice. At half-size 6,000 most lattice points are water or park, so the
+   * sweep spends its budget on placements that cannot seat.
+   */
+  seatsFromGraph?: boolean;
+  /**
+   * Extra rotations to try around the local grid angle. The sweep only ever
+   * tried the grid angle itself (and +-90/180), so a drawing that reads best
+   * at a lean - the cat wants about -17 deg - was never generated at all.
+   */
+  rotOffsets?: number[];
+  /** share of the 5 land samples that must be on streets (1 = the old all-five rule) */
+  landFrac?: number;
+  /**
+   * Route only the best N seats by a cheap pre-score (how close the drawing's
+   * own points fall to real intersections). Routing costs ~4.5 s at half-size
+   * 6,000, so a blind sweep only reaches ~20 placements in its budget and
+   * misses the good ones; pre-scoring costs microseconds per seat.
+   */
+  prefilterTop?: number;
+  /**
+   * Allow a placement to lose strokes worth up to this share of the drawing's
+   * ink. `dropped > 0` rejection throws away every big-size seat because one
+   * small stroke (the cat's tail curl) fails to route; allowing a flat count
+   * instead let a seat "win" by discarding the cat's BODY. Judge by ink.
+   */
+  maxDropFrac?: number;
   hugM: number;
   sweepBudgetMs: number;
   totalBudgetMs: number;
@@ -470,22 +498,40 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
       else {
         d.maxGapSeen = Math.max(d.maxGapSeen, r.maxGap);
         d.maxKmSeen = Math.max(d.maxKmSeen, r.km);
-        if (r.dropped > (opts.maxDropped ?? 0)) d.dropped++;
+        if (opts.maxDropFrac ? r.droppedM > opts.maxDropFrac * (r.droppedM + r.inkKm * 1000) : r.dropped > (opts.maxDropped ?? 0)) d.dropped++;
         else if (r.maxGap > gapLimit) d.gap++;
         else if (r.km > opts.maxKm) d.km++;
         else d.ok++;
       }
     }
-    if (!r || r.dropped > (opts.maxDropped ?? 0) || r.maxGap > gapLimit || r.km > opts.maxKm) return null;
+    if (!r) return null;
+    const dropOk = opts.maxDropFrac
+      ? r.droppedM <= opts.maxDropFrac * (r.droppedM + r.inkKm * 1000)
+      : r.dropped <= (opts.maxDropped ?? 0);
+    if (!dropOk || r.maxGap > gapLimit || r.km > opts.maxKm) return null;
     if (opts.avoid?.length && r.chain.some((p) => opts.avoid!.some((poly) => insidePolygon(p, poly)))) return null;
     const pl = { center: st.center, scale: st.scale, rot: st.rot };
     const tolU = opts.grid ? opts.grid.tolM / st.scale : opts.tolU;
     const lk = likenessAgainst(t, r.chain, pl, { tolU, crossingWeight: opts.crossingWeight });
-    const feature = opts.design ? featureCoverage(opts.design.features, r.chain, pl, tolU) : { mean: 1, min: 1 };
-    return { r, lk, feature, score: opts.design ? combinedScore(lk.score, feature) : lk.score };
+    const feats = opts.design ? opts.design.features : planFeatures;
+    const feature = feats.length ? featureCoverage(feats, r.chain, pl, tolU) : { mean: 1, min: 1 };
+    return { r, lk, feature, score: feats.length ? combinedScore(lk.score, feature) : lk.score };
   };
-  const onLand = (center: LatLng, scale: number, rot: number) =>
-    place([[0, 0], [-0.7, -0.7], [0.7, -0.7], [0.7, 0.7], [-0.7, 0.7]], center, scale, rot).every((p) => nearestNode(g, p).d < 250);
+  /**
+   * Cheap guard: is this placement over streets? It samples the centre and the
+   * four corners. Demanding ALL five (the historical default) is fine for a
+   * 2.5 km drawing and wrong for a 12 km one - in a city with water and parks
+   * a corner is often empty even though the drawing routes perfectly. It was
+   * rejecting the seat that produces the cat with both ears.
+   */
+  const landNeeded = opts.landFrac ?? 1;
+  const onLand = (center: LatLng, scale: number, rot: number) => {
+    const pts = place([[0, 0], [-0.7, -0.7], [0.7, -0.7], [0.7, 0.7], [-0.7, 0.7]], center, scale, rot);
+    if (nearestNode(g, pts[0]!).d >= 250) return false;   // the middle must be on streets
+    let on = 0;
+    for (const p of pts) if (nearestNode(g, p).d < 250) on++;
+    return on >= Math.ceil(landNeeded * pts.length);
+  };
 
   // ---- seat list (cheap), nearest-to-centre first so a short budget still covers the core
   const [lat1, lng1, lat2, lng2] = opts.bbox;
@@ -493,6 +539,7 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
   const dLat = opts.stepM / 111320;
   const dLng = opts.stepM / (111320 * Math.cos((midLat * Math.PI) / 180));
   const plans = new Map<number, Stroke[]>();
+  let planFeatures: UnitPt[][] = [];
   for (const scale of opts.scales) {
     if (opts.design) {
       if (opts.design.strokes.length) plans.set(scale, opts.design.strokes);
@@ -505,7 +552,11 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
        * lines. Produced the heart / Strava / cat routes with zero connectors.
        */
       const bp = blockPlan(mask, w, h, opts.blockPlan === true ? {} : opts.blockPlan);
-      if (bp.strokes.length) plans.set(scale, bp.strokes);
+      if (bp.strokes.length) {
+        plans.set(scale, bp.strokes);
+        // score seats on whether the drawing's tips survive, not area alone
+        if (bp.features.length) planFeatures = bp.features;
+      }
       continue;
     }
     const plan = withPainterKnobs(opts.hugM, () => makePlan(mask, w, h, scale, { pitchM: 160, rows: 0, openM: opts.openM, minRelMass: opts.minRelMass }, []));
@@ -513,15 +564,55 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
   }
   if (!plans.size) return { ok: false, reason: "no-strokes", ms: elapsed() };
   const seats: State[] = [];
-  for (let lat = lat1; lat <= lat2; lat += dLat)
-    for (let lng = lng1; lng <= lng2; lng += dLng) {
-      const c: LatLng = [lat, lng];
-      const gi = localGridInfo(g, c);
-      for (const [scale, strokes] of plans)
-        for (const rot of uprightRots(gi ? gi.rot : 0, opts.maxRot)) if (onLand(c, scale, rot)) seats.push({ strokes, center: c, scale, rot });
+  const centres: LatLng[] = [];
+  if (opts.seatsFromGraph) {
+    // one centre per stepM cell, taken from a real intersection in that cell
+    const seen = new Set<string>();
+    for (let i = 0; i < g.coord.length; i += 7) {
+      const c = g.coord[i]!;
+      if (c[0] < lat1 || c[0] > lat2 || c[1] < lng1 || c[1] > lng2) continue;
+      const key = `${Math.round(c[0] / dLat)}:${Math.round(c[1] / dLng)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      centres.push(c);
     }
-  // interleave by distance from the window centre so any prefix is spread over the whole core
-  seats.sort((a, b) => Math.hypot(a.center[0] - midLat, a.center[1] - midLng) - Math.hypot(b.center[0] - midLat, b.center[1] - midLng));
+  } else {
+    for (let lat = lat1; lat <= lat2; lat += dLat)
+      for (let lng = lng1; lng <= lng2; lng += dLng) centres.push([lat, lng]);
+  }
+  for (const c of centres) {
+    const gi = localGridInfo(g, c);
+    const base = uprightRots(gi ? gi.rot : 0, opts.maxRot);
+    const rots = opts.rotOffsets?.length
+      ? Array.from(new Set(base.flatMap((r) => opts.rotOffsets!.map((d) => normRot(r + d)))))
+          .filter((r) => Math.abs(r) <= opts.maxRot)
+      : base;
+    for (const [scale, strokes] of plans)
+      for (const rot of rots) if (onLand(c, scale, rot)) seats.push({ strokes, center: c, scale, rot });
+  }
+  if (opts.prefilterTop && seats.length > opts.prefilterTop) {
+    // cheap pre-score: mean distance from the placed drawing's points to the
+    // nearest intersection. A seat whose points sit in water or a park cannot
+    // route, and finding that out by routing wastes the whole budget.
+    const pre = seats.map((st) => {
+      let sum = 0;
+      let n = 0;
+      for (const stroke of st.strokes) {
+        for (let i = 0; i < stroke.pts.length; i += Math.max(1, Math.floor(stroke.pts.length / 12))) {
+          const p = place([stroke.pts[i]!], st.center, st.scale, st.rot)[0]!;
+          sum += Math.min(400, nearestNode(g, p).d);
+          n++;
+        }
+      }
+      return { st, score: n ? sum / n : 1e9 };
+    });
+    pre.sort((a, b) => a.score - b.score);
+    seats.length = 0;
+    seats.push(...pre.slice(0, opts.prefilterTop).map((x) => x.st));
+  } else {
+    // interleave by distance from the window centre so any prefix is spread over the whole core
+    seats.sort((a, b) => Math.hypot(a.center[0] - midLat, a.center[1] - midLng) - Math.hypot(b.center[0] - midLat, b.center[1] - midLng));
+  }
   await progress("Finding the best spot on the map", 4);
 
   // ---- sweep
