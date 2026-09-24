@@ -1439,7 +1439,27 @@ export function routePlacement(
     }
     if (!piece && s.kind !== "hatch") {
       const leg = s.kind === "outline" ? TRACE.outline : curvy ? TRACE.curvy : TRACE.thin;
-      const res = traceContour(g, target, { ...leg, closeLoop: s.kind === "outline", preserveRetraces: false });
+      /**
+       * The leg corridors are metre constants tuned at half-size 2,500 — the
+       * size-blind class of bug. A 9,000 m drawing has the same 65 m of room
+       * for a thin stroke, so a long line-art contour (the cat) traces at low
+       * coverage, is dropped, and the whole seat returns null. Grow the
+       * corridor with the drawing and retry wider before giving up; at 2,500
+       * both factors are 1, so nothing that worked before changes.
+       */
+      const widen = Math.max(1, scaleM / 2500);
+      const wide = (k: number) => ({
+        ...leg,
+        corridorM: leg.corridorM * widen * k,
+        anchorM: leg.anchorM * Math.min(widen, 2),
+        closeLoop: s.kind === "outline",
+        preserveRetraces: false,
+      });
+      let res = traceContour(g, target, wide(1));
+      if (res.chain.length < 2 || res.coverage <= 0.6) {
+        const retry = traceContour(g, target, wide(2.5));
+        if (retry.coverage > res.coverage) res = retry;
+      }
       if (res.chain.length >= 2 && res.coverage > 0.6) {
         const fixed: LatLng[] = [res.chain[0]!];
         for (let i = 1; i < res.chain.length; i++) {
