@@ -38,6 +38,15 @@ export function supportsRouteFinding(cityId: string): boolean {
   return ROUTE_FINDING_CITY_IDS.includes(cityId);
 }
 
+/**
+ * Which walk graph a city's drawings live on. A Brooklyn draft is seated on
+ * `nyc-core`, so anything that re-routes it (the edit step) must load the same
+ * graph - on Manhattan's 104k-node graph its streets do not exist.
+ */
+export function walkGraphIdFor(cityId: string): "manhattan" | "nyc-core" {
+  return cityId === "brooklyn" ? "nyc-core" : "manhattan";
+}
+
 export const MANHATTAN_PRESET: CityPreset = {
   id: "manhattan",
   label: "Manhattan",

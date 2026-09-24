@@ -11,6 +11,7 @@ import {
   type UnitPt,
 } from "../../../lib/strokePainter";
 import { trimClosingWalk } from "../../../lib/geoDraft";
+import { supportsRouteFinding, walkGraphIdFor } from "../../../lib/cityPresets";
 import { applyStrokeEdits, dropTinyStrokes, type StrokeEdit } from "../../../lib/strokeEdit";
 
 export const runtime = "nodejs";
@@ -49,14 +50,17 @@ export async function POST(req: Request) {
   }
 
   const cityId = typeof body.cityId === "string" ? body.cityId : "manhattan";
-  if (cityId !== "manhattan") {
-    return Response.json({ ok: false, reason: "manhattan-only" });
+  if (!supportsRouteFinding(cityId)) {
+    return Response.json({ ok: false, reason: "unsupported-city" });
   }
 
   const center = cleanLatLng(body.center);
   const scale = typeof body.scale === "number" && Number.isFinite(body.scale) ? body.scale : 0;
   const rot = typeof body.rot === "number" && Number.isFinite(body.rot) ? body.rot : 0;
-  if (!center || scale < 100 || scale > 6000) {
+  // Brooklyn drafts are seated far larger than Manhattan ever was (the cat at
+  // 4,000-9,000 against Manhattan's 1,300-1,700), so the old 6,000 ceiling
+  // rejected the very drawings this step exists to edit.
+  if (!center || scale < 100 || scale > 12000) {
     return Response.json({ ok: false, reason: "bad-placement" }, { status: 400 });
   }
 
@@ -72,7 +76,9 @@ export async function POST(req: Request) {
     return Response.json({ ok: false, reason: "nothing-left" });
   }
 
-  const g = (await getStreetGraph()) as unknown as PainterGraph;
+  // the SAME graph the draft was seated on: a Brooklyn drawing re-routed on
+  // Manhattan's graph has no streets under it at all
+  const g = (await getStreetGraph(walkGraphIdFor(cityId))) as unknown as PainterGraph;
   // the painter's hug tolerance is a module global; set it only around the call
   const prevHug = HUG_TOL_M;
   let routed: ReturnType<typeof routePlacement>;
