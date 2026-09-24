@@ -35,7 +35,13 @@ export function renderRouteOnCanvas(
   const pad = options.padding ?? DEFAULT_PADDING;
   const bg = options.background ?? "#ffffff";
   const stroke = options.stroke ?? "#111111";
-  const lineWidth = options.lineWidth ?? 2.5;
+  /**
+   * A 2.5 px line on a 640 px tile is a hairline once the tile is shown at
+   * ~350 px on a phone - Ralph's first phone run, Sep 24: "the cat looked
+   * awful". Scale the stroke with the tile instead (640 -> ~7 px, the 256 px
+   * vision grid stays at its old weight).
+   */
+  const lineWidth = options.lineWidth ?? Math.max(2.5, Math.min(w, h) / 90);
 
   ctx.fillStyle = bg;
   ctx.fillRect(x, y, w, h);
