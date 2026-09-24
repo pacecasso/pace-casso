@@ -28,6 +28,7 @@ import {
   type UnitPt,
 } from "./strokePainter";
 import { buildTarget, latLngToUnit, likenessAgainst, type Likeness, type Placement, type Target } from "./strokeLikeness";
+import { blockPlan, type BlockPlanOptions } from "./blockPlan";
 
 // ---------------------------------------------------------------------------
 // the drawing state and the edit moves
@@ -177,6 +178,12 @@ export type GeoDraftOptions = {
   tolU: number;
   maxKm: number;
   openM: number;
+  /**
+   * Plan the drawing with lib/blockPlan (block-grid outlines + centre lines for
+   * thin ink and thin gaps) instead of makePlan's outline + hatch. `true` takes
+   * its defaults. Off by default so existing callers are unchanged.
+   */
+  blockPlan?: boolean | BlockPlanOptions;
   hugM: number;
   sweepBudgetMs: number;
   totalBudgetMs: number;
@@ -489,6 +496,16 @@ export async function geoDraft(g: PainterGraph, mask: Uint8Array, w: number, h: 
   for (const scale of opts.scales) {
     if (opts.design) {
       if (opts.design.strokes.length) plans.set(scale, opts.design.strokes);
+      continue;
+    }
+    if (opts.blockPlan) {
+      /**
+       * The Sep 23 plan step: quantise mass onto the city's block grid, split
+       * parts along thin gaps, draw thin ink and outline drawings as centre
+       * lines. Produced the heart / Strava / cat routes with zero connectors.
+       */
+      const bp = blockPlan(mask, w, h, opts.blockPlan === true ? {} : opts.blockPlan);
+      if (bp.strokes.length) plans.set(scale, bp.strokes);
       continue;
     }
     const plan = withPainterKnobs(opts.hugM, () => makePlan(mask, w, h, scale, { pitchM: 160, rows: 0, openM: opts.openM, minRelMass: opts.minRelMass }, []));
