@@ -679,6 +679,12 @@ export default function WorkflowController() {
           <StepSourceChoice
             onBack={() => setCurrentStep(0)}
             onChooseImage={() => {
+              // /draw runs the GPU pipeline, the only one whose photo routes
+              // read; it covers New York only, so other cities keep the old flow
+              if (selectedCityId === "manhattan" || selectedCityId === "brooklyn") {
+                window.location.assign("/draw");
+                return;
+              }
               setSourceKind("image");
               setContourCoordinates(null);
               setUploadedImageBase64(null);

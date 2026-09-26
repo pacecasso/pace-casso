@@ -206,15 +206,23 @@ export default function DrawFlow() {
       </p>
       <div className="mt-6 grid gap-5 rounded-xl border border-pace-line bg-pace-white p-5 sm:grid-cols-[1fr_220px]">
         <div className="flex flex-col gap-4">
-          <label className="text-sm font-semibold">
+          <div className="text-sm font-semibold">
             Your picture
+            {/* the native file input reads as plain text; a real button stands in for it */}
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <label htmlFor="draw-file" className="pace-btn-ghost pace-btn-ghost--sm cursor-pointer">
+                {file ? "Change picture" : "Choose picture"}
+              </label>
+              <span className="min-w-0 truncate font-normal text-pace-muted">{file ? file.name : "No picture chosen yet"}</span>
+            </div>
             <input
+              id="draw-file"
               type="file"
               accept="image/png,image/jpeg,image/webp"
               onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              className="mt-2 block w-full text-sm"
+              className="sr-only"
             />
-          </label>
+          </div>
           <label className="text-sm font-semibold">
             Email me when it is ready (optional)
             <input
