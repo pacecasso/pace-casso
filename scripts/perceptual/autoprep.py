@@ -45,6 +45,47 @@ if len(q):
         ink = onplate
         print("badge: logo taken off its backing colour")
 ink = nd.binary_opening(ink, iterations=1)
+
+# frame rule: a photo of a print (canvas mockup, framed poster) puts the
+# print's edge or its shadow beside the drawing as a long straight hairline.
+# Routed, that hairline became a spur off the side of the cat (Sep 26 job
+# 7c6da300). Drop a line only when it is straight, axis-aligned, long, touches
+# no other ink, and is thinner than the drawing's own stroke or broken up.
+# A shadow comes out dashed (9 pieces, gaps up to 88 px on a 450 px photo),
+# so pieces are clustered by the column/row they sit on, not by gap size.
+from skimage.morphology import skeletonize
+H, W = ink.shape
+stroke = ink.sum() / max(skeletonize(ink).sum(), 1)
+lab, _ = nd.label(ink, structure=np.ones((3, 3)))
+slices = nd.find_objects(lab)
+for axis in (0, 1):  # 0 = vertical lines, 1 = horizontal
+    span, other = (H, W) if axis == 0 else (W, H)
+    tmax = max(4, 0.015 * other)
+    # pieces whose whole extent is a thin band across this axis
+    thin = [(i, sl) for i, sl in enumerate(slices, 1)
+            if sl[1 - axis].stop - sl[1 - axis].start <= tmax]
+    thin.sort(key=lambda p: p[1][1 - axis].start)
+    clusters: list = []
+    for p in thin:
+        if clusters and p[1][1 - axis].start - clusters[-1][0][1][1 - axis].start <= 3:
+            clusters[-1].append(p)
+        else:
+            clusters.append([p])
+    for c in clusters:
+        lo = min(sl[axis].start for _, sl in c); hi = max(sl[axis].stop for _, sl in c)
+        long_ = hi - lo
+        band = max(sl[1 - axis].stop for _, sl in c) - min(sl[1 - axis].start for _, sl in c)
+        if long_ < 0.4 * span or band > tmax:
+            continue
+        g = np.isin(lab, [i for i, _ in c])
+        covered = g.any(axis=1 - axis).sum() / long_
+        # an edge is mostly there; specks and a logo's "- TAGLINE -" dashes
+        # that happen to share a row cover ~13% of it (pacelogo)
+        if covered < 0.5:
+            continue
+        if g.sum() / long_ < 0.75 * stroke or covered < 0.85:
+            ink &= ~g
+            print(f"frame: dropped a {'vertical' if axis == 0 else 'horizontal'} edge line ({long_} px, {len(c)} pieces)")
 Image.fromarray(np.where(ink[..., None], [20, 20, 20], [255, 255, 255]).astype(np.uint8)).save(out)
 
 # ---- automatic subject name
