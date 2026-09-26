@@ -51,6 +51,8 @@ leg_cache = {}
 TURN = float(os.environ.get("TURN_M", "60"))
 KM_W = float(os.environ.get("KM_W", "0.006"))
 DEV_W = float(os.environ.get("DEV_W", "1.5"))
+# drawing half-size (m) the seat search samples from; detailed designs need the big end
+H_CHOICES = [float(v) for v in os.environ.get("H_CHOICES", "2500,3500,5000,7000,9000").split(",")]
 def route_leg(s, t):
     if (s, t) in leg_cache: return leg_cache[(s, t)]
     p = _route_leg(s, t, 1.0, 90000)
@@ -208,7 +210,7 @@ t0 = time.time()
 seats = []
 for _ in range(NSEATS):
     n = int(random.choice(land))
-    seats.append((float(NX[n]), float(NY[n]), random.choice([2500, 3500, 5000, 7000, 9000]), random.uniform(-35, 35)))
+    seats.append((float(NX[n]), float(NY[n]), random.choice(H_CHOICES), random.uniform(-35, 35)))
 res = []
 for i in range(0, len(seats), 24):
     res += evaluate(seats[i:i + 24])
