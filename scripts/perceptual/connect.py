@@ -13,6 +13,9 @@ from PIL import Image, ImageDraw
 from scipy.spatial import cKDTree
 
 seat = json.load(open(sys.argv[1])); OUT = sys.argv[2]
+# cost of re-running an already drawn street vs a new one: lower = connectors
+# retrace the drawing (invisible on the map) instead of cutting across it
+INK_W = float(__import__("os").environ.get("INK_W", "0.35"))
 g = json.load(open(r"C:\users\ralph\desktop\pace-casso\lib\data\nyc-core-walk-graph.json"))
 lat = np.array(g["lat"]) / g["scale"]; lng = np.array(g["lng"]) / g["scale"]
 LAT0 = 40.70; KX = math.cos(math.radians(LAT0)) * 111320; KY = 110540
@@ -40,7 +43,7 @@ def walk(src, targets):
             while path[-1] != src: path.append(prev[path[-1]])
             return path[::-1]
         for v in nbr[u]:
-            w = dist(u, v) * (0.35 if (min(u, v), max(u, v)) in ink else 1.0)
+            w = dist(u, v) * (INK_W if (min(u, v), max(u, v)) in ink else 1.0)
             if d + w < D.get(v, 1e18): D[v] = d + w; prev[v] = u; heapq.heappush(pq, (d + w, v))
     return None
 left = list(range(len(strokes)))

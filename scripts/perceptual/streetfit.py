@@ -201,16 +201,55 @@ def evaluate(pls, sku=SKU):
     sc = main.score(ims)
     out = []
     for (pl, st, miss, far), s in zip(res, sc):
-        pen = 1.0 * miss + 4.0 * far + KM_W * km_of(st)
+        km = km_of(st)
+        pen = 1.0 * miss + 4.0 * far + KM_W * km + (TURNS_W * turns_of(st) / km if TURNS_W and km else 0.0)
         out.append((float(s) - pen, pl, st, miss, far))
     return out
+
+# ---------------- grid alignment (ALIGN=1): a GPS artist puts the drawing's
+# straight lines ON long straight streets; random tilts turn every straight
+# side into a staircase. Seats are tilted so the design's dominant direction
+# matches the local street grid (both taken mod 90 degrees).
+ALIGN = os.environ.get("ALIGN", "0") == "1"
+TURNS_W = float(os.environ.get("TURNS_W", "0"))  # score charge per turn per km
+_ea = E[E[:, 0] != E[:, 1]]
+_mx = (NX[_ea[:, 0]] + NX[_ea[:, 1]]) / 2; _my = (NY[_ea[:, 0]] + NY[_ea[:, 1]]) / 2
+_dx = NX[_ea[:, 1]] - NX[_ea[:, 0]]; _dy = NY[_ea[:, 1]] - NY[_ea[:, 0]]
+_el = np.hypot(_dx, _dy); _ang = np.degrees(np.arctan2(_dy, _dx)) % 90
+_etree = cKDTree(np.stack([_mx, _my], 1))
+def mode90(ang, w):
+    h, _ = np.histogram(ang % 90, bins=45, range=(0, 90), weights=w)
+    h = h + np.roll(h, 1) + np.roll(h, -1)  # circular smoothing
+    return (int(h.argmax()) + 0.5) * 2.0
+def grid_bearing(cx, cy, r):
+    idx = _etree.query_ball_point([cx, cy], r)
+    return mode90(_ang[idx], _el[idx]) if len(idx) > 50 else None
+_seg = np.concatenate([np.diff(st, axis=0) for st in SKU if len(st) > 1])
+DESIGN_BEARING = mode90(np.degrees(np.arctan2(_seg[:, 1], _seg[:, 0])), np.hypot(_seg[:, 0], _seg[:, 1]))
+def aligned_rot(cx, cy, H):
+    g = grid_bearing(cx, cy, 0.6 * H)
+    if g is None: return random.uniform(-35, 35)
+    th = (g - DESIGN_BEARING) % 90
+    return th - 90 if th > 45 else th
+def turns_of(strokes):
+    n = 0
+    for p in strokes:
+        if len(p) < 3: continue
+        hx = np.diff(NX[p]); hy = np.diff(NY[p]); l = np.hypot(hx, hy); ok = l > 0
+        hx, hy, l = hx[ok], hy[ok], l[ok]
+        if len(l) < 2: continue
+        c = (hx[:-1] * hx[1:] + hy[:-1] * hy[1:]) / (l[:-1] * l[1:])
+        n += int((c < math.cos(math.radians(35))).sum())
+    return n
 
 # ---------------- stage 1: city-wide seats
 t0 = time.time()
 seats = []
 for _ in range(NSEATS):
     n = int(random.choice(land))
-    seats.append((float(NX[n]), float(NY[n]), random.choice(H_CHOICES), random.uniform(-35, 35)))
+    hh = random.choice(H_CHOICES)
+    rot = aligned_rot(float(NX[n]), float(NY[n]), hh) if ALIGN and random.random() < 0.8 else random.uniform(-35, 35)
+    seats.append((float(NX[n]), float(NY[n]), hh, rot))
 res = []
 for i in range(0, len(seats), 24):
     res += evaluate(seats[i:i + 24])
