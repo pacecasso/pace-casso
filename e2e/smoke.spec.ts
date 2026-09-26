@@ -148,6 +148,17 @@ test.describe("smoke", () => {
       page.getByRole("button", { name: /Draw on the map/i }),
     ).toBeVisible();
 
+    // New York photos go to /draw (the GPU pipeline); other cities keep the
+    // in-browser trace flow, which the next tests cover via Chicago
+    await page.getByRole("button", { name: /From a photo/i }).click();
+    await expect(page).toHaveURL(/\/draw$/);
+    await expect(page.getByText("Choose picture")).toBeVisible();
+  });
+
+  test("non-NYC city reaches the trace upload screen", async ({ page }) => {
+    await page.goto("/create");
+    await page.locator("#city-picker").selectOption("chicago");
+    await page.getByRole("button", { name: /^Continue\b/ }).click();
     await page.getByRole("button", { name: /From a photo/i }).click();
     await expect(page.getByText("Choose file")).toBeVisible();
     await expect(page.getByText("Detail", { exact: true })).toBeVisible();
@@ -158,6 +169,7 @@ test.describe("smoke", () => {
 
   test("svg upload traces and reaches placement screen", async ({ page }) => {
     await page.goto("/create");
+    await page.locator("#city-picker").selectOption("chicago");
     await page.getByRole("button", { name: /^Continue\b/ }).click();
     await page.getByRole("button", { name: /From a photo/i }).click();
 
@@ -169,11 +181,13 @@ test.describe("smoke", () => {
     await expect(nextButton).toBeEnabled({ timeout: 30_000 });
     await nextButton.click();
     await expect(page.getByText("Place on map").first()).toBeVisible();
+    // outside NYC the placement panel and the bottom bar both carry
+    // "Place it myself"; .last() is the bottom-bar action
     await expect(
-      page.getByRole("button", { name: /Place it myself|Continue with this route|Snap to streets/i }),
+      page.getByRole("button", { name: /Place it myself|Continue with this route|Snap to streets/i }).last(),
     ).toBeEnabled();
     await expect(
-      page.getByRole("button", { name: /Place it myself|Continue with this route|Snap to streets/i }),
+      page.getByRole("button", { name: /Place it myself|Continue with this route|Snap to streets/i }).last(),
     ).toBeInViewport();
     const pageScrolls = await page.evaluate(
       () =>
@@ -185,6 +199,7 @@ test.describe("smoke", () => {
 
   test("svg workflow reaches final GPX export with mocked routing", async ({ page }) => {
     await page.goto("/create");
+    await page.locator("#city-picker").selectOption("chicago");
     await page.getByRole("button", { name: /^Continue\b/ }).click();
     await page.getByRole("button", { name: /From a photo/i }).click();
 
@@ -206,7 +221,7 @@ test.describe("smoke", () => {
     }
     await page.getByRole("button", { name: /Next: place on map/i }).click();
     await expect(page.getByText("Place on map").first()).toBeVisible();
-    await page.getByRole("button", { name: /Place it myself|Continue with this route|Snap to streets/i }).click();
+    await page.getByRole("button", { name: /Place it myself|Continue with this route|Snap to streets/i }).last().click();
 
     await expect(page.getByText(/READY TO TUNE/i)).toBeVisible({
       timeout: 30_000,
