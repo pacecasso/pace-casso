@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getStreetGraph } from "../lib/streetGraphTrace";
 import type { PainterGraph } from "../lib/strokePainter";
-import { geoDraft, MANHATTAN_GEO_DEFAULTS } from "../lib/geoDraft";
+import { CENTRAL_PARK, geoDraft, MANHATTAN_GEO_DEFAULTS } from "../lib/geoDraft";
 import { loadMask } from "../lib/geoMask";
 import { paleRender, sideBySide, writeGpx } from "./finisher-shared";
 
@@ -27,6 +27,7 @@ async function main() {
   console.log(`graph + mask ${Date.now() - t0} ms`);
   const res = await geoDraft(g, mask, w, h, {
     ...MANHATTAN_GEO_DEFAULTS,
+    ...(opt("grid", "0") === "1" ? { bbox: [40.745, -74.01, 40.83, -73.92] as [number,number,number,number], avoid: [CENTRAL_PARK] } : {}),
     sweepBudgetMs: Math.round(budget * 0.6),
     totalBudgetMs: budget,
     onProgress: (s) => console.log(`[${((Date.now() - t0) / 1000).toFixed(0)}s] ${s}`),

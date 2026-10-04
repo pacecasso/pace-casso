@@ -21,20 +21,123 @@ import { renderMap } from "./trace-contour";
 const require2 = createRequire(path.join(process.cwd(), "package.json"));
 const sharp = require2("sharp");
 
-const argsIn = process.argv.slice(2).filter((a) => a !== "--exact");
-const EXACT = process.argv.includes("--exact");
+const rawArgs = process.argv.slice(2);
+const option = (name: string): string | undefined =>
+  rawArgs.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1);
+const argsIn = rawArgs.filter((arg) => !arg.startsWith("--"));
+const EXACT = rawArgs.includes("--exact");
 const IMG = argsIn[0];
 const OUT = argsIn[1] ?? "tmp-studio/run";
 const ROUNDS = Number(argsIn[2] ?? 4);
-if (!IMG) throw new Error("usage: npx tsx scripts/studio-commission.ts <image> <outdir> [rounds] [--exact]");
+const BUDGET_USD = Number(option("--budget-usd") ?? "0");
+const LEDGER_PATH = option("--ledger") ?? path.join(path.dirname(OUT), "cost-ledger.json");
+const OPENING_SPEND_USD = Number(option("--opening-spend-usd") ?? "0");
+if (!IMG) {
+  throw new Error(
+    "usage: npx tsx scripts/studio-commission.ts <image> <outdir> [rounds] [--exact] [--budget-usd=30] [--ledger=path]",
+  );
+}
 
 let KEY = "";
 let MAPBOX = "";
 
+// Fable list prices confirmed for this benchmark on 2026-09-27. The ledger
+// uses the API's returned token usage; its preflight reserve intentionally
+// overestimates image input so a cap is never treated as a soft suggestion.
+const FABLE_INPUT_USD_PER_MILLION = 10;
+const FABLE_OUTPUT_USD_PER_MILLION = 50;
+const IMAGE_INPUT_RESERVE_USD = 0.5;
+const TEXT_INPUT_RESERVE_USD = 0.05;
+
+type CostLedger = {
+  version: 1;
+  budgetUsd: number;
+  openingSpendUsd: number;
+  actualSpendUsd: number;
+  calls: number;
+  updatedAt: string;
+};
+
+let costLedger: CostLedger | null = null;
+
+async function loadCostLedger(): Promise<void> {
+  if (!Number.isFinite(BUDGET_USD) || BUDGET_USD <= 0) return;
+  try {
+    const previous = JSON.parse(await fs.readFile(LEDGER_PATH, "utf8")) as Partial<CostLedger>;
+    if (previous.version === 1 && Number.isFinite(previous.actualSpendUsd) && Number.isFinite(previous.budgetUsd)) {
+      costLedger = {
+        version: 1,
+        budgetUsd: Math.min(BUDGET_USD, Number(previous.budgetUsd)),
+        openingSpendUsd: Number(previous.openingSpendUsd ?? 0),
+        actualSpendUsd: Number(previous.actualSpendUsd),
+        calls: Number(previous.calls ?? 0),
+        updatedAt: String(previous.updatedAt ?? new Date().toISOString()),
+      };
+      return;
+    }
+  } catch {
+    // First capped run: create the ledger below.
+  }
+  costLedger = {
+    version: 1,
+    budgetUsd: BUDGET_USD,
+    openingSpendUsd: Math.max(0, Number.isFinite(OPENING_SPEND_USD) ? OPENING_SPEND_USD : 0),
+    actualSpendUsd: Math.max(0, Number.isFinite(OPENING_SPEND_USD) ? OPENING_SPEND_USD : 0),
+    calls: 0,
+    updatedAt: new Date().toISOString(),
+  };
+  await persistCostLedger();
+}
+
+async function persistCostLedger(): Promise<void> {
+  if (!costLedger) return;
+  costLedger.updatedAt = new Date().toISOString();
+  await fs.mkdir(path.dirname(LEDGER_PATH), { recursive: true });
+  await fs.writeFile(LEDGER_PATH, `${JSON.stringify(costLedger, null, 2)}\n`, "utf8");
+}
+
+function imageCount(messages: Msg[]): number {
+  return (JSON.stringify(messages).match(/"type":"image"/g) ?? []).length;
+}
+
+async function reserveCost(messages: Msg[], maxTokens: number): Promise<void> {
+  if (!costLedger) return;
+  const maxOutput = (Math.max(0, maxTokens) / 1_000_000) * FABLE_OUTPUT_USD_PER_MILLION;
+  const inputReserve = TEXT_INPUT_RESERVE_USD + imageCount(messages) * IMAGE_INPUT_RESERVE_USD;
+  const reserve = maxOutput + inputReserve;
+  if (costLedger.actualSpendUsd + reserve > costLedger.budgetUsd) {
+    throw new Error(
+      `budget guard: $${costLedger.actualSpendUsd.toFixed(2)} logged, next call reserves $${reserve.toFixed(2)}, cap is $${costLedger.budgetUsd.toFixed(2)}`,
+    );
+  }
+}
+
+async function recordCost(json: any): Promise<void> {
+  if (!costLedger) return;
+  const inputTokens = Number(json?.usage?.input_tokens ?? 0);
+  const outputTokens = Number(json?.usage?.output_tokens ?? 0);
+  if (!Number.isFinite(inputTokens) || !Number.isFinite(outputTokens)) return;
+  costLedger.actualSpendUsd +=
+    (inputTokens / 1_000_000) * FABLE_INPUT_USD_PER_MILLION +
+    (outputTokens / 1_000_000) * FABLE_OUTPUT_USD_PER_MILLION;
+  costLedger.calls += 1;
+  await persistCostLedger();
+}
+
+function envValue(env: string, name: string): string {
+  const raw = env.match(new RegExp(`^${name}=(.+)$`, "m"))?.[1]?.trim() ?? "";
+  // .env files commonly quote values.  Passing those quote characters to an
+  // HTTP credential header is indistinguishable from an invalid API key.
+  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+    return raw.slice(1, -1);
+  }
+  return raw;
+}
+
 async function loadEnv() {
   const env = await fs.readFile(path.join(process.cwd(), ".env.local"), "utf8");
-  KEY = env.match(/^ANTHROPIC_API_KEY=(.+)$/m)?.[1]?.trim() ?? "";
-  MAPBOX = env.match(/^NEXT_PUBLIC_MAPBOX_TOKEN=(.+)$/m)?.[1]?.trim() ?? "";
+  KEY = envValue(env, "ANTHROPIC_API_KEY");
+  MAPBOX = envValue(env, "NEXT_PUBLIC_MAPBOX_TOKEN");
   if (!KEY) throw new Error("ANTHROPIC_API_KEY missing");
   if (!MAPBOX) throw new Error("NEXT_PUBLIC_MAPBOX_TOKEN missing");
 }
@@ -43,6 +146,7 @@ type Msg = { role: "user" | "assistant"; content: any };
 async function claude(model: string, messages: Msg[], maxTokens = 8000, system?: string): Promise<string> {
   for (let attempt = 0; attempt < 6; attempt++) {
     let res: Response;
+    await reserveCost(messages, maxTokens);
     try {
       res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -60,6 +164,7 @@ async function claude(model: string, messages: Msg[], maxTokens = 8000, system?:
     }
     if (!res.ok) throw new Error(`anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
     const json: any = await res.json();
+    await recordCost(json);
     return (json.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join(" ").trim();
   }
   throw new Error("anthropic: retries exhausted");
@@ -465,6 +570,7 @@ function writeGpx(chain: [number, number][], name: string): string {
 async function main() {
   await loadEnv();
   await fs.mkdir(OUT, { recursive: true });
+  await loadCostLedger();
   const log: string[] = [];
   const say = (s: string) => {
     console.log(s);
@@ -472,6 +578,11 @@ async function main() {
   };
   const feedback: Feedback[] = [];
   const keepers: any[] = [];
+  if (costLedger) {
+    say(
+      `budget ledger: $${costLedger.actualSpendUsd.toFixed(2)} logged of $${costLedger.budgetUsd.toFixed(2)} cap (${costLedger.calls} metered call(s))`,
+    );
+  }
 
   if (EXACT) {
     // Single-pass fidelity lane: the contour IS the upload's geometry.

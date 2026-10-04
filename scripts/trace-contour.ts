@@ -13,6 +13,7 @@
  * Run: npx tsx scripts/trace-contour.ts <shape> <centerLat> <centerLng> <scaleMeters> [rotDeg]
  */
 import fs from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import sharp from "sharp";
@@ -360,7 +361,14 @@ function uniline(): LL[] {
     [-0.04, 0.42], [0.04, 0.34], [0.10, 0.46], [0.04, 0.56],              // mane to horn base
   ] as LL[];
 }
-const SHAPES: Record<string, () => LL[]> = { circle, heart, apple, fish, swoosh, swooshstroke: swooshStroke, star, crescent, dog, unicorn, cat, uniline };
+// gas: the extracted pump+hose+figure contour (tmp-trace/gas-shape.json,
+// unit coords in [-1,1]) - THE acceptance-bar subject, one connected line.
+const gas = (): LL[] => {
+  const raw = JSON.parse(readFileSync("tmp-trace/gas-shape.json", "utf8")) as [number, number][];
+  return raw.map(([x, y]) => [x, y] as LL);
+};
+
+const SHAPES: Record<string, () => LL[]> = { circle, heart, apple, fish, swoosh, swooshstroke: swooshStroke, star, crescent, dog, unicorn, cat, uniline, gas };
 
 function place(unit: LL[], center: LL, scaleM: number, rotDeg: number): LL[] {
   const r = (rotDeg * Math.PI) / 180, cos = Math.cos(r), sin = Math.sin(r);
@@ -384,7 +392,7 @@ async function renderMap(chain: LL[], target: LL[], file: string, w = 1400, h = 
   // is shown). Heavy red double-strokes on the busy OSM map made routes read
   // as clumsy blobs; this is the honest presentation.
   for (let tx = Math.floor(vx / TILE); tx <= Math.floor((vx + w) / TILE); tx++) for (let ty = Math.floor(vy / TILE); ty <= Math.floor((vy + h) / TILE); ty++) {
-    const res = await fetch(`https://a.basemaps.cartocdn.com/light_all/${zoom}/${tx}/${ty}@2x.png`, { headers: { "User-Agent": "pace-casso route preview (dev)" } });
+    const res = await fetch(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${zoom}/${ty}/${tx}`, { headers: { "User-Agent": "pace-casso route preview (dev)" } });
     if (!res.ok) continue;
     tiles.push({ input: await sharp(Buffer.from(await res.arrayBuffer())).resize(TILE, TILE).toBuffer(), left: Math.round(tx * TILE - vx), top: Math.round(ty * TILE - vy) });
   }

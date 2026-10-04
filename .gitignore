@@ -37,3 +37,15 @@ playwright/.cache
 
 # first-user audit artifacts (screenshots), local only
 /ux-audit/
+
+# local route exports, notes and benchmark sheets (never tracked)
+/*.gpx
+/pcasso question.txt
+/ROUTES-TODAY/
+/benchmark-assets/
+/ .codex/
+/GO_NO_GO.md
+/RECOVERY_AUDIT.md
+
+# TypeScript incremental build cache
+tsconfig.tsbuildinfo
