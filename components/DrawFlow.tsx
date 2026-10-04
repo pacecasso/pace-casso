@@ -17,7 +17,6 @@ const Step5PreviewMap = dynamic(() => import("./Step5PreviewMap"), {
 type Route = { km: number; points: [number, number][] };
 type Status = {
   status: "queued" | "running" | "done" | "failed";
-  ahead: number;
   createdAt: number;
   routes: Route[];
   error: string | null;
@@ -81,9 +80,14 @@ export default function DrawFlow() {
     if (!jobId) return;
     let stop = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Each poll reads the job blob (two Blob operations). A run takes
+    // 15-30 min, so 45 s is plenty; after half an hour the tab may have
+    // been forgotten and every 5 min is enough.
+    const started = Date.now();
     const tick = async () => {
       const finished = await poll(jobId).catch(() => false);
-      if (!stop && !finished) timer = setTimeout(tick, 20_000);
+      if (stop || finished) return;
+      timer = setTimeout(tick, Date.now() - started < 30 * 60_000 ? 45_000 : 5 * 60_000);
     };
     void tick();
     return () => {
@@ -134,11 +138,7 @@ export default function DrawFlow() {
         {status && (status.status === "queued" || status.status === "running") ? (
           <div className="mt-5 rounded-xl border border-pace-line bg-pace-white p-5">
             <p className="font-bebas text-lg tracking-[0.08em]">
-              {status.status === "queued"
-                ? status.ahead > 0
-                  ? `In line - ${status.ahead} drawing${status.ahead === 1 ? "" : "s"} ahead of yours`
-                  : "In line - starting soon"
-                : "Fitting your drawing onto the streets"}
+              {status.status === "queued" ? "In line - waiting for the next free slot" : "Fitting your drawing onto the streets"}
             </p>
             <p className="mt-2 text-sm leading-relaxed text-pace-muted">
               We try hundreds of places, sizes and angles across New York and keep the ones that still look like

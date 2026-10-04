@@ -1,4 +1,4 @@
-import { cleanRoutes, dequeue, loadDrawJob, queuedIds, saveDrawJob, workerAuthorized } from "../../../../lib/drawJob";
+import { cleanRoutes, dequeue, loadDrawJob, queuedIds, saveDrawJob, setQueueFlag, workerAuthorized } from "../../../../lib/drawJob";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -10,6 +10,10 @@ const RECLAIM_MS = 60 * 60_000;
  * The GPU worker's side of the queue (scripts/perceptual/worker.ts).
  * GET claims the oldest queued job and returns its image; POST stores the
  * routes. Both need DRAW_WORKER_SECRET as a bearer token.
+ *
+ * An empty claim lowers the queue flag and returns its URL, so the worker
+ * can watch the flag over the CDN and only come back here when an upload
+ * raised it again. Each GET here costs a Blob list(), so it must stay rare.
  */
 export async function GET(req: Request) {
   if (!workerAuthorized(req)) return Response.json({ error: "unauthorized" }, { status: 401 });
@@ -23,9 +27,10 @@ export async function GET(req: Request) {
     job.status = "running";
     job.claimedAt = Date.now();
     await saveDrawJob(job);
-    return Response.json({ job: { id: job.id, imageBase64: job.imageBase64 } });
+    return Response.json({ job: { id: job.id, imageBase64: job.imageBase64 }, flagUrl: null });
   }
-  return Response.json({ job: null });
+  const flagUrl = await setQueueFlag(false);
+  return Response.json({ job: null, flagUrl });
 }
 
 export async function POST(req: Request) {

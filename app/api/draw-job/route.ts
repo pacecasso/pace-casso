@@ -1,7 +1,7 @@
 import { rateLimitAllow } from "../../../lib/mapboxRateLimit";
 import { shieldExpensiveRoute, trustedClientIp } from "../../../lib/apiShield";
 import { jobStoreConfigured } from "../../../lib/routeJobStore";
-import { enqueue, loadDrawJob, newDrawJobId, queuedIds, saveDrawJob, type DrawJob } from "../../../lib/drawJob";
+import { enqueue, loadDrawJob, newDrawJobId, saveDrawJob, type DrawJob } from "../../../lib/drawJob";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -49,20 +49,17 @@ export async function POST(req: Request) {
   return Response.json({ jobId: job.id });
 }
 
-/** Status for the page; never returns the image or the email. */
+/**
+ * Status for the page; never returns the image or the email. No queue
+ * position: that cost a Blob list() on every page poll.
+ */
 export async function GET(req: Request) {
   const id = new URL(req.url).searchParams.get("id") ?? "";
   const job = await loadDrawJob(id);
   if (!job) return Response.json({ error: "not found" }, { status: 404 });
-  let ahead = 0;
-  if (job.status === "queued") {
-    const q = await queuedIds();
-    ahead = Math.max(0, q.indexOf(job.id));
-  }
   return Response.json({
     jobId: job.id,
     status: job.status,
-    ahead,
     createdAt: job.createdAt,
     subject: job.subject,
     routes: job.status === "done" ? job.routes : [],

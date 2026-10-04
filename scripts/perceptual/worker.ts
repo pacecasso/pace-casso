@@ -6,6 +6,13 @@
  *   SITE=https://www.pacecasso.com npx tsx scripts/perceptual/worker.ts
  *
  * One job at a time: each run holds the 500k-node graph (~1.8 GB) and the GPU.
+ *
+ * Polling is cheap by design: an empty claim hands back the URL of a public
+ * "queue flag" blob, and from then on the worker only reads that URL over
+ * the CDN (cached 60 s, no Blob operation). It calls the claim API, which
+ * costs a Blob list(), only when the flag says something is queued. Idle
+ * waits start at 1 min and double to 10 min. The old 15 s claim loop used
+ * up a month of Blob operations in about 8 hours (Sep 26).
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -15,7 +22,8 @@ const SITE = (process.env.SITE ?? "http://localhost:3000").replace(/\/$/, "");
 // the secret lives outside the repo; the same value is DRAW_WORKER_SECRET on Vercel
 const SECRET_FILE = "C:/Users/ralph/pacecasso-worker-secret.txt";
 const SECRET = (process.env.DRAW_WORKER_SECRET ?? (existsSync(SECRET_FILE) ? readFileSync(SECRET_FILE, "utf8") : "")).trim();
-const POLL_MS = 15_000;
+const IDLE_MIN_MS = 60_000;
+const IDLE_MAX_MS = 10 * 60_000;
 if (!SECRET) throw new Error("DRAW_WORKER_SECRET is required");
 
 const auth = { Authorization: `Bearer ${SECRET}`, "Content-Type": "application/json" };
@@ -54,11 +62,26 @@ function extFor(b64: string): string {
   return "png";
 }
 
-async function once(): Promise<boolean> {
+type Claim = { job: { id: string; imageBase64: string } | null; flagUrl: string | null };
+
+async function claim(): Promise<Claim> {
   const res = await fetch(`${SITE}/api/draw-job/worker`, { headers: auth });
   if (!res.ok) throw new Error(`claim ${res.status}`);
-  const { job } = (await res.json()) as { job: { id: string; imageBase64: string } | null };
-  if (!job) return false;
+  return (await res.json()) as Claim;
+}
+
+/** true when the flag blob says work is queued; null when it could not be read */
+async function flagRaised(url: string): Promise<boolean | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return (await res.text()).trim() === "1";
+  } catch {
+    return null;
+  }
+}
+
+async function work(job: NonNullable<Claim["job"]>): Promise<void> {
   const dir = path.join("tmp-auto", "jobs", job.id);
   mkdirSync(dir, { recursive: true });
   const b64 = job.imageBase64.includes(",") ? job.imageBase64.slice(job.imageBase64.indexOf(",") + 1) : job.imageBase64;
@@ -83,19 +106,42 @@ async function once(): Promise<boolean> {
     body: JSON.stringify({ id: job.id, routes, subject, error: routes.length ? null : `pipeline exit ${code}` }),
   });
   console.log(`  ${routes.length} routes (${routes.map((r) => r.km + " km").join(", ")}) in ${((Date.now() - t0) / 60000).toFixed(1)} min -> ${post.status}`);
-  return true;
 }
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
   console.log(`worker polling ${SITE}`);
+  let flagUrl: string | null = null;
+  let idle = IDLE_MIN_MS;
   for (;;) {
-    let worked = false;
     try {
-      worked = await once();
+      // With a flag URL in hand, only the flag is read while idle. A
+      // failed flag read falls through to the claim API, so a bad CDN
+      // response cannot leave jobs stranded.
+      const raised = flagUrl ? await flagRaised(flagUrl) : true;
+      if (raised === false) {
+        await sleep(idle);
+        idle = Math.min(idle * 2, IDLE_MAX_MS);
+        continue;
+      }
+      const c = await claim();
+      if (c.flagUrl) {
+        if (!flagUrl) console.log(`  watching queue flag ${c.flagUrl}`);
+        flagUrl = c.flagUrl;
+      }
+      if (!c.job) {
+        await sleep(idle);
+        idle = Math.min(idle * 2, IDLE_MAX_MS);
+        continue;
+      }
+      idle = IDLE_MIN_MS;
+      await work(c.job);
     } catch (e) {
       console.log(`  ${(e as Error).message}`);
+      await sleep(idle);
+      idle = Math.min(idle * 2, IDLE_MAX_MS);
     }
-    if (!worked) await new Promise((r) => setTimeout(r, POLL_MS));
   }
 }
 main();

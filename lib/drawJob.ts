@@ -35,7 +35,15 @@ export type DrawJob = {
 };
 
 const QUEUE_PREFIX = "draw-queue";
+/**
+ * One public blob holding "1" while anything is queued, "0" otherwise. The
+ * worker polls THIS over the CDN (cached 60 s, no Blob operation) instead
+ * of listing the queue every few seconds: list() is an advanced operation
+ * and a 15 s poll used up a month of them in hours (Sep 26).
+ */
+const FLAG_PATH = "draw-queue-flag";
 const FS_QUEUE = path.join(process.cwd(), ".route-jobs", QUEUE_PREFIX);
+const FS_FLAG = path.join(process.cwd(), ".route-jobs", FLAG_PATH);
 const usingBlob = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 
 export function newDrawJobId(): string {
@@ -52,6 +60,27 @@ export async function loadDrawJob(id: string): Promise<DrawJob | null> {
   return j && j.kind === "draw" ? j : null;
 }
 
+/**
+ * Raise or lower the queue flag. Returns the flag's public URL on Blob
+ * (the worker polls it directly), null on the filesystem backend.
+ */
+export async function setQueueFlag(pending: boolean): Promise<string | null> {
+  if (usingBlob()) {
+    const { put } = await import("@vercel/blob");
+    const r = await put(FLAG_PATH, pending ? "1" : "0", {
+      access: "public",
+      contentType: "text/plain",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      cacheControlMaxAge: 60, // the Blob minimum; a new upload is seen within a minute
+    });
+    return r.url;
+  }
+  await fs.mkdir(path.dirname(FS_FLAG), { recursive: true });
+  await fs.writeFile(FS_FLAG, pending ? "1" : "0");
+  return null;
+}
+
 export async function enqueue(id: string): Promise<void> {
   if (usingBlob()) {
     const { put } = await import("@vercel/blob");
@@ -62,17 +91,18 @@ export async function enqueue(id: string): Promise<void> {
       allowOverwrite: true,
       cacheControlMaxAge: 0,
     });
-    return;
+  } else {
+    await fs.mkdir(FS_QUEUE, { recursive: true });
+    await fs.writeFile(path.join(FS_QUEUE, id), id);
   }
-  await fs.mkdir(FS_QUEUE, { recursive: true });
-  await fs.writeFile(path.join(FS_QUEUE, id), id);
+  await setQueueFlag(true);
 }
 
 export async function dequeue(id: string): Promise<void> {
   if (usingBlob()) {
-    const { list, del } = await import("@vercel/blob");
-    const { blobs } = await list({ prefix: `${QUEUE_PREFIX}/${id}` });
-    if (blobs.length) await del(blobs.map((b) => b.url));
+    const { del } = await import("@vercel/blob");
+    // del by pathname: no list() round trip (that was an advanced op per dequeue)
+    await del(`${QUEUE_PREFIX}/${id}`);
     return;
   }
   await fs.rm(path.join(FS_QUEUE, id), { force: true });
