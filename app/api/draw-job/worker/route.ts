@@ -29,7 +29,10 @@ export async function GET(req: Request) {
     await saveDrawJob(job);
     return Response.json({ job: { id: job.id, imageBase64: job.imageBase64 }, flagUrl: null });
   }
-  const flagUrl = await setQueueFlag(false);
+  // A failed flag write (e.g. the Blob store suspended, Oct 4) must not turn
+  // an empty claim into a 500: the worker then falls back to claiming with
+  // its own backoff.
+  const flagUrl = await setQueueFlag(false).catch(() => null);
   return Response.json({ job: null, flagUrl });
 }
 
