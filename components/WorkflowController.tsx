@@ -38,6 +38,9 @@ import Step5RouteComplete from "./Step5RouteComplete";
 import StepStrokeEdit, { type StrokeEditHandoff } from "./StepStrokeEdit";
 import StepCityGate from "./StepCityGate";
 import StepFreehandMapDraw from "./StepFreehandMapDraw";
+import StepTapRoute from "./StepTapRoute";
+import type { TapRouteState } from "../lib/tapRoute";
+import { centroidLatLng, latLngPathToNormalizedContour } from "../lib/latLngPathToNormalizedContour";
 import StepSourceChoice from "./StepSourceChoice";
 import BrandLogo from "./BrandLogo";
 import SocialLinks from "./SocialLinks";
@@ -128,6 +131,13 @@ export default function WorkflowController() {
    * routes anyway, because the draft already hands over street geometry.
    */
   const [strokeDraft, setStrokeDraft] = useState<StrokeEditHandoff | null>(null);
+  /**
+   * Manual drawing style. "tap" = onthegomap-style tap-to-route (default);
+   * "sketch" = the older freehand pen that snaps afterwards.
+   */
+  const [freehandStyle, setFreehandStyle] = useState<"tap" | "sketch">("tap");
+  /** The tap route's points + leg modes, so Export → back reopens it as drawn. */
+  const [tapRouteDraft, setTapRouteDraft] = useState<TapRouteState | null>(null);
   const [snappedRoute, setSnappedRoute] = useState<RouteLineString | null>(
     null,
   );
@@ -361,6 +371,7 @@ export default function WorkflowController() {
     setEditedRoute(null);
     setFinalRoute(null);
     setSourceKind(null);
+    setTapRouteDraft(null);
   }, []);
 
   const clearPlacedRouteData = useCallback(() => {
@@ -736,7 +747,46 @@ export default function WorkflowController() {
           />
         )}
 
-        {currentStep === 2 && sourceKind === "freehand" && (
+        {currentStep === 2 && sourceKind === "freehand" && freehandStyle === "tap" && (
+          <StepTapRoute
+            defaultCenter={cityPreset.defaultCenter}
+            initialRoute={tapRouteDraft}
+            onBack={() => {
+              setTapRouteDraft(null);
+              goBackToSourcePicker();
+            }}
+            onSwitchToSketch={() => setFreehandStyle("sketch")}
+            onComplete={({ route, coordinates, distanceMeters }) => {
+              // Already on streets, leg by leg: skip the snap and the editor
+              // and go straight to export. "Back" from export reopens this.
+              const line: RouteLineString = {
+                coordinates,
+                distanceMeters,
+                blockWaypoints: route.points,
+                preserveBlockWaypoints: true,
+              };
+              setTapRouteDraft(route);
+              setContourCoordinates(
+                latLngPathToNormalizedContour(coordinates) as NormalizedPoint[],
+              );
+              setUploadedImageBase64(null);
+              setUploadedImageName(null);
+              setSketchApproved(true);
+              setAnchorLocation({
+                anchorLatLngs: coordinates,
+                center: centroidLatLng(coordinates),
+                rotationDeg: 0,
+                scale: 1,
+              });
+              setSnappedRoute(line);
+              setEditedRoute(line);
+              setFinalRoute(line);
+              setCurrentStep(6);
+            }}
+          />
+        )}
+
+        {currentStep === 2 && sourceKind === "freehand" && freehandStyle === "sketch" && (
           <StepFreehandMapDraw
             defaultCenter={cityPreset.defaultCenter}
             onBack={goBackToSourcePicker}
@@ -880,6 +930,11 @@ export default function WorkflowController() {
               anchorLocation={anchorLocation}
               routeSource={sourceKind === "freehand" ? "freehand" : "image"}
               onBackToFineTune={() => {
+                if (sourceKind === "freehand" && tapRouteDraft) {
+                  setFinalRoute(null);
+                  setCurrentStep(2);
+                  return;
+                }
                 const routeToTune = finalRoute ?? editedRoute ?? snappedRoute;
                 if (routeToTune) {
                   setSnappedRoute(routeToTune);

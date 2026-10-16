@@ -26,7 +26,7 @@ export const DEFAULT_RUNNER_PROFILE: RunnerProfile = {
   unit: DEFAULT_UNIT,
 };
 
-const KM_PER_MI = 1.609344;
+export const KM_PER_MI = 1.609344;
 
 export function loadRunnerProfile(): RunnerProfile {
   if (typeof window === "undefined") return DEFAULT_RUNNER_PROFILE;

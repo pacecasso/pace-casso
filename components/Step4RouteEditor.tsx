@@ -28,6 +28,16 @@ import {
 import MapChunkFallback from "./MapChunkFallback";
 import MapStepSplitLayout from "./MapStepSplitLayout";
 import ShapeMatchMeter from "./ShapeMatchMeter";
+import type { RouteContextRequest } from "./routeMap/RouteMapLayers";
+import {
+  DistanceBadge,
+  Icons,
+  isTypingTarget,
+  MapPill,
+  PillButton,
+  RouteContextMenu,
+  type ContextMenuItem,
+} from "./routeMap/RouteMapChrome";
 
 const Step4LeafletMap = dynamic(() => import("./Step4LeafletMap"), {
   ssr: false,
@@ -682,11 +692,11 @@ export default function Step4RouteEditor({
   const [legOverrides, setLegOverrides] = useState<(LegOverride | null)[]>([]);
   const [spurBusy, setSpurBusy] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(false);
-  const [quickTipsOpen, setQuickTipsOpen] = useState(true);
+  const [menu, setMenu] = useState<RouteContextRequest | null>(null);
   /** Collapsed by default on mobile so the toggles + meters row doesn't
    *  dominate the short sidebar. Always visible on desktop via `lg:block`. */
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
-  const [runnerProfile] = useRunnerProfile();
+  const [runnerProfile, setRunnerProfile] = useRunnerProfile();
   const [undoPast, setUndoPast] = useState<EditHistorySnapshot[]>([]);
   const [redoFuture, setRedoFuture] = useState<EditHistorySnapshot[]>([]);
   /**
@@ -956,6 +966,9 @@ export default function Step4RouteEditor({
     setWaypoints(
       sl.length >= 2 ? orderWaypointsAlongLine(sl, raw) : raw,
     );
+    // Handles on by default unless it's a hero-scale route, where hundreds
+    // of dots would smear the drawing (UX audit, Aug 29).
+    setShowWaypointDots(raw.length <= 80);
     initialRef.current = snappedRoute;
     setUndoPast([]);
     setRedoFuture([]);
@@ -973,11 +986,18 @@ export default function Step4RouteEditor({
   const editSeqRef = useRef(0);
 
   const commitWaypoints = useCallback(
-    (next: Waypoint[], nextLegOverrides?: (LegOverride | null)[]) => {
+    (
+      next: Waypoint[],
+      nextLegOverrides?: (LegOverride | null)[],
+      /** Undo target when the edit started from a state never committed
+       *  (drag-to-insert: the inserted point and its move are one undo). */
+      undoBase?: EditHistorySnapshot,
+    ) => {
       editSeqRef.current += 1;
       setUndoPast((past) => [
         ...past,
-        makeEditSnapshot(waypointsRef.current, legOverridesRef.current),
+        undoBase ??
+          makeEditSnapshot(waypointsRef.current, legOverridesRef.current),
       ]);
       setRedoFuture([]);
       setWaypoints(next);
@@ -1359,22 +1379,33 @@ export default function Step4RouteEditor({
   }, [commitWaypoints, shiftSelectedIndices, spurBusy, streetLine]);
 
   const handleWaypointDragEnd = useCallback(
-    async (index: number, lat: number, lng: number) => {
-      const wp = [...waypointsRef.current];
+    async (
+      index: number,
+      lat: number,
+      lng: number,
+      /** Start from this uncommitted state instead of the current one. */
+      base?: {
+        wp: Waypoint[];
+        legs: Waypoint[][];
+        ov: (LegOverride | null)[];
+        undo: EditHistorySnapshot;
+      },
+    ) => {
+      const wp = [...(base?.wp ?? waypointsRef.current)];
       if (index < 0 || index >= wp.length) return;
       const drop: Waypoint = [lat, lng];
 
       const nLegs = Math.max(0, wp.length - 1);
       if (nLegs === 0) {
         wp[index] = drop;
-        commitWaypoints(wp);
+        commitWaypoints(wp, undefined, base?.undo);
         setShiftSelectedIndices([]);
         setSelectedWaypointIndex(index);
         return;
       }
 
-      const legs = legPolylinesRef.current;
-      const prevOv = legOverridesRef.current;
+      const legs = base?.legs ?? legPolylinesRef.current;
+      const prevOv = base?.ov ?? legOverridesRef.current;
 
       /**
        * Polyline-first drag. If the drop is within 60 m of the current red
@@ -1461,7 +1492,7 @@ export default function Step4RouteEditor({
           }
         }
 
-        commitWaypoints(wp, nextOv);
+        commitWaypoints(wp, nextOv, base?.undo);
         setShiftSelectedIndices([]);
         setSelectedWaypointIndex(index);
         return;
@@ -1494,7 +1525,7 @@ export default function Step4RouteEditor({
           nextOv[index] = await mapboxWalkingPolylineWithRetry(from, to);
         }
         if (editSeqRef.current !== seqAtStart) return; // superseded by a newer edit
-        commitWaypoints(wp, nextOv);
+        commitWaypoints(wp, nextOv, base?.undo);
         setShiftSelectedIndices([]);
         setSelectedWaypointIndex(index);
       } finally {
@@ -1502,6 +1533,82 @@ export default function Step4RouteEditor({
       }
     },
     [commitWaypoints],
+  );
+
+  /**
+   * Drag the line to bend it (onthegomap / Google Maps): split the grabbed
+   * leg locally at the grab point, then run the normal drag-end on the new
+   * handle — near-line drops stay local, far drops route through Mapbox.
+   * One undo step restores the line as it was before the grab.
+   */
+  const handleLineDragInsert = useCallback(
+    (legIndex: number, from: Waypoint, to: Waypoint) => {
+      const wp = waypointsRef.current;
+      const legs = legPolylinesRef.current;
+      const prevOv = legOverridesRef.current;
+      const leg = legs[legIndex];
+      if (!leg || leg.length < 2) return;
+      const c = closestPointOnLegs([leg], from);
+      if (!c) return;
+      const { left, right } = splitLegAt(leg, c.segIndex, c.point);
+      const parentSpur = prevOv[legIndex]?.isSpur ?? false;
+      const newWp: Waypoint[] = [
+        ...wp.slice(0, legIndex + 1),
+        c.point,
+        ...wp.slice(legIndex + 1),
+      ];
+      const newLegs: Waypoint[][] = [];
+      const newOv: (LegOverride | null)[] = [];
+      for (let j = 0; j < legs.length; j++) {
+        if (j === legIndex) {
+          newLegs.push(left, right);
+          newOv.push(
+            { coords: left, isSpur: parentSpur },
+            { coords: right, isSpur: parentSpur },
+          );
+        } else {
+          newLegs.push(legs[j]!);
+          newOv.push(prevOv[j] ?? { coords: legs[j]!, isSpur: false });
+        }
+      }
+      void handleWaypointDragEnd(legIndex + 1, to[0], to[1], {
+        wp: newWp,
+        legs: newLegs,
+        ov: newOv,
+        undo: makeEditSnapshot(wp, prevOv),
+      });
+    },
+    [handleWaypointDragEnd],
+  );
+
+  /** Re-route one leg on walkable streets (context menu). */
+  const rerouteLeg = useCallback(
+    async (legIndex: number) => {
+      const wp = waypointsRef.current;
+      const a = wp[legIndex];
+      const b = wp[legIndex + 1];
+      if (!a || !b || spurBusy) return;
+      setSpurBusy(true);
+      const seqAtStart = editSeqRef.current;
+      try {
+        const r = await mapboxWalkingPolylineWithRetry(a, b);
+        if (editSeqRef.current !== seqAtStart) return;
+        const legs = legPolylinesRef.current;
+        const prevOv = legOverridesRef.current;
+        const next: (LegOverride | null)[] = [];
+        for (let j = 0; j < wp.length - 1; j++) {
+          next.push(
+            j === legIndex
+              ? r
+              : (prevOv[j] ?? (legs[j] ? { coords: legs[j]!, isSpur: false } : null)),
+          );
+        }
+        commitWaypoints(wp, next);
+      } finally {
+        setSpurBusy(false);
+      }
+    },
+    [commitWaypoints, spurBusy],
   );
 
   const handleMapReady = useCallback((map: LeafletMap) => {
@@ -1537,6 +1644,75 @@ export default function Step4RouteEditor({
     removeAt,
     deleteSelectedWaypoints,
   ]);
+
+  const fitRoute = useCallback(() => {
+    const m = mapRef.current;
+    const line = legPolylinesRef.current.flat();
+    if (!m || line.length < 2) return;
+    m.fitBounds(line, { padding: [56, 56], maxZoom: 17 });
+  }, []);
+
+  const toggleUnit = useCallback(() => {
+    setRunnerProfile({
+      ...runnerProfile,
+      unit: runnerProfile.unit === "mi" ? "km" : "mi",
+    });
+  }, [runnerProfile, setRunnerProfile]);
+
+  // onthegomap-style shortcuts (Delete/Backspace handled above).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      const k = e.key.toLowerCase();
+      const mod = e.ctrlKey || e.metaKey;
+      if ((mod && k === "z" && e.shiftKey) || k === "y") {
+        e.preventDefault();
+        redo();
+      } else if (k === "z") {
+        e.preventDefault();
+        undo();
+      } else if (mod) {
+        return;
+      } else if (k === "f") {
+        fitRoute();
+      } else if (k === "u") {
+        toggleUnit();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fitRoute, redo, toggleUnit, undo]);
+
+  const menuItems = useMemo((): ContextMenuItem[] => {
+    if (!menu) return [];
+    if (menu.target.kind === "point") {
+      const i = menu.target.index;
+      return [
+        {
+          label: "Remove point",
+          icon: Icons.clear,
+          disabled: waypoints.length <= 2,
+          onSelect: () => removeAt(i),
+        },
+      ];
+    }
+    const { legIndex, at } = menu.target;
+    return [
+      {
+        label: "Add point here",
+        icon: Icons.dots,
+        onSelect: () => void handleMapDoubleClick(at[0], at[1]),
+      },
+      {
+        label: "Re-route on streets",
+        icon: Icons.walk,
+        disabled: spurBusy,
+        onSelect: () => void rerouteLeg(legIndex),
+      },
+    ];
+  }, [menu, waypoints.length, removeAt, handleMapDoubleClick, rerouteLeg, spurBusy]);
+
+  const closeMenu = useCallback(() => setMenu(null), []);
 
   const resnapSpurLegs = useCallback(async () => {
     if (spurBusy) return;
@@ -1666,10 +1842,13 @@ export default function Step4RouteEditor({
               Tune your route
             </span>
             <span className="font-dm text-[11px] leading-relaxed text-pace-muted">
-              <strong className="text-pace-ink">Double-tap</strong> the line to
-              add a point · <strong className="text-pace-ink">drag</strong> to
-              move · <strong className="text-pace-ink">Delete</strong> to
-              remove.
+              <strong className="text-pace-ink">Drag the line</strong> to bend
+              it · <strong className="text-pace-ink">drag a point</strong> to
+              move it · <strong className="text-pace-ink">double-tap</strong>{" "}
+              the line to add a point ·{" "}
+              <strong className="text-pace-ink">right-click</strong> (long-press
+              on a phone) for more. Shift+click selects several points;
+              Delete removes them.
               {spurBusy ? (
                 <span className="ml-1 font-medium text-pace-yellow">
                   Connecting…
@@ -1830,42 +2009,6 @@ export default function Step4RouteEditor({
               </span>
               <button
                 type="button"
-                onClick={undo}
-                disabled={!undoPast.length}
-                aria-label={
-                  undoPast.length
-                    ? `Undo last edit (${undoPast.length} step${undoPast.length === 1 ? "" : "s"} available)`
-                    : "Undo — nothing to undo yet"
-                }
-                title={
-                  undoPast.length
-                    ? `Undo (${undoPast.length} step${undoPast.length === 1 ? "" : "s"})`
-                    : "Nothing to undo yet — edit a waypoint first"
-                }
-                className="min-h-[32px] rounded-full bg-pace-panel px-2 py-1 font-semibold text-pace-ink ring-1 ring-pace-line transition hover:bg-pace-line/80 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                ↶ Undo
-              </button>
-              <button
-                type="button"
-                onClick={redo}
-                disabled={!redoFuture.length}
-                aria-label={
-                  redoFuture.length
-                    ? `Redo last undone edit (${redoFuture.length} step${redoFuture.length === 1 ? "" : "s"} available)`
-                    : "Redo — nothing to redo"
-                }
-                title={
-                  redoFuture.length
-                    ? `Redo (${redoFuture.length} step${redoFuture.length === 1 ? "" : "s"})`
-                    : "Nothing to redo — undo something first"
-                }
-                className="min-h-[32px] rounded-full bg-pace-panel px-2 py-1 font-semibold text-pace-ink ring-1 ring-pace-line transition hover:bg-pace-line/80 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                ↷ Redo
-              </button>
-              <button
-                type="button"
                 onClick={() => void makeSelectedWaypointStart()}
                 disabled={spurBusy || !canMakeStartingPoint}
                 title={makeStartTitle}
@@ -1875,49 +2018,11 @@ export default function Step4RouteEditor({
               </button>
               <button
                 type="button"
-                onClick={reverseRouteDirection}
-                disabled={!canReverseRouteDirection}
-                title={reverseRouteTitle}
-                className="rounded-full bg-pace-panel px-2 py-1 font-semibold text-pace-ink ring-1 ring-pace-line hover:bg-pace-line/80 disabled:opacity-40"
-              >
-                Reverse
-              </button>
-              <button
-                type="button"
                 onClick={restart}
                 className="rounded-full bg-pace-panel px-2 py-1 font-semibold text-pace-ink ring-1 ring-pace-line hover:bg-pace-line/80"
               >
                 Reset
               </button>
-              <div className="flex items-center gap-1 rounded-full border border-pace-line bg-pace-panel px-2 py-1">
-                <span className="text-[11px] text-pace-muted">Zoom</span>
-                <button
-                  type="button"
-                  className="rounded bg-pace-white px-1.5 text-xs font-bold text-pace-ink shadow-sm ring-1 ring-pace-line"
-                  onClick={() => zoomBy(1)}
-                >
-                  +
-                </button>
-                <button
-                  type="button"
-                  className="rounded bg-pace-white px-1.5 text-xs font-bold text-pace-ink shadow-sm ring-1 ring-pace-line"
-                  onClick={() => zoomBy(-1)}
-                >
-                  −
-                </button>
-              </div>
-              <span
-                className="font-semibold tabular-nums text-pace-ink"
-                title="Distance · estimated time at your easy pace (edit on the final step)"
-              >
-                ~{formatDistance(distanceKm, runnerProfile.unit)}
-                <span className="ml-1 text-pace-muted">
-                  ·{" "}
-                  {formatDuration(
-                    estimateSeconds(distanceKm, runnerProfile.paceSecPerKm),
-                  )}
-                </span>
-              </span>
             </div>
           </div>
         </>
@@ -1955,40 +2060,12 @@ export default function Step4RouteEditor({
       }
       map={
         <div className="relative h-full min-h-0 w-full">
-          {quickTipsOpen ? (
-            <div className="absolute inset-x-4 bottom-4 z-[500] max-w-sm rounded-xl border border-pace-line bg-pace-white/95 p-3 font-dm text-[11px] text-pace-muted shadow-lg backdrop-blur-sm">
-              <div className="flex items-start justify-between gap-2">
-                <p className="font-bebas text-xs tracking-[0.12em] text-pace-yellow">
-                  Quick tips
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setQuickTipsOpen(false)}
-                  className="-mr-1 -mt-0.5 shrink-0 rounded-md p-1 font-dm text-lg leading-none text-pace-muted transition hover:bg-pace-line/80 hover:text-pace-ink"
-                  aria-label="Close quick tips"
-                >
-                  ×
-                </button>
-              </div>
-              <p className="mt-1 leading-snug pr-1">
-                <strong className="text-pace-ink">Set start</strong> picks where
-                your run begins · <strong className="text-pace-ink">Reverse</strong>{" "}
-                flips direction.
-              </p>
-              <p className="mt-0.5 leading-snug pr-1">
-                <strong className="text-pace-ink">Shift+click</strong> selects
-                more than one point.
-              </p>
-            </div>
-          ) : null}
-
           <Step4LeafletMap
             center={center}
             fitBoundsStaticLine={fitBoundsStaticLine}
             fitBoundsFallbackLine={waypoints}
             streetLine={streetLine}
             showFaintFullStreet={showFaintFullStreet}
-            activeRouteLine={activeRouteLine}
             originalArt={originalArt}
             originalArtConnectorSegments={originalArtConnectorSegments}
             showOriginalArt={showArtControls && showOriginalArt}
@@ -2002,8 +2079,77 @@ export default function Step4RouteEditor({
             onWaypointMarkerClick={handleWaypointMarkerClick}
             onWaypointDragEnd={handleWaypointDragEnd}
             onMapDoubleClickLatLng={handleMapDoubleClick}
+            onLineDragInsert={handleLineDragInsert}
+            onContextMenu={setMenu}
+            unit={runnerProfile.unit}
             onMapReady={handleMapReady}
           />
+
+          <MapPill
+            className={`top-3 ${railCollapsed ? "left-3 lg:left-[7.25rem]" : "left-3"}`}
+          >
+            <PillButton
+              label="Undo"
+              shortcut="Z"
+              onClick={undo}
+              disabled={!undoPast.length}
+            >
+              {Icons.undo}
+            </PillButton>
+            <PillButton
+              label="Redo"
+              shortcut="Y"
+              onClick={redo}
+              disabled={!redoFuture.length}
+            >
+              {Icons.redo}
+            </PillButton>
+            <PillButton
+              label={reverseRouteTitle}
+              onClick={reverseRouteDirection}
+              disabled={!canReverseRouteDirection}
+            >
+              {Icons.reverse}
+            </PillButton>
+            <PillButton
+              label={showWaypointDots ? "Hide points" : "Show points"}
+              active={showWaypointDots}
+              onClick={() => setShowWaypointDots((v) => !v)}
+            >
+              {Icons.dots}
+            </PillButton>
+          </MapPill>
+
+          <MapPill className="bottom-3 left-3">
+            <PillButton label="Fit route to screen" shortcut="F" onClick={fitRoute}>
+              {Icons.fit}
+            </PillButton>
+          </MapPill>
+
+          <MapPill className="bottom-[5.25rem] right-3 flex-col max-sm:hidden">
+            <PillButton label="Zoom in" onClick={() => zoomBy(1)}>
+              <span className="text-lg leading-none">+</span>
+            </PillButton>
+            <PillButton label="Zoom out" onClick={() => zoomBy(-1)}>
+              <span className="text-lg leading-none">−</span>
+            </PillButton>
+          </MapPill>
+
+          <DistanceBadge
+            meters={distanceMeters}
+            profile={runnerProfile}
+            onToggleUnit={toggleUnit}
+            busy={spurBusy}
+          />
+
+          {menu ? (
+            <RouteContextMenu
+              x={menu.x}
+              y={menu.y}
+              items={menuItems}
+              onClose={closeMenu}
+            />
+          ) : null}
         </div>
       }
     />

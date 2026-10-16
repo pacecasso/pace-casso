@@ -8,8 +8,6 @@
 import { useCallback, useEffect, useMemo } from "react";
 import {
   MapContainer,
-  Marker,
-  Pane,
   Polyline,
   TileLayer,
   useMap,
@@ -20,6 +18,11 @@ import { OSM_TILE_ATTRIBUTION, OSM_TILE_URL } from "../lib/mapAttribution";
 import { useLeafletContainerId } from "../lib/useLeafletContainerId";
 import LeafletInvalidateOnResize from "./LeafletInvalidateOnResize";
 import type { LatLngExpression } from "leaflet";
+import RouteMapLayers, {
+  type RouteContextRequest,
+} from "./routeMap/RouteMapLayers";
+import { joinLegs } from "../lib/tapRoute";
+import type { DistanceUnit } from "../lib/runnerProfile";
 
 type Waypoint = [number, number];
 
@@ -91,8 +94,6 @@ export type Step4LeafletMapProps = {
   /** Full Mapbox/snapped geometry (only drawn when true — avoids “dead” tails past your waypoints). */
   streetLine: Waypoint[];
   showFaintFullStreet: boolean;
-  /** Merged path through current waypoints — bold “active” route. */
-  activeRouteLine: Waypoint[];
   originalArt: Waypoint[];
   originalArtConnectorSegments?: [Waypoint, Waypoint][];
   showOriginalArt: boolean;
@@ -109,6 +110,14 @@ export type Step4LeafletMapProps = {
   onWaypointMarkerClick: (index: number, shiftKey: boolean) => void;
   onWaypointDragEnd: (index: number, lat: number, lng: number) => void;
   onMapDoubleClickLatLng: (lat: number, lng: number) => void;
+  /** Mouse dragged the line out of leg `legIndex` at `from`, dropped at `to`. */
+  onLineDragInsert: (
+    legIndex: number,
+    from: [number, number],
+    to: [number, number],
+  ) => void;
+  onContextMenu: (req: RouteContextRequest) => void;
+  unit: DistanceUnit;
   onMapReady: (map: L.Map) => void;
 };
 
@@ -118,7 +127,6 @@ export default function Step4LeafletMap({
   fitBoundsFallbackLine,
   streetLine,
   showFaintFullStreet,
-  activeRouteLine,
   originalArt,
   originalArtConnectorSegments = [],
   showOriginalArt,
@@ -132,47 +140,28 @@ export default function Step4LeafletMap({
   onWaypointMarkerClick,
   onWaypointDragEnd,
   onMapDoubleClickLatLng,
+  onLineDragInsert,
+  onContextMenu,
+  unit,
   onMapReady,
 }: Step4LeafletMapProps) {
-  const waypointIcons = useMemo(
-    () => ({
-      normal: L.divIcon({
-        className: "pace-waypoint-icon",
-        html: `<div style="width:18px;height:18px;border-radius:9999px;background:#f59e0b;border:3px solid #fef3c7;box-shadow:0 2px 8px rgba(0,0,0,0.45);pointer-events:auto;cursor:grab;"></div>`,
-        iconSize: [18, 18],
-        iconAnchor: [9, 9],
-      }),
-      selected: L.divIcon({
-        className: "pace-waypoint-icon pace-waypoint-icon--selected",
-        html: `<div style="width:20px;height:20px;border-radius:9999px;background:#f59e0b;border:3px solid #fff;box-shadow:0 0 0 2px rgba(245,158,11,0.9),0 2px 10px rgba(0,0,0,0.5);pointer-events:auto;cursor:grab;"></div>`,
-        iconSize: [20, 20],
-        iconAnchor: [10, 10],
-      }),
-      /** Shift multi-select (2+): same square frame on every marked waypoint. */
-      multiSquare: L.divIcon({
-        className: "pace-waypoint-icon pace-waypoint-icon--multi",
-        html: `<div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;position:relative;pointer-events:auto;cursor:grab;">
-          <div style="position:absolute;inset:0;border:2px solid #fff;border-radius:3px;box-shadow:0 0 0 2px rgba(245,158,11,0.95),0 2px 10px rgba(0,0,0,0.5);pointer-events:none;"></div>
-          <div style="width:12px;height:12px;border-radius:9999px;background:#f59e0b;border:2px solid #fef3c7;flex-shrink:0;"></div>
-        </div>`,
-        iconSize: [28, 28],
-        iconAnchor: [14, 14],
-      }),
-    }),
-    [],
+  const spurSet = useMemo(() => new Set(spurLegIndices ?? []), [spurLegIndices]);
+  const mapLegs = useMemo(
+    () =>
+      legPolylines.map((coords, i) => ({
+        coords: coords as [number, number][],
+        fallback: spurSet.has(i),
+      })),
+    [legPolylines, spurSet],
   );
-
-  const multiSelectActive = shiftSelectedIndices.length > 1;
-
-  function waypointIconFor(i: number): L.DivIcon {
-    if (multiSelectActive && shiftSelectedIndices.includes(i)) {
-      return waypointIcons.multiSquare;
-    }
-    if (shiftSelectedIndices.includes(i) || selectedWaypointIndex === i) {
-      return waypointIcons.selected;
-    }
-    return waypointIcons.normal;
-  }
+  const joined = useMemo(() => joinLegs(mapLegs), [mapLegs]);
+  const selected = useMemo(
+    () =>
+      selectedWaypointIndex === null
+        ? shiftSelectedIndices
+        : [...shiftSelectedIndices, selectedWaypointIndex],
+    [selectedWaypointIndex, shiftSelectedIndices],
+  );
 
   const stableOnMap = useCallback(
     (m: L.Map) => {
@@ -191,6 +180,7 @@ export default function Step4LeafletMap({
       scrollWheelZoom
       dragging
       doubleClickZoom={false}
+      zoomControl={false}
     >
       <MapReady onMap={stableOnMap} />
       <LeafletInvalidateOnResize />
@@ -247,91 +237,19 @@ export default function Step4LeafletMap({
           }}
         />
       )}
-      {activeRouteLine.length > 1 && (
-        <Polyline
-          positions={activeRouteLine as LatLngExpression[]}
-          pathOptions={{
-            color: "#b91c1c",
-            weight: 6,
-            opacity: 0.95,
-            lineCap: "round",
-            lineJoin: "round",
-            interactive: false,
-          }}
-        />
-      )}
-      {/* Amber dashed overlay: each leg that fell back to a straight-line
-          spur (Mapbox failure). Users can spot the "teleport" at a glance
-          and tap Re-snap in the sidebar to retry. */}
-      {spurLegIndices && spurLegIndices.length > 0
-        ? spurLegIndices.map((legIndex) => {
-            const positions = legPolylines[legIndex];
-            if (!positions || positions.length < 2) return null;
-            return (
-              <Polyline
-                key={`spur-overlay-${legIndex}`}
-                positions={positions as LatLngExpression[]}
-                pathOptions={{
-                  color: "#f59e0b",
-                  weight: 6,
-                  opacity: 0.95,
-                  dashArray: "8,10",
-                  lineCap: "round",
-                  lineJoin: "round",
-                  interactive: false,
-                }}
-              />
-            );
-          })
-        : null}
-      {/* Invisible wide hit targets only — avoids stacking semi-transparent red on the visible route */}
-      <Pane name="step4RouteHitPane" style={{ zIndex: 450 }}>
-        {legPolylines.map((positions, legIndex) =>
-          positions.length >= 2 ? (
-            <Polyline
-              key={`leg-hit-${legIndex}`}
-              className="cursor-pointer"
-              positions={positions as LatLngExpression[]}
-              pathOptions={{
-                color: "#b91c1c",
-                weight: 22,
-                opacity: 0,
-                lineCap: "round",
-                lineJoin: "round",
-                interactive: true,
-              }}
-              eventHandlers={{
-                dblclick(e) {
-                  e.originalEvent?.preventDefault();
-                  e.originalEvent?.stopPropagation();
-                  const ll = e.latlng;
-                  onMapDoubleClickLatLng(ll.lat, ll.lng);
-                },
-              }}
-            />
-          ) : null,
-        )}
-      </Pane>
-      {showWaypoints &&
-        waypoints.map((pos, i) => (
-          <Marker
-            key={`wp-${i}-${pos[0].toFixed(6)}-${pos[1].toFixed(6)}`}
-            position={pos as LatLngExpression}
-            icon={waypointIconFor(i)}
-            zIndexOffset={1000 + i}
-            draggable
-            eventHandlers={{
-              click(e) {
-                e.originalEvent?.stopPropagation();
-                onWaypointMarkerClick(i, e.originalEvent.shiftKey);
-              },
-              dragend(e) {
-                const ll = e.target.getLatLng();
-                onWaypointDragEnd(i, ll.lat, ll.lng);
-              },
-            }}
-          />
-        ))}
+      <RouteMapLayers
+        legs={mapLegs}
+        line={joined}
+        points={waypoints as [number, number][]}
+        showPoints={showWaypoints}
+        selectedIndices={selected}
+        unit={unit}
+        onPointClick={(i, e) => onWaypointMarkerClick(i, e.originalEvent.shiftKey)}
+        onPointDragEnd={(i, to) => onWaypointDragEnd(i, to[0], to[1])}
+        onLineDoubleClick={(at) => onMapDoubleClickLatLng(at[0], at[1])}
+        onLineDragInsert={onLineDragInsert}
+        onContextMenu={onContextMenu}
+      />
     </MapContainer>
   );
 }
