@@ -138,7 +138,9 @@ export default function StepSourceChoice({
               From a photo
             </span>
             <span className="mt-0.5 block text-[11px] leading-snug text-pace-muted sm:text-xs">
-              Trace an image, place on map
+              {cityPreset?.id === "manhattan" || cityPreset?.id === "brooklyn"
+                ? "Upload a logo, we draw it on the streets"
+                : "New York only for now"}
             </span>
           </span>
         </button>

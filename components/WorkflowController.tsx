@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -10,7 +9,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { emojiToContour } from "../lib/emojiToContour";
 
 const CREATE_INTRO_STORAGE_KEY = "pacecasso-create-intro-dismissed-v1";
 import type { RouteLineString } from "../lib/routeTypes";
@@ -147,9 +145,6 @@ export default function WorkflowController() {
   const [showCreateIntro, setShowCreateIntro] = useState(false);
   const stepTitleRef = useRef<HTMLHeadingElement>(null);
 
-  const searchParams = useSearchParams();
-  const galleryHandOffDone = useRef(false);
-  const jobHandOffDone = useRef(false);
 
   useLayoutEffect(() => {
     // "Start Creating" (?new=1) always begins fresh: drop any saved draft
@@ -164,6 +159,13 @@ export default function WorkflowController() {
       return;
     }
     const raw = loadCreateDraft();
+    // Photo routes are made on /draw now. A saved draft still sitting in the
+    // old photo-tracing steps (before a route exists) can't be resumed.
+    if (raw && raw.sourceKind === "image" && Number(raw.currentStep) < 4) {
+      clearCreateDraft();
+      setDraftHydrated(true);
+      return;
+    }
     if (raw) {
       const d = reconcileDraft(raw);
       setCurrentStep(d.currentStep as StepNum);
@@ -208,92 +210,6 @@ export default function WorkflowController() {
       setShowCreateIntro(true);
     }
   }, []);
-
-  // Legacy /create?shape=<emoji> hand-off. Runs once after draft hydration
-  // and takes precedence over any in-progress design. Consumes the query
-  // params (via native history.replaceState) so a later reload doesn't
-  // clobber progress, then jumps straight to placement.
-  //
-  // The ?template=<id> variant was dropped along with the gallery's "style
-  // references" section — nothing links to it any more.
-  useEffect(() => {
-    if (!draftHydrated) return;
-    if (galleryHandOffDone.current) return;
-    const shapeRaw = searchParams.get("shape")?.trim() ?? "";
-    if (!shapeRaw) return;
-    galleryHandOffDone.current = true;
-
-    let contour: NormalizedPoint[] | null = null;
-    if (shapeRaw.length <= 16 && !/\s/.test(shapeRaw)) {
-      const traced = emojiToContour(shapeRaw);
-      if (traced && traced.length >= 4) contour = traced as NormalizedPoint[];
-    }
-
-    // Native replaceState instead of router.replace: it's synchronous and
-    // can't be dropped while the app-router is still hydrating (a hard load
-    // of /create?shape=… ignores an early router.replace).
-    window.history.replaceState(null, "", "/create");
-    if (!contour) return;
-
-    const cityParam = searchParams.get("city");
-    if (cityParam && CITY_PRESETS[cityParam]) {
-      setSelectedCityId(cityParam);
-      setCityPreset(CITY_PRESETS[cityParam]);
-    }
-    setContourCoordinates(contour);
-    setUploadedImageBase64(null);
-    setUploadedImageName(null);
-    setSourceKind("image");
-    setSketchApproved(true);
-    setAnchorLocation(null);
-    setSnappedRoute(null);
-    setEditedRoute(null);
-    setFinalRoute(null);
-    setCurrentStep(3);
-  }, [draftHydrated, searchParams]);
-
-  // Async job hand-off: /create?job=<id> from the result email. When this
-  // browser has no draft with art in it (another device, cleared storage),
-  // reconstruct the flow from the job's stored input so the placement step
-  // mounts — its own pickup effect then applies the job's result. The ?job
-  // param is deliberately NOT consumed; the placement step reads it too.
-  useEffect(() => {
-    if (!draftHydrated) return;
-    if (jobHandOffDone.current) return;
-    const jobId = searchParams.get("job")?.trim() ?? "";
-    if (!/^[0-9a-f]{32}$/.test(jobId)) return;
-    jobHandOffDone.current = true;
-    if (contourCoordinates && contourCoordinates.length >= 8) return;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/route-job?id=${encodeURIComponent(jobId)}`, {
-          cache: "no-store",
-        });
-        if (!res.ok) return;
-        const rec = (await res.json()) as { contour?: unknown; cityId?: unknown };
-        const contour = Array.isArray(rec.contour)
-          ? (rec.contour.filter(
-              (p): p is NormalizedPoint =>
-                !!p &&
-                typeof p === "object" &&
-                Number.isFinite((p as { x?: number }).x) &&
-                Number.isFinite((p as { y?: number }).y),
-            ) as NormalizedPoint[])
-          : [];
-        if (contour.length < 8) return;
-        if (typeof rec.cityId === "string" && CITY_PRESETS[rec.cityId]) {
-          setSelectedCityId(rec.cityId);
-          setCityPreset(CITY_PRESETS[rec.cityId]);
-        }
-        setContourCoordinates(contour);
-        setSourceKind("image");
-        setSketchApproved(true);
-        setCurrentStep(3);
-      } catch {
-        /* fall back to the normal fresh flow */
-      }
-    })();
-  }, [draftHydrated, searchParams, contourCoordinates]);
 
   const dismissCreateIntro = useCallback(() => {
     try {
@@ -690,19 +606,8 @@ export default function WorkflowController() {
           <StepSourceChoice
             onBack={() => setCurrentStep(0)}
             onChooseImage={() => {
-              // /draw runs the GPU pipeline, the only one whose photo routes
-              // read; it covers New York only, so other cities keep the old flow
-              if (selectedCityId === "manhattan" || selectedCityId === "brooklyn") {
-                window.location.assign("/draw");
-                return;
-              }
-              setSourceKind("image");
-              setContourCoordinates(null);
-              setUploadedImageBase64(null);
-              setUploadedImageName(null);
-              setSketchApproved(false);
-              clearPlacedRouteData();
-              setCurrentStep(2);
+              // every photo goes through /draw, the GPU pipeline
+              window.location.assign("/draw");
             }}
             onChooseFreehand={() => {
               setSourceKind("freehand");
