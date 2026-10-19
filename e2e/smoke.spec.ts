@@ -1,5 +1,4 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
-import path from "node:path";
 
 function distanceMeters(coords: [number, number][]): number {
   let total = 0;
@@ -148,104 +147,21 @@ test.describe("smoke", () => {
       page.getByRole("button", { name: /Draw on the map/i }),
     ).toBeVisible();
 
-    // New York photos go to /draw (the GPU pipeline); other cities keep the
-    // in-browser trace flow, which the next tests cover via Chicago
+    // every photo goes to /draw (the GPU pipeline)
     await page.getByRole("button", { name: /From a photo/i }).click();
     await expect(page).toHaveURL(/\/draw$/);
     await expect(page.getByText("Choose picture")).toBeVisible();
   });
 
-  test("non-NYC city reaches the trace upload screen", async ({ page }) => {
+  test("non-NYC city sends photos to /draw too", async ({ page }) => {
     await page.goto("/create");
     await page.locator("#city-picker").selectOption("chicago");
     await page.getByRole("button", { name: /^Continue\b/ }).click();
-    await page.getByRole("button", { name: /From a photo/i }).click();
-    await expect(page.getByText("Choose file")).toBeVisible();
-    await expect(page.getByText("Detail", { exact: true })).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: /Next: place on map/i }),
-    ).toBeDisabled();
-  });
-
-  test("svg upload traces and reaches placement screen", async ({ page }) => {
-    await page.goto("/create");
-    await page.locator("#city-picker").selectOption("chicago");
-    await page.getByRole("button", { name: /^Continue\b/ }).click();
-    await page.getByRole("button", { name: /From a photo/i }).click();
-
-    await page
-      .locator('input[type="file"]')
-      .setInputFiles(path.join(process.cwd(), "e2e", "fixtures", "simple-line.svg"));
-
-    const nextButton = page.getByRole("button", { name: /Next: place on map/i });
-    await expect(nextButton).toBeEnabled({ timeout: 30_000 });
-    await nextButton.click();
-    await expect(page.getByText("Place on map").first()).toBeVisible();
-    // outside NYC the placement panel and the bottom bar both carry
-    // "Place it myself"; .last() is the bottom-bar action
-    await expect(
-      page.getByRole("button", { name: /Place it myself|Continue with this route|Snap to streets/i }).last(),
-    ).toBeEnabled();
-    await expect(
-      page.getByRole("button", { name: /Place it myself|Continue with this route|Snap to streets/i }).last(),
-    ).toBeInViewport();
-    const pageScrolls = await page.evaluate(
-      () =>
-        document.documentElement.scrollHeight > window.innerHeight + 4 ||
-        document.body.scrollHeight > window.innerHeight + 4,
-    );
-    expect(pageScrolls).toBe(false);
-  });
-
-  test("svg workflow reaches final GPX export with mocked routing", async ({ page }) => {
-    await page.goto("/create");
-    await page.locator("#city-picker").selectOption("chicago");
-    await page.getByRole("button", { name: /^Continue\b/ }).click();
-    await page.getByRole("button", { name: /From a photo/i }).click();
-
-    await page
-      .locator('input[type="file"]')
-      .setInputFiles(path.join(process.cwd(), "e2e", "fixtures", "simple-line.svg"));
-
-    await expect(
-      page.getByRole("button", { name: /Next: place on map/i }),
-    ).toBeEnabled({ timeout: 30_000 });
-    // The trace step now leads with one good default. The style picker only
-    // appears when there's genuinely more than one option (e.g. an AI sketch
-    // came back), so click it when present and otherwise take the default.
-    const simpleLine = page
-      .getByRole("button", { name: /Simple line/i })
-      .first();
-    if (await simpleLine.isVisible().catch(() => false)) {
-      await simpleLine.click();
-    }
-    await page.getByRole("button", { name: /Next: place on map/i }).click();
-    await expect(page.getByText("Place on map").first()).toBeVisible();
-    await page.getByRole("button", { name: /Place it myself|Continue with this route|Snap to streets/i }).last().click();
-
-    await expect(page.getByText(/READY TO TUNE/i)).toBeVisible({
-      timeout: 30_000,
-    });
-    await page.getByRole("button", { name: /Tune route/i }).click();
-    // Assert the verdict panel renders, not which verdict it gives: this is
-    // mocked routing over a toy fixture, so the exact quality tone is not
-    // meaningful signal (the thresholds have unit tests). What matters for
-    // the smoke test is that the editor reaches a verdict and can export.
-    await expect(
-      page.getByText(/READY TO RUN|CHECK THIS|NOT YET/i).first(),
-    ).toBeVisible({ timeout: 30_000 });
-    await page.getByRole("button", { name: /Looks good/i }).click();
-    await expect(page.getByText(/Route ready/i)).toBeVisible({
-      timeout: 30_000,
-    });
-    await expect(
-      page.getByRole("button", { name: /Download GPX/i }),
-    ).toBeEnabled();
-
-    const downloadPromise = page.waitForEvent("download");
-    await page.getByRole("button", { name: /Download GPX/i }).click();
-    const download = await downloadPromise;
-    expect(download.suggestedFilename()).toBe("pacecasso-route.gpx");
+    const photo = page.getByRole("button", { name: /From a photo/i });
+    await expect(photo).toContainText("New York only for now");
+    await photo.click();
+    await expect(page).toHaveURL(/\/draw$/);
+    await expect(page.getByText("Choose picture")).toBeVisible();
   });
 
   test("help page loads", async ({ page }) => {
