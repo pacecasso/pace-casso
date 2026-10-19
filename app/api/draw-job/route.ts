@@ -62,6 +62,7 @@ export async function GET(req: Request) {
     status: job.status,
     createdAt: job.createdAt,
     subject: job.subject,
+    note: job.note ?? null,
     routes: job.status === "done" ? job.routes : [],
     error: job.error,
   });

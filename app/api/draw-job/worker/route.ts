@@ -38,7 +38,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   if (!workerAuthorized(req)) return Response.json({ error: "unauthorized" }, { status: 401 });
-  let body: { id?: unknown; routes?: unknown; subject?: unknown; error?: unknown };
+  let body: { id?: unknown; routes?: unknown; subject?: unknown; note?: unknown; error?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -49,6 +49,7 @@ export async function POST(req: Request) {
   const routes = cleanRoutes(body.routes);
   job.subject = typeof body.subject === "string" ? body.subject.slice(0, 120) : null;
   job.routes = routes;
+  job.note = typeof body.note === "string" ? body.note.slice(0, 200) : null;
   job.status = routes.length ? "done" : "failed";
   job.error = routes.length ? null : typeof body.error === "string" ? body.error.slice(0, 300) : "No route found.";
   // the upload is only needed by the worker; do not keep it

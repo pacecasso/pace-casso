@@ -17,7 +17,12 @@ export type DrawRoute = {
   km: number;
   /** [lat, lng], street-following, one continuous line */
   points: [number, number][];
+  /** pick = best with no distance limit; short = best under 25 km; alt = the runner-up */
+  label?: DrawLabel;
 };
+
+export type DrawLabel = "pick" | "short" | "alt";
+const LABELS: DrawLabel[] = ["pick", "short", "alt"];
 
 export type DrawJob = {
   kind: "draw";
@@ -30,6 +35,8 @@ export type DrawJob = {
   /** what the worker's automatic reading of the upload called it */
   subject: string | null;
   routes: DrawRoute[];
+  /** a line for the page about what could not be offered, e.g. no version under 25 km */
+  note?: string | null;
   error: string | null;
   claimedAt: number | null;
 };
@@ -151,7 +158,12 @@ export function cleanRoutes(raw: unknown): DrawRoute[] {
       }
     }
     const km = Number((r as { km?: unknown }).km);
-    if (points.length >= 2) out.push({ km: Number.isFinite(km) ? km : 0, points });
+    const label = (r as { label?: unknown }).label;
+    if (points.length >= 2) {
+      const route: DrawRoute = { km: Number.isFinite(km) ? km : 0, points };
+      if (LABELS.includes(label as DrawLabel)) route.label = label as DrawLabel;
+      out.push(route);
+    }
   }
   return out;
 }

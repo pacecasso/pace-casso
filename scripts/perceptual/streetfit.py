@@ -107,6 +107,35 @@ def _route_leg(s, t, widen, cap):
 sk = json.load(open(SK))["strokes"]
 SKU = [np.array([[(x / R) * 2 - 1, 1 - (y / R) * 2] for x, y in s]) for s in sk]  # unit, y up
 
+# ---------------- target distance (TARGET_KM): the runner names a distance and the
+# search aims at it instead of guessing a size. Calibrated on the Oct 12 fits
+# (28 drafts, 7 logos): ink km = 1.45 x H x L_UNIT / 1000 within +-10%, and the
+# connectors add ~8%, so route km ~ KM_PER_HL x H x L_UNIT / 1000. Sizes are
+# sampled from the implied H up to three times it, and the flat per-km charge
+# becomes a gentle charge on the gap to the target. The target is an AIM, not a
+# pin: the first version pinned it (over-length cost double, sizes only +-25%)
+# and a 10 km cat came back at 9.3 km as a tangle (Ralph: "A LOT worse"). Now
+# recognizability wins and the runner is told how long the readable version is.
+TARGET_KM = float(os.environ.get("TARGET_KM", "0") or 0)
+TARGET_W_OVER = float(os.environ.get("TARGET_W_OVER", "0.6"))   # charge at 2x the target
+TARGET_W_UNDER = float(os.environ.get("TARGET_W_UNDER", "0.3"))
+KM_PER_HL = 1.55
+H_MIN = float(os.environ.get("H_MIN", "700"))
+L_UNIT = float(sum(np.hypot(np.diff(s[:, 0]), np.diff(s[:, 1])).sum() for s in SKU if len(s) > 1))
+if TARGET_KM > 0 and L_UNIT > 0:
+    H0 = max(H_MIN, TARGET_KM * 1000 / (KM_PER_HL * L_UNIT))
+    # H_MULTS: size multipliers around H0. The default reaches well above the
+    # target (aim); the /draw "under 25 km" lane passes a menu at or below it (cap).
+    H_MULTS = [float(v) for v in os.environ.get("H_MULTS", "0.9,1.1,1.4,1.8,2.3,3.0").split(",")]
+    H_CHOICES = [H0 * f for f in H_MULTS]
+    print(f"target {TARGET_KM:.1f} km -> H0 {H0:.0f} m (L_unit {L_UNIT:.2f}), sizes {', '.join(f'{h:.0f}' for h in H_CHOICES)}", flush=True)
+def km_penalty(km_ink):
+    """score charge for length: flat per km, or distance from the target when one is set"""
+    if TARGET_KM > 0:
+        gap = (km_ink * 1.08 - TARGET_KM) / TARGET_KM
+        return TARGET_W_OVER * gap if gap > 0 else TARGET_W_UNDER * -gap
+    return KM_W * km_ink
+
 def place(pl, sku=SKU):
     cx, cy, H, th = pl
     c, s = math.cos(math.radians(th)), math.sin(math.radians(th))
@@ -202,7 +231,7 @@ def evaluate(pls, sku=SKU):
     out = []
     for (pl, st, miss, far), s in zip(res, sc):
         km = km_of(st)
-        pen = 1.0 * miss + 4.0 * far + KM_W * km + (TURNS_W * turns_of(st) / km if TURNS_W and km else 0.0)
+        pen = 1.0 * miss + 4.0 * far + km_penalty(km) + (TURNS_W * turns_of(st) / km if TURNS_W and km else 0.0)
         out.append((float(s) - pen, pl, st, miss, far))
     return out
 

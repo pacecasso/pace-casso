@@ -28,9 +28,9 @@ if (!SECRET) throw new Error("DRAW_WORKER_SECRET is required");
 
 const auth = { Authorization: `Bearer ${SECRET}`, "Content-Type": "application/json" };
 
-function run(cmd: string, args: string[], logFile: string): Promise<number> {
+function run(cmd: string, args: string[], logFile: string, env: Record<string, string> = {}): Promise<number> {
   return new Promise((resolve) => {
-    const p = spawn(cmd, args, { cwd: process.cwd() });
+    const p = spawn(cmd, args, { cwd: process.cwd(), env: { ...process.env, ...env } });
     const log: Buffer[] = [];
     p.stdout.on("data", (d: Buffer) => log.push(d));
     p.stderr.on("data", (d: Buffer) => log.push(d));
@@ -64,6 +64,92 @@ function extFor(b64: string): string {
 
 type Claim = { job: { id: string; imageBase64: string } | null; flagUrl: string | null };
 
+/** Nothing over this is ever offered; a runner can bike it or split it, but 65 km is the edge. */
+const MAX_KM = 65;
+/** The second lane: the best readable version that comes in under this. */
+const SHORT_KM = 25;
+/** A draft this far below the best draft's score (log-prob units) is a scribble. */
+const SCORE_GAP = 1.5;
+/**
+ * The flat length charge auto.sh gives the free search (KM_W). The fit's
+ * `score` has it subtracted, which made a 6.1 km heart outrank the 14.6 km
+ * one Ralph picked (Oct 12): adding it back ranks drafts by how much they
+ * look like the picture, which is what "our pick" means. Must match auto.sh.
+ */
+const FREE_KM_W = 0.02;
+
+type Draft = { seat: number; score: number; mainRank: number; km: number; points: [number, number][] };
+type Labeled = { km: number; points: [number, number][]; label: "pick" | "short" | "alt" };
+
+/**
+ * The drafts a fit run believes in, best score first.
+ *
+ * streetfit.py writes four finalists (seat0..3), each with a `score`
+ * (main-scorer log-prob minus penalties) and `main_rank` (how many of the
+ * scorer's own vocabulary words outranked the subject on that drawing; 0
+ * means the drawing reads as the subject). The Oct 12 batch (size-oct12.png)
+ * showed that the unreadable drafts were exactly the ones with main_rank > 0
+ * or a score 1.5+ below their siblings, and every readable draft passed both.
+ */
+function readDrafts(dir: string, kmW = 0): Draft[] {
+  const seats: Draft[] = [];
+  for (let i = 0; i < 4; i++) {
+    const gpx = path.join(dir, `route${i}.gpx`);
+    if (!existsSync(gpx)) continue;
+    let score = 0, mainRank = 0;
+    const meta = path.join(dir, "fit", `seat${i}.json`);
+    if (existsSync(meta)) {
+      try {
+        const j = JSON.parse(readFileSync(meta, "utf8")) as { score?: number; main_rank?: number; km_ink?: number };
+        // recognizability: the fit's score with the flat length charge added back
+        score = Number(j.score ?? 0) + kmW * Number(j.km_ink ?? 0);
+        mainRank = Number(j.main_rank ?? 0);
+      } catch {
+        /* unreadable meta: keep the draft, the old behaviour */
+      }
+    }
+    const points = gpxPoints(gpx);
+    if (points.length < 2) continue;
+    seats.push({ seat: i, score, mainRank, km: km(points), points });
+  }
+  const best = Math.max(...seats.map((s) => s.score), -Infinity);
+  const kept = seats.filter((s) => s.mainRank === 0 && s.score >= best - SCORE_GAP);
+  const dropped = seats.filter((s) => !kept.includes(s));
+  if (dropped.length) {
+    console.log(`  ${path.basename(dir)}: dropped ${dropped.map((s) => `seat${s.seat} (score ${s.score.toFixed(2)}, rank ${s.mainRank})`).join(", ")}`);
+  }
+  return kept.sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Two lanes (Ralph, Oct 12): "our pick" is the best readable draft with no
+ * distance limit beyond MAX_KM, because his picks were the largest draft in
+ * every row of distance-oct12.png; then one that comes in under SHORT_KM for
+ * the runner who will not do 35 km. The free search covers the short lane
+ * when it happens to land one; otherwise fit-short.sh refits under the cap,
+ * and only a result that passes the same recognition test is used. A third
+ * slot takes the free search's runner-up.
+ */
+async function chooseLanes(dir: string): Promise<{ routes: Labeled[]; note: string | null }> {
+  const free = readDrafts(dir, FREE_KM_W).filter((d) => d.km <= MAX_KM);
+  const pick = free[0];
+  if (!pick) return { routes: [], note: null };
+  const strip = (d: Draft, label: Labeled["label"]): Labeled => ({ km: d.km, points: d.points, label });
+  const routes: Labeled[] = [strip(pick, "pick")];
+  let note: string | null = null;
+  let short = free.find((d) => d !== pick && d.km <= SHORT_KM);
+  if (!short && pick.km > SHORT_KM) {
+    console.log(`  nothing under ${SHORT_KM} km in the free search; refitting under the cap`);
+    await run("bash", ["scripts/perceptual/fit-short.sh", dir, String(SHORT_KM)], path.join(dir, "short.log"));
+    short = readDrafts(path.join(dir, "short")).find((d) => d.km <= SHORT_KM);
+    if (!short) note = `This picture does not read under ${SHORT_KM} km, so there is no shorter version.`;
+  }
+  if (short) routes.push(strip(short, "short"));
+  const alt = free.find((d) => d !== pick && d !== short);
+  if (alt) routes.push(strip(alt, "alt"));
+  return { routes, note };
+}
+
 async function claim(): Promise<Claim> {
   const res = await fetch(`${SITE}/api/draw-job/worker`, { headers: auth });
   if (!res.ok) throw new Error(`claim ${res.status}`);
@@ -90,22 +176,15 @@ async function work(job: NonNullable<Claim["job"]>): Promise<void> {
   const t0 = Date.now();
   console.log(`${new Date().toISOString()} job ${job.id} started`);
   const code = await run("bash", ["scripts/perceptual/auto.sh", img, dir], path.join(dir, "run.log"));
-  const routes = [0, 1, 2]
-    .map((i) => path.join(dir, `route${i}.gpx`))
-    .filter((f) => existsSync(f))
-    .map((f) => {
-      const points = gpxPoints(f);
-      return { km: km(points), points };
-    })
-    .filter((r) => r.points.length >= 2);
+  const { routes, note } = await chooseLanes(dir);
   const prep = existsSync(path.join(dir, "prep.log")) ? readFileSync(path.join(dir, "prep.log"), "utf8") : "";
   const subject = /^SUBJECT=(.*)$/m.exec(prep)?.[1] ?? null;
   const post = await fetch(`${SITE}/api/draw-job/worker`, {
     method: "POST",
     headers: auth,
-    body: JSON.stringify({ id: job.id, routes, subject, error: routes.length ? null : `pipeline exit ${code}` }),
+    body: JSON.stringify({ id: job.id, routes, subject, note, error: routes.length ? null : `pipeline exit ${code}` }),
   });
-  console.log(`  ${routes.length} routes (${routes.map((r) => r.km + " km").join(", ")}) in ${((Date.now() - t0) / 60000).toFixed(1)} min -> ${post.status}`);
+  console.log(`  ${routes.length} routes (${routes.map((r) => `${r.label} ${r.km} km`).join(", ")}) in ${((Date.now() - t0) / 60000).toFixed(1)} min -> ${post.status}`);
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

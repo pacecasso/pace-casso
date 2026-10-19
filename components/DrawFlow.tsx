@@ -14,11 +14,19 @@ const Step5PreviewMap = dynamic(() => import("./Step5PreviewMap"), {
   ),
 });
 
-type Route = { km: number; points: [number, number][] };
+type Route = { km: number; points: [number, number][]; label?: "pick" | "short" | "alt" };
+
+const LABEL_TEXT: Record<NonNullable<Route["label"]>, string> = {
+  pick: "Our pick",
+  short: "Under 25 km",
+  alt: "Another take",
+};
 type Status = {
   status: "queued" | "running" | "done" | "failed";
   createdAt: number;
   routes: Route[];
+  /** what could not be offered, e.g. no version under 25 km */
+  note?: string | null;
   error: string | null;
 };
 
@@ -161,7 +169,9 @@ export default function DrawFlow() {
         {status?.status === "done" ? (
           <>
             <p className="mt-3 max-w-2xl text-sm leading-relaxed text-pace-muted">
-              Three versions, each one continuous run on real streets. Pick the one you like best and load the GPX
+              {status.routes.length === 1 ? "One version" : status.routes.length === 2 ? "Two versions" : "Three versions"}
+              , each one continuous run on real streets. Our pick is the one that looks most like your picture; the
+              shorter one is for a run you can finish in a morning.{status.note ? ` ${status.note}` : ""} Load the GPX
               into Strava, Garmin or your watch.
             </p>
             <div className="mt-5 grid gap-5 lg:grid-cols-3">
@@ -172,8 +182,9 @@ export default function DrawFlow() {
                   </div>
                   <div className="flex items-center justify-between gap-3 border-t border-pace-line px-4 py-3">
                     <p className="font-bebas text-sm tracking-[0.1em]">
-                      Option {i + 1} · {formatDistance(r.km, profile.unit)} ·{" "}
-                      {formatDuration(r.km * profile.paceSecPerKm)}
+                      {r.label ? LABEL_TEXT[r.label] : `Option ${i + 1}`}
+                      {r.label === "pick" ? <span className="ml-2 text-pace-yellow">★</span> : null} ·{" "}
+                      {formatDistance(r.km, profile.unit)} · {formatDuration(r.km * profile.paceSecPerKm)}
                     </p>
                     <button
                       type="button"
