@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { redis, redisConfigured } from "./redisRest";
 import { loadJobRecord, saveJobRecord } from "./routeJobStore";
 
 /**
@@ -8,9 +9,10 @@ import { loadJobRecord, saveJobRecord } from "./routeJobStore";
  * offline pipeline (scripts/perceptual/auto.sh — the exact code behind the
  * routes Ralph judged OK, NOT a port of it) and posts the routes back.
  *
- * Job records reuse the encrypted route-job store. The queue is a set of
- * marker blobs (`draw-queue/<id>`) holding nothing but the id, so the worker
- * can list pending work without being able to read anyone's job.
+ * Job records reuse the encrypted route-job store. The queue holds nothing
+ * but ids, so the worker can list pending work without being able to read
+ * anyone's job: a Redis sorted set (score = enqueue time) when Redis is
+ * configured, else marker blobs (`draw-queue/<id>`), else files (dev).
  */
 
 export type DrawRoute = {
@@ -51,7 +53,8 @@ const QUEUE_PREFIX = "draw-queue";
 const FLAG_PATH = "draw-queue-flag";
 const FS_QUEUE = path.join(process.cwd(), ".route-jobs", QUEUE_PREFIX);
 const FS_FLAG = path.join(process.cwd(), ".route-jobs", FLAG_PATH);
-const usingBlob = () => Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+/** same precedence as the job store: Redis, then Blob, then the filesystem */
+const usingBlob = () => !redisConfigured() && Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 
 export function newDrawJobId(): string {
   return crypto.randomBytes(16).toString("hex");
@@ -69,9 +72,11 @@ export async function loadDrawJob(id: string): Promise<DrawJob | null> {
 
 /**
  * Raise or lower the queue flag. Returns the flag's public URL on Blob
- * (the worker polls it directly), null on the filesystem backend.
+ * (the worker polls it directly), null otherwise. Redis needs no flag: an
+ * empty claim there is one ZRANGE, so the worker just claims on its backoff.
  */
 export async function setQueueFlag(pending: boolean): Promise<string | null> {
+  if (redisConfigured()) return null;
   if (usingBlob()) {
     const { put } = await import("@vercel/blob");
     const r = await put(FLAG_PATH, pending ? "1" : "0", {
@@ -89,6 +94,10 @@ export async function setQueueFlag(pending: boolean): Promise<string | null> {
 }
 
 export async function enqueue(id: string): Promise<void> {
+  if (redisConfigured()) {
+    await redis(["ZADD", QUEUE_PREFIX, "NX", Date.now(), id]);
+    return;
+  }
   if (usingBlob()) {
     const { put } = await import("@vercel/blob");
     await put(`${QUEUE_PREFIX}/${id}`, id, {
@@ -106,6 +115,10 @@ export async function enqueue(id: string): Promise<void> {
 }
 
 export async function dequeue(id: string): Promise<void> {
+  if (redisConfigured()) {
+    await redis(["ZREM", QUEUE_PREFIX, id]);
+    return;
+  }
   if (usingBlob()) {
     const { del } = await import("@vercel/blob");
     // del by pathname: no list() round trip (that was an advanced op per dequeue)
@@ -117,6 +130,7 @@ export async function dequeue(id: string): Promise<void> {
 
 /** queued ids, oldest first */
 export async function queuedIds(): Promise<string[]> {
+  if (redisConfigured()) return (await redis<string[]>(["ZRANGE", QUEUE_PREFIX, 0, -1])) ?? [];
   if (usingBlob()) {
     const { list } = await import("@vercel/blob");
     const { blobs } = await list({ prefix: `${QUEUE_PREFIX}/` });

@@ -13,7 +13,8 @@ const RECLAIM_MS = 60 * 60_000;
  *
  * An empty claim lowers the queue flag and returns its URL, so the worker
  * can watch the flag over the CDN and only come back here when an upload
- * raised it again. Each GET here costs a Blob list(), so it must stay rare.
+ * raised it again. On Blob each GET here costs a list(), so it must stay
+ * rare; on Redis it is one ZRANGE and there is no flag (flagUrl null).
  */
 export async function GET(req: Request) {
   if (!workerAuthorized(req)) return Response.json({ error: "unauthorized" }, { status: 401 });

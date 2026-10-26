@@ -1,10 +1,12 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { redis, redisConfigured } from "./redisRest";
 
 /**
- * Persistence for async route-search jobs. Backend is Vercel Blob when
- * BLOB_READ_WRITE_TOKEN is configured, else the local filesystem (dev).
+ * Persistence for async route-search jobs. Backend is Upstash Redis when
+ * configured, else Vercel Blob when BLOB_READ_WRITE_TOKEN is configured,
+ * else the local filesystem (dev).
  *
  * Blob URLs are public-if-you-know-them, and a job carries the user's
  * email and uploaded image — so every job is encrypted at rest
@@ -47,17 +49,25 @@ function decrypt(buf: Buffer): string {
   return Buffer.concat([decipher.update(body), decipher.final()]).toString("utf8");
 }
 
+/** Redis keeps a job this long; the result link in the email outlives any run. */
+const REDIS_TTL_S = 60 * 24 * 3600;
+
 export function jobStoreConfigured(): boolean {
-  return Boolean(process.env.BLOB_READ_WRITE_TOKEN) || process.env.NODE_ENV !== "production";
+  return redisConfigured() || Boolean(process.env.BLOB_READ_WRITE_TOKEN) || process.env.NODE_ENV !== "production";
 }
 
+/** Redis wins over Blob when both are set (the Blob store was suspended Oct 4 – Oct 26+). */
 function usingBlob(): boolean {
-  return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+  return !redisConfigured() && Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 }
 
 export async function saveJobRecord(jobId: string, record: unknown): Promise<void> {
   if (!/^[0-9a-f]{32}$/.test(jobId)) throw new Error("bad job id");
   const data = encrypt(JSON.stringify(record));
+  if (redisConfigured()) {
+    await redis(["SET", `${BLOB_PREFIX}:${jobId}`, data.toString("base64"), "EX", REDIS_TTL_S]);
+    return;
+  }
   if (usingBlob()) {
     const { put } = await import("@vercel/blob");
     await put(`${BLOB_PREFIX}/${jobId}.bin`, data, {
@@ -76,7 +86,15 @@ export async function saveJobRecord(jobId: string, record: unknown): Promise<voi
 export async function loadJobRecord<T>(jobId: string): Promise<T | null> {
   if (!/^[0-9a-f]{32}$/.test(jobId)) return null;
   let data: Buffer | null = null;
-  if (usingBlob()) {
+  if (redisConfigured()) {
+    try {
+      const s = await redis<string | null>(["GET", `${BLOB_PREFIX}:${jobId}`]);
+      if (!s) return null;
+      data = Buffer.from(s, "base64");
+    } catch {
+      return null;
+    }
+  } else if (usingBlob()) {
     const { head } = await import("@vercel/blob");
     try {
       const meta = await head(`${BLOB_PREFIX}/${jobId}.bin`);
