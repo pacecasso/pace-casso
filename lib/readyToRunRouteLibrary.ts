@@ -38,5 +38,6 @@ export function readyRouteToLine(run: CuratedRun): RouteLineString {
     distanceMeters: run.distanceKm * 1000,
     blockWaypoints: coords,
     preserveBlockWaypoints: true,
+    readyMade: true,
   };
 }

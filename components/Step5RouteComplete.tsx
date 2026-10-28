@@ -138,14 +138,17 @@ export default function Step5RouteComplete({
   // A first draft hands its own route over as the "art", so comparing the
   // route to it always says ~100% (Sep 16 whale test: "Looks like your art
   // 100%" on a blob). No likeness-to-upload number exists on this path yet,
-  // so show none rather than a false one.
-  const artIsDraftRoute = anchorLocation?.preferredSnappedRoute?.draft === true;
+  // so show none rather than a false one. Ready-made routes do the same
+  // (Oct 28 cold test: "NOT YET" right above "Looks like your art 100%").
+  const artIsOwnRoute =
+    anchorLocation?.preferredSnappedRoute?.draft === true ||
+    anchorLocation?.preferredSnappedRoute?.readyMade === true;
   const artworkMatchScore = useMemo(() => {
-    if (artIsDraftRoute || routeSource !== "image" || originalArt.length < 2 || routeLine.length < 2) {
+    if (artIsOwnRoute || routeSource !== "image" || originalArt.length < 2 || routeLine.length < 2) {
       return null;
     }
     return interpretationMatchPercent(originalArt, routeLine);
-  }, [artIsDraftRoute, originalArt, routeLine, routeSource]);
+  }, [artIsOwnRoute, originalArt, routeLine, routeSource]);
   const exportMetadata = useMemo(
     () => ({
       artworkConnectorCount,

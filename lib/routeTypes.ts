@@ -20,4 +20,9 @@ export type RouteLineString = {
    * "first draft" instead.
    */
   draft?: boolean;
+  /**
+   * A route from the ready-made library. Its "art" is the route itself,
+   * so a likeness-to-art percent would always read ~100%.
+   */
+  readyMade?: boolean;
 };

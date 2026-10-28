@@ -20,6 +20,8 @@ for (const run of READY_TO_RUN_ROUTE_LIBRARY) {
   assert.equal(route.coordinates.length, run.coords.length);
   assert.equal(route.blockWaypoints?.length, run.coords.length);
   assert.equal(route.preserveBlockWaypoints, true);
+  // the art is the route itself; the likeness meter must not show a fake 100%
+  assert.equal(route.readyMade, true);
   assert.ok((route.distanceMeters ?? 0) > 1000);
 }
 
