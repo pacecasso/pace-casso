@@ -149,8 +149,8 @@ export default function DrawFlow() {
               {status.status === "queued" ? "In line - waiting for the next free slot" : "Fitting your drawing onto the streets"}
             </p>
             <p className="mt-2 text-sm leading-relaxed text-pace-muted">
-              We try hundreds of places, sizes and angles across New York and keep the ones that still look like
-              your picture. This usually takes 15-30 minutes ({mins} min so far). You can close this page - bookmark
+              We try hundreds of places, sizes and angles across Manhattan, Brooklyn and Queens and keep the
+              ones that still look like your picture. This usually takes 15-30 minutes ({mins} min so far). You can close this page - bookmark
               it, or use the link in your email.
             </p>
           </div>
@@ -214,6 +214,10 @@ export default function DrawFlow() {
       <p className="mt-3 max-w-2xl text-sm leading-relaxed text-pace-muted">
         Upload a logo or a picture. We turn it into a running route that draws it across New York City streets, and
         give you three versions to choose from. Bold shapes with a clear outline work best.
+      </p>
+      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-pace-muted">
+        We search Manhattan, Brooklyn and Queens, not only the borough you picked, because the shape has to fit the
+        street grid. Your route may land in Brooklyn or Queens.
       </p>
       <div className="mt-6 grid gap-5 rounded-xl border border-pace-line bg-pace-white p-5 sm:grid-cols-[1fr_220px]">
         <div className="flex flex-col gap-4">
