@@ -24,6 +24,8 @@ const LABEL_TEXT: Record<NonNullable<Route["label"]>, string> = {
 type Status = {
   status: "queued" | "running" | "done" | "failed";
   createdAt: number;
+  /** what the worker read the picture as, e.g. "a cat seen in profile" */
+  subject?: string | null;
   routes: Route[];
   /** what could not be offered, e.g. no version under 25 km */
   note?: string | null;
@@ -31,6 +33,51 @@ type Status = {
 };
 
 const MAX_BYTES = 3_000_000;
+
+/**
+ * The job API never returns the upload, so the page keeps a small copy of
+ * it in this browser to show beside the results (Oct 28 cold test: "no
+ * picture of my original next to the routes"). Best effort: storage can
+ * be blocked or full, and another device simply shows no picture.
+ */
+const THUMB_KEY = "pace-draw-upload:";
+const THUMB_INDEX = "pace-draw-uploads";
+const THUMB_KEEP = 5;
+
+async function makeThumbnail(file: File): Promise<string | null> {
+  try {
+    const bmp = await createImageBitmap(file);
+    const k = Math.min(1, 360 / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bmp.width * k));
+    canvas.height = Math.max(1, Math.round(bmp.height * k));
+    canvas.getContext("2d")?.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    bmp.close();
+    return canvas.toDataURL("image/webp", 0.85);
+  } catch {
+    return null;
+  }
+}
+
+function saveThumbnail(jobId: string, dataUrl: string) {
+  try {
+    const ids = (JSON.parse(localStorage.getItem(THUMB_INDEX) ?? "[]") as string[]).filter((id) => id !== jobId);
+    ids.push(jobId);
+    while (ids.length > THUMB_KEEP) localStorage.removeItem(THUMB_KEY + ids.shift());
+    localStorage.setItem(THUMB_KEY + jobId, dataUrl);
+    localStorage.setItem(THUMB_INDEX, JSON.stringify(ids));
+  } catch {
+    // storage blocked or full: the results just show no picture
+  }
+}
+
+function loadThumbnail(jobId: string): string | null {
+  try {
+    return localStorage.getItem(THUMB_KEY + jobId);
+  } catch {
+    return null;
+  }
+}
 
 function gpxFor(route: Route, name: string): string {
   const pts = route.points.map(([lat, lng]) => `<trkpt lat="${lat}" lon="${lng}"/>`).join("");
@@ -62,6 +109,11 @@ export default function DrawFlow() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
+  const [uploadThumb, setUploadThumb] = useState<string | null>(null);
+
+  useEffect(() => {
+    setUploadThumb(jobId ? loadThumbnail(jobId) : null);
+  }, [jobId]);
 
   useEffect(() => {
     if (!file) {
@@ -126,6 +178,8 @@ export default function DrawFlow() {
       });
       const body = (await res.json()) as { jobId?: string; error?: string };
       if (!res.ok || !body.jobId) throw new Error(body.error ?? "Upload failed.");
+      const thumb = await makeThumbnail(file);
+      if (thumb) saveThumbnail(body.jobId, thumb);
       router.push(`/draw?job=${body.jobId}`);
     } catch (e) {
       setError((e as Error).message || "Upload failed.");
@@ -141,6 +195,20 @@ export default function DrawFlow() {
         <h1 className="font-pace-heading text-3xl uppercase tracking-wide text-pace-blue sm:text-4xl">
           Your drawing
         </h1>
+        {uploadThumb || status?.subject ? (
+          <div className="mt-4 flex items-center gap-4">
+            {uploadThumb ? (
+              <div className="flex h-24 w-24 shrink-0 items-center justify-center rounded-lg border border-pace-line bg-pace-warm">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={uploadThumb} alt="Your picture" className="max-h-full max-w-full object-contain p-2" />
+              </div>
+            ) : null}
+            <div className="text-sm">
+              <p className="font-semibold">Your picture</p>
+              {status?.subject ? <p className="text-pace-muted">We read it as: {status.subject}</p> : null}
+            </div>
+          </div>
+        ) : null}
         {error ? <p className="mt-4 text-sm text-red-700">{error}</p> : null}
         {!status && !error ? <p className="mt-4 text-sm text-pace-muted">Checking…</p> : null}
         {status && (status.status === "queued" || status.status === "running") ? (
