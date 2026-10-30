@@ -198,7 +198,10 @@ async function geometryEngine(img: string, dir: string): Promise<EngineResult> {
   const j = JSON.parse(readFileSync(file, "utf8")) as { routes: Labeled[]; note: string | null; words?: string | null };
   // lettering it read off the logo and redrew as block letters (readtext.py)
   const subject = j.words ? `the words "${j.words}"` : null;
-  const lanes = j.routes.filter((r) => r.km <= MAX_KM && r.points.length >= 2).sort((a, b) => b.km - a.km);
+  const usable = j.routes.filter((r) => r.km <= MAX_KM && r.points.length >= 2);
+  // word logos come ranked by how well the letters read (best first); keep that
+  // order. Otherwise Ralph's picks were always the largest readable draft.
+  const lanes = j.words ? usable : usable.sort((a, b) => b.km - a.km);
   const pick = lanes[0];
   if (!pick) return { code, routes: [], note: j.note, subject };
   const routes: Labeled[] = [{ ...pick, label: "pick" }];

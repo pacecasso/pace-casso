@@ -63,8 +63,9 @@ def main():
         seen.add(key)
         results.append((label, res))
     if words:
+        # best letters first: the largest Nike (59 km) had the messiest "IT"
         results = sorted(results, key=lambda r: -r[1]["score"])[:WORD_KEEP]
-        results = [(lab, r) for lab, r in zip(("pick", "alt"), sorted((r for _, r in results), key=lambda r: -r["km"]))]
+        results = [(lab, r) for lab, (_, r) in zip(("pick", "alt"), results)]
     routes = []
     for label, res in results:
         F.save(res, out, label, label)
