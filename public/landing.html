@@ -821,6 +821,20 @@
         min-height: 200px;
       }
 
+      /* each tile opens its route on /gallery (map + GPX) */
+      a.gallery__cell {
+        display: block;
+        color: inherit;
+        text-decoration: none;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+      }
+
+      a.gallery__cell:hover,
+      a.gallery__cell:focus-visible {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+      }
+
       .gallery__cell--tall {
         grid-row: 1 / 3;
         min-height: 100%;
@@ -1246,44 +1260,44 @@
           <h2>Route Gallery</h2>
         </div>
         <div class="gallery__grid">
-          <div class="gallery__cell gallery__cell--tall">
+          <a class="gallery__cell gallery__cell--tall" href="/gallery#catalog-heart">
             <img src="/curated/catalog-heart.png" alt="Heart-shaped route across Greenwich Village streets" loading="lazy" decoding="async" />
             <div class="gallery__caption">
               <strong>Greenwich Village Heart</strong>
               Manhattan · 12.3 km
             </div>
-          </div>
-          <div class="gallery__cell">
+          </a>
+          <a class="gallery__cell" href="/gallery#catalog-elephant">
             <img src="/curated/catalog-elephant.png" alt="Elephant-shaped route across downtown Manhattan streets" loading="lazy" decoding="async" />
             <div class="gallery__caption">
               <strong>Downtown Elephant</strong>
               Manhattan · 23.1 km
             </div>
-          </div>
-          <div class="gallery__cell">
+          </a>
+          <a class="gallery__cell" href="/gallery#catalog-runner">
             <img src="/curated/catalog-runner.png" alt="Running-figure route across Chelsea and the Village" loading="lazy" decoding="async" />
             <div class="gallery__caption">
               <strong>Manhattan Runner</strong>
               Manhattan · 16.0 km
             </div>
-          </div>
-          <div class="gallery__cell">
+          </a>
+          <a class="gallery__cell" href="/gallery#catalog-the-big-apple">
             <img src="/curated/catalog-the-big-apple.png" alt="Apple-shaped route across the Village street grid" loading="lazy" decoding="async" />
             <div class="gallery__caption">
               <strong>The Big Apple</strong>
               Manhattan · 14.6 km
             </div>
-          </div>
-          <div class="gallery__cell">
+          </a>
+          <a class="gallery__cell" href="/gallery#apple">
             <img src="/curated/apple.png" alt="Apple-shaped route drawn on the Midtown street grid" loading="lazy" decoding="async" />
             <div class="gallery__caption">
               <strong>Midtown Apple</strong>
               Manhattan · 12.6 km
             </div>
-          </div>
+          </a>
         </div>
         <p class="gallery__attrib">
-          Real routes, verified walkable — download the GPX on the
+          Real routes, verified walkable — tap one to see it on the map and download the GPX, or browse the whole
           <a href="/gallery">Gallery</a> page. Map imagery © OpenStreetMap
           contributors · © CARTO.
         </p>

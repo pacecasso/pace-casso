@@ -24,6 +24,12 @@ export default function CuratedRunCard({ run }: { run: CuratedRun }) {
 
   const close = useCallback(() => setOpen(false), []);
 
+  // the landing page's gallery tiles link to /gallery#<id> (Ralph, Oct 30:
+  // "the route gallery does nothing on the main site"), so open that preview
+  useEffect(() => {
+    if (window.location.hash === `#${run.id}`) setOpen(true);
+  }, [run.id]);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
