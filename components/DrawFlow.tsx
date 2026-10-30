@@ -2,8 +2,9 @@
 
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDistance, formatDuration, useRunnerProfile } from "../lib/runnerProfile";
+import LineArtEditor, { type LineArtEditorHandle } from "./LineArtEditor";
 
 const Step5PreviewMap = dynamic(() => import("./Step5PreviewMap"), {
   ssr: false,
@@ -32,7 +33,8 @@ type Status = {
   error: string | null;
 };
 
-const MAX_BYTES = 3_000_000;
+/** matches MAX_IMAGE_B64 in app/api/draw-job/route.ts */
+const MAX_IMAGE_B64 = 4_000_000;
 
 /**
  * The job API never returns the upload, so the page keeps a small copy of
@@ -44,7 +46,7 @@ const THUMB_KEY = "pace-draw-upload:";
 const THUMB_INDEX = "pace-draw-uploads";
 const THUMB_KEEP = 5;
 
-async function makeThumbnail(file: File): Promise<string | null> {
+async function makeThumbnail(file: Blob): Promise<string | null> {
   try {
     const bmp = await createImageBitmap(file);
     const k = Math.min(1, 360 / Math.max(bmp.width, bmp.height));
@@ -104,7 +106,7 @@ export default function DrawFlow() {
   const jobId = params.get("job");
   const [profile] = useRunnerProfile();
   const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
+  const editorRef = useRef<LineArtEditorHandle>(null);
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -114,16 +116,6 @@ export default function DrawFlow() {
   useEffect(() => {
     setUploadThumb(jobId ? loadThumbnail(jobId) : null);
   }, [jobId]);
-
-  useEffect(() => {
-    if (!file) {
-      setPreview(null);
-      return;
-    }
-    const url = URL.createObjectURL(file);
-    setPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
 
   const poll = useCallback(async (id: string) => {
     const res = await fetch(`/api/draw-job?id=${id}`, { cache: "no-store" });
@@ -140,14 +132,16 @@ export default function DrawFlow() {
     if (!jobId) return;
     let stop = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    // Each poll reads the job blob (two Blob operations). A run takes
-    // 15-30 min, so 45 s is plenty; after half an hour the tab may have
-    // been forgotten and every 5 min is enough.
+    // Jobs live in Redis now and the geometry engine finishes in under a
+    // minute, so poll every 10 s at first; a job still waiting after 10 min
+    // is stuck in the queue, and after half an hour the tab may have been
+    // forgotten and every 5 min is enough.
     const started = Date.now();
     const tick = async () => {
       const finished = await poll(jobId).catch(() => false);
       if (stop || finished) return;
-      timer = setTimeout(tick, Date.now() - started < 30 * 60_000 ? 45_000 : 5 * 60_000);
+      const age = Date.now() - started;
+      timer = setTimeout(tick, age < 10 * 60_000 ? 10_000 : age < 30 * 60_000 ? 45_000 : 5 * 60_000);
     };
     void tick();
     return () => {
@@ -158,19 +152,20 @@ export default function DrawFlow() {
 
   const submit = async () => {
     if (!file) return;
-    if (file.size > MAX_BYTES) {
-      setError("That file is over 3 MB - try a smaller one.");
+    // the edited canvas is what gets drawn; it is capped at 1200 px so it
+    // stays well under the API's size limit even when the original file is not
+    const imageBase64 = editorRef.current?.toDataUrl();
+    if (!imageBase64) {
+      setError("Your picture is still loading - try again in a moment.");
+      return;
+    }
+    if (imageBase64.length > MAX_IMAGE_B64) {
+      setError("That picture is too detailed to upload - try a simpler one.");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const imageBase64 = await new Promise<string>((resolve, reject) => {
-        const r = new FileReader();
-        r.onload = () => resolve(String(r.result));
-        r.onerror = () => reject(new Error("Could not read that file."));
-        r.readAsDataURL(file);
-      });
       const res = await fetch("/api/draw-job", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -178,7 +173,7 @@ export default function DrawFlow() {
       });
       const body = (await res.json()) as { jobId?: string; error?: string };
       if (!res.ok || !body.jobId) throw new Error(body.error ?? "Upload failed.");
-      const thumb = await makeThumbnail(file);
+      const thumb = await makeThumbnail(await (await fetch(imageBase64)).blob());
       if (thumb) saveThumbnail(body.jobId, thumb);
       router.push(`/draw?job=${body.jobId}`);
     } catch (e) {
@@ -218,7 +213,7 @@ export default function DrawFlow() {
             </p>
             <p className="mt-2 text-sm leading-relaxed text-pace-muted">
               We try hundreds of places, sizes and angles across Manhattan, Brooklyn and Queens and keep the
-              ones that still look like your picture. This usually takes 15-30 minutes ({mins} min so far). You can close this page - bookmark
+              ones that still look like your picture. This usually takes a minute or two ({mins} min so far). You can close this page - bookmark
               it, or use the link in your email.
             </p>
           </div>
@@ -281,31 +276,41 @@ export default function DrawFlow() {
       </h1>
       <p className="mt-3 max-w-2xl text-sm leading-relaxed text-pace-muted">
         Upload a logo or a picture. We turn it into a running route that draws it across New York City streets, and
-        give you three versions to choose from. Bold shapes with a clear outline work best.
+        give you up to two versions to choose from. Bold shapes with a clear outline work best.
       </p>
       <p className="mt-2 max-w-2xl text-sm leading-relaxed text-pace-muted">
         We search Manhattan, Brooklyn and Queens, not only the borough you picked, because the shape has to fit the
         street grid. Your route may land in Brooklyn or Queens.
       </p>
-      <div className="mt-6 grid gap-5 rounded-xl border border-pace-line bg-pace-white p-5 sm:grid-cols-[1fr_220px]">
-        <div className="flex flex-col gap-4">
-          <div className="text-sm font-semibold">
-            Your picture
-            {/* the native file input reads as plain text; a real button stands in for it */}
-            <div className="mt-2 flex flex-wrap items-center gap-3">
-              <label htmlFor="draw-file" className="pace-btn-ghost pace-btn-ghost--sm cursor-pointer">
-                {file ? "Change picture" : "Choose picture"}
-              </label>
-              <span className="min-w-0 truncate font-normal text-pace-muted">{file ? file.name : "No picture chosen yet"}</span>
-            </div>
-            <input
-              id="draw-file"
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              className="sr-only"
-            />
+      <div className="mt-6 flex flex-col gap-5 rounded-xl border border-pace-line bg-pace-white p-5">
+        <div className="text-sm font-semibold">
+          Your picture
+          {/* the native file input reads as plain text; a real button stands in for it */}
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <label htmlFor="draw-file" className="pace-btn-ghost pace-btn-ghost--sm cursor-pointer">
+              {file ? "Change picture" : "Choose picture"}
+            </label>
+            <span className="min-w-0 truncate font-normal text-pace-muted">{file ? file.name : "No picture chosen yet"}</span>
           </div>
+          <input
+            id="draw-file"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            className="sr-only"
+          />
+        </div>
+        {file ? (
+          <div>
+            <p className="text-sm font-semibold">This is what we will draw - touch it up first</p>
+            <p className="mt-1 mb-3 max-w-2xl text-sm leading-relaxed text-pace-muted">
+              Erase anything you do not want on the streets, like small text or tiny details. Use the pen to close
+              gaps or thicken thin lines. Bold, simple shapes read best.
+            </p>
+            <LineArtEditor ref={editorRef} file={file} />
+          </div>
+        ) : null}
+        <div className="flex max-w-md flex-col gap-4">
           <label className="text-sm font-semibold">
             Email me when it is ready (optional)
             <input
@@ -325,16 +330,6 @@ export default function DrawFlow() {
             {busy ? "Uploading…" : "Draw it"}
           </button>
           {error ? <p className="text-sm text-red-700">{error}</p> : null}
-        </div>
-        <div
-          className={`${preview ? "flex" : "hidden sm:flex"} aspect-square items-center justify-center rounded-lg border border-dashed border-pace-line bg-pace-warm`}
-        >
-          {preview ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={preview} alt="Your upload" className="max-h-full max-w-full object-contain p-3" />
-          ) : (
-            <span className="text-xs text-pace-muted">Preview</span>
-          )}
         </div>
       </div>
     </div>
