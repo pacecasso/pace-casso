@@ -63,7 +63,7 @@ for k in range(NB):
 SUP = ORI | np.roll(ORI, 1, 0) | np.roll(ORI, -1, 0)                  # +-22 deg
 # 'reachable': a street within ~70 m (else: water, park interior, rail yard, airport)
 NEAR = nd.binary_dilation(ANY, _st, iterations=7)
-del ORI, _rep, _t, _px, _py, _ci, _cj
+del _rep, _t, _px, _py, _ci, _cj    # ORI stays: support_strict reads it
 
 def lookup(R, wx, wy):
     i = ((wx - x0) / CELL).astype(int); j = ((wy - y0) / CELL).astype(int)
@@ -85,6 +85,20 @@ def support(TS, TT, pl):
     sup = np.zeros(len(TS), bool); near = np.zeros(len(TS), bool)
     sup[ok] = SUP[b[ok], j[ok], i[ok]]; near[ok] = NEAR[j[ok], i[ok]]
     return sup.mean(), 1 - near.mean()
+
+def support_strict(TS, TT, pl):
+    """support() with the street's direction within one bin (+-7.5 deg) instead
+    of three: block letters only read when their strokes run ALONG the grid"""
+    cx, cy, H, th = pl
+    c, s_ = math.cos(math.radians(th)), math.sin(math.radians(th))
+    x = TS[:, 0] * H; y = TS[:, 1] * H
+    wx = cx + c * x - s_ * y; wy = cy + s_ * x + c * y
+    i = ((wx - x0) / CELL).astype(int); j = ((wy - y0) / CELL).astype(int)
+    ok = (i >= 0) & (i < GW) & (j >= 0) & (j < GH)
+    b = (((TT + th) % 180) / (180 / NB)).astype(int) % NB
+    sup = np.zeros(len(TS), bool)
+    sup[ok] = ORI[b[ok], j[ok], i[ok]]
+    return sup.mean()
 
 # ---------- router
 TURN = 25.0

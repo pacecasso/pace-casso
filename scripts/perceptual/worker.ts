@@ -195,14 +195,20 @@ async function geometryEngine(img: string, dir: string): Promise<EngineResult> {
   const code = await run(PY, ["-u", "scripts/geometry/draw_job.py", img, out, "--text=keep"], path.join(dir, "geo.log"));
   const file = path.join(out, "routes.json");
   if (!existsSync(file)) return { code, routes: [], note: null, subject: null };
-  const j = JSON.parse(readFileSync(file, "utf8")) as { routes: Labeled[]; note: string | null };
+  const j = JSON.parse(readFileSync(file, "utf8")) as { routes: Labeled[]; note: string | null; words?: string | null };
+  // lettering it read off the logo and redrew as block letters (readtext.py)
+  const subject = j.words ? `the words "${j.words}"` : null;
   const lanes = j.routes.filter((r) => r.km <= MAX_KM && r.points.length >= 2).sort((a, b) => b.km - a.km);
   const pick = lanes[0];
-  if (!pick) return { code, routes: [], note: j.note, subject: null };
+  if (!pick) return { code, routes: [], note: j.note, subject };
   const routes: Labeled[] = [{ ...pick, label: "pick" }];
   const short = lanes.find((r) => r !== pick && r.km <= SHORT_KM && r.label !== "short");
   if (short) routes.push({ ...short, label: "short" });
-  return { code, routes, note: j.note, subject: null };
+  // word logos have no lane under SHORT_KM (lettering needs ~30+ km); show the
+  // other size as "Another take" rather than hide it (Nike: 31 km read best)
+  const alt = short ? undefined : lanes.find((r) => r !== pick && r.label !== "short");
+  if (alt) routes.push({ ...alt, label: "alt" });
+  return { code, routes, note: j.note, subject };
 }
 
 async function work(job: NonNullable<Claim["job"]>): Promise<void> {

@@ -20,6 +20,8 @@ NTRACE = int(os.environ.get("NTRACE", "16"))
 # as their outline; "line" draws every part as one single centre line
 STYLE = "outline"; OUTLINE_W = P.OUTLINE_W_M
 PARTS = None
+# block-letter weight in the spot score (strict-direction support of the typed words)
+TEXT_W = float(os.environ.get("TEXT_W", "4.0"))
 
 def targets(sku):
     TS, TT = [], []
@@ -44,15 +46,23 @@ def likeness(TS, pl, strokes, tau_m):
     cov = float((d_tp < tau).mean()); prec = float((d_pt < tau).mean())
     return cov, prec, 2 * cov * prec / max(cov + prec, 1e-9)
 
-def search(TS, TT, H, rng, nseats=NSEATS):
+def search(TS, TT, H, rng, nseats=NSEATS, text=None, ntrace=NTRACE):
+    """text: (TS, TT) of typed block letters, or None. Letters only read where
+    their strokes run along the grid, so they get a strict-direction support
+    term and may turn up to 45 deg to square up with a grid (Manhattan's runs
+    29 deg off north); a free-form mark alone keeps +-25."""
     lo, hi = 0.9 * H, 1.15 * H
+    rot = 45.0 if text is not None else 25.0
     def sc(pl):
         s, off = C.support(TS, TT, pl)
-        return s - 2.0 * off - 0.002 * abs(pl[3])
+        v = s - 2.0 * off - 0.002 * abs(pl[3])
+        if text is not None:
+            v += TEXT_W * C.support_strict(text[0], text[1], pl)
+        return v
     cand = []
     for _ in range(nseats):
         n = int(C.land[rng.integers(len(C.land))])
-        pl = (float(C.NX[n]), float(C.NY[n]), float(rng.uniform(lo, hi)), float(rng.uniform(-25, 25)))
+        pl = (float(C.NX[n]), float(C.NY[n]), float(rng.uniform(lo, hi)), float(rng.uniform(-rot, rot)))
         cand.append((sc(pl), pl))
     cand.sort(key=lambda r: -r[0])
     ref = []
@@ -60,7 +70,7 @@ def search(TS, TT, H, rng, nseats=NSEATS):
         best = (s0, pl)
         for _ in range(40):
             cx, cy, h, th = best[1]
-            p2 = (cx + rng.normal(0, 0.03 * h), cy + rng.normal(0, 0.03 * h), float(np.clip(h * math.exp(rng.normal(0, 0.05)), lo, hi)), float(np.clip(th + rng.normal(0, 2), -25, 25)))
+            p2 = (cx + rng.normal(0, 0.03 * h), cy + rng.normal(0, 0.03 * h), float(np.clip(h * math.exp(rng.normal(0, 0.05)), lo, hi)), float(np.clip(th + rng.normal(0, 2), -rot, rot)))
             s2 = sc(p2)
             if s2 > best[0]: best = (s2, p2)
         ref.append(best)
@@ -69,7 +79,7 @@ def search(TS, TT, H, rng, nseats=NSEATS):
     for s0, pl in ref:
         if all(math.hypot(pl[0] - q[1][0], pl[1] - q[1][1]) > 0.7 * max(pl[2], q[1][2]) for q in picked):
             picked.append((s0, pl))
-        if len(picked) >= NTRACE: break
+        if len(picked) >= ntrace: break
     return picked
 
 def connect(strokes, ink_w=0.35):
@@ -150,25 +160,44 @@ def plan_for_km(mask, km, text_mode):
     pp["bumped_from_H"] = H if bumped else None
     return pp
 
-def fit_lane(mask, km, text_mode, seed=1):
+def text_strokes(sku, words_mask):
+    """the plan strokes that draw the typed words (mostly inside words_mask)"""
+    if words_mask is None or not words_mask.any(): return []
+    near = P.nd.binary_dilation(words_mask, iterations=3)
+    out = []
+    for s in sku:
+        px = np.clip(((s[:, 0] + 1) / 2 * P.HI).astype(int), 0, P.HI - 1)
+        py = np.clip(((1 - s[:, 1]) / 2 * P.HI).astype(int), 0, P.HI - 1)
+        if near[py, px].mean() > 0.5: out.append(s)
+    return out
+
+def fit_lane(mask, km, text_mode, seed=1, words_mask=None):
     rng = np.random.default_rng(seed)
     pp = plan_for_km(mask, km, text_mode)
     sku = pp["strokes"]
     if not sku: return None
     TS, TT = targets(sku)
-    picked = search(TS, TT, pp["H"], rng)
+    tsk = text_strokes(sku, words_mask)
+    text = targets(tsk) if tsk else None
+    # word logos: more traced candidates, since the letters only read on a few spots
+    picked = search(TS, TT, pp["H"], rng, text=text, ntrace=40 if text is not None else NTRACE)
     best = None
     for s0, pl in picked:
         st, fails = C.trace(sku, pl)
         cov, prec, F = likeness(TS, pl, st, max(30.0, 0.015 * pl[2]))
         score = F - 0.004 * abs(pl[3]) - 0.03 * fails
+        tcov = None
+        if text is not None:
+            # how much of the lettering the traced streets actually cover
+            tcov = likeness(text[0], pl, st, max(30.0, 0.015 * pl[2]))[0]
+            score += tcov
         if best is None or score > best[0]:
-            best = (score, pl, st, cov, prec, F, s0, fails)
-    score, pl, st, cov, prec, F, s0, fails = best
+            best = (score, pl, st, cov, prec, F, s0, fails, tcov)
+    score, pl, st, cov, prec, F, s0, fails, tcov = best
     route, conn = connect(st)
     return {"plan": pp, "placement": pl, "strokes": st, "route": route, "km": round(C.plen(route) / 1000, 1),
             "km_ink": round(C.km_of(st), 1), "connector_km": round(conn, 1), "coverage": cov, "precision": prec,
-            "F": F, "support": s0, "fails": fails}
+            "F": F, "support": s0, "fails": fails, "text_cov": tcov, "score": score}
 
 def save(res, out, name, label):
     r = res["route"]
