@@ -1,18 +1,17 @@
 /**
- * The GPU worker behind /draw: claims queued uploads from the site, runs
- * scripts/perceptual/auto.sh on them (the same code, byte for byte, that
- * made the routes Ralph judged), and posts the routes back.
+ * The worker behind /draw, run on Ralph's PC: claims queued uploads from the
+ * site, fits them onto NYC streets, and posts the routes back.
  *
  *   SITE=https://www.pacecasso.com npx tsx scripts/perceptual/worker.ts
  *
- * One job at a time: each run holds the 500k-node graph (~1.8 GB) and the GPU.
+ * Engine: scripts/geometry/draw_job.py (CPU, ~20 s a job) by default since
+ * Oct 30; ENGINE=old runs scripts/perceptual/auto.sh (CLIP + GPU, ~4 min).
+ * One job at a time. Run exactly one worker: two would race for jobs.
  *
- * Polling is cheap by design: an empty claim hands back the URL of a public
- * "queue flag" blob, and from then on the worker only reads that URL over
- * the CDN (cached 60 s, no Blob operation). It calls the claim API, which
- * costs a Blob list(), only when the flag says something is queued. Idle
- * waits start at 1 min and double to 10 min. The old 15 s claim loop used
- * up a month of Blob operations in about 8 hours (Sep 26).
+ * With Blob storage, an empty claim hands back the URL of a public "queue
+ * flag" blob and the worker reads only that URL while idle (the old 15 s
+ * claim loop used up a month of Blob operations in about 8 hours, Sep 26).
+ * With Redis the claim itself is cheap, so idle polls are a flat 30 s.
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -22,8 +21,12 @@ const SITE = (process.env.SITE ?? "http://localhost:3000").replace(/\/$/, "");
 // the secret lives outside the repo; the same value is DRAW_WORKER_SECRET on Vercel
 const SECRET_FILE = "C:/Users/ralph/pacecasso-worker-secret.txt";
 const SECRET = (process.env.DRAW_WORKER_SECRET ?? (existsSync(SECRET_FILE) ? readFileSync(SECRET_FILE, "utf8") : "")).trim();
-const IDLE_MIN_MS = 60_000;
-const IDLE_MAX_MS = 10 * 60_000;
+/** "geometry" (default) or "old" (auto.sh) */
+const ENGINE = process.env.ENGINE ?? "geometry";
+const PY = process.env.PY ?? "C:/Users/ralph/pacecasso-gpu-env/Scripts/python";
+// Redis claims are cheap (Oct 30): a flat 30 s, so an upload never waits 10 min for an idle worker
+const IDLE_MIN_MS = 30_000;
+const IDLE_MAX_MS = 30_000;
 if (!SECRET) throw new Error("DRAW_WORKER_SECRET is required");
 
 const auth = { Authorization: `Bearer ${SECRET}`, "Content-Type": "application/json" };
@@ -167,6 +170,41 @@ async function flagRaised(url: string): Promise<boolean | null> {
   }
 }
 
+type EngineResult = { code: number; routes: Labeled[]; note: string | null; subject: string | null };
+
+/** auto.sh (CLIP-label streetfit) + the two-lane chooser; ENGINE=old */
+async function oldEngine(img: string, dir: string): Promise<EngineResult> {
+  const code = await run("bash", ["scripts/perceptual/auto.sh", img, dir], path.join(dir, "run.log"));
+  const { routes, note } = await chooseLanes(dir);
+  const prep = existsSync(path.join(dir, "prep.log")) ? readFileSync(path.join(dir, "prep.log"), "utf8") : "";
+  const subject = /^SUBJECT=(.*)$/m.exec(prep)?.[1] ?? null;
+  return { code, routes, note, subject };
+}
+
+/**
+ * The Oct 28 expert's geometry-first fit (scripts/geometry/draw_job.py):
+ * it scores routes against the upload's own shape, not a CLIP label. On the
+ * Oct 30 rabbit the old engine had nothing under 65 km; this one read at 22
+ * and 48 km. Its lanes are ~10/20/35 km targets; Ralph's picks were always
+ * the largest readable draft, so the largest becomes "our pick", the largest
+ * under SHORT_KM the short lane, and the ~10 km lane (a mess on the rabbit)
+ * is not shown.
+ */
+async function geometryEngine(img: string, dir: string): Promise<EngineResult> {
+  const out = path.join(dir, "geo");
+  const code = await run(PY, ["-u", "scripts/geometry/draw_job.py", img, out, "--text=keep"], path.join(dir, "geo.log"));
+  const file = path.join(out, "routes.json");
+  if (!existsSync(file)) return { code, routes: [], note: null, subject: null };
+  const j = JSON.parse(readFileSync(file, "utf8")) as { routes: Labeled[]; note: string | null };
+  const lanes = j.routes.filter((r) => r.km <= MAX_KM && r.points.length >= 2).sort((a, b) => b.km - a.km);
+  const pick = lanes[0];
+  if (!pick) return { code, routes: [], note: j.note, subject: null };
+  const routes: Labeled[] = [{ ...pick, label: "pick" }];
+  const short = lanes.find((r) => r !== pick && r.km <= SHORT_KM && r.label !== "short");
+  if (short) routes.push({ ...short, label: "short" });
+  return { code, routes, note: j.note, subject: null };
+}
+
 async function work(job: NonNullable<Claim["job"]>): Promise<void> {
   const dir = path.join("tmp-auto", "jobs", job.id);
   mkdirSync(dir, { recursive: true });
@@ -175,10 +213,7 @@ async function work(job: NonNullable<Claim["job"]>): Promise<void> {
   writeFileSync(img, Buffer.from(b64, "base64"));
   const t0 = Date.now();
   console.log(`${new Date().toISOString()} job ${job.id} started`);
-  const code = await run("bash", ["scripts/perceptual/auto.sh", img, dir], path.join(dir, "run.log"));
-  const { routes, note } = await chooseLanes(dir);
-  const prep = existsSync(path.join(dir, "prep.log")) ? readFileSync(path.join(dir, "prep.log"), "utf8") : "";
-  const subject = /^SUBJECT=(.*)$/m.exec(prep)?.[1] ?? null;
+  const { code, routes, note, subject } = ENGINE === "old" ? await oldEngine(img, dir) : await geometryEngine(img, dir);
   const post = await fetch(`${SITE}/api/draw-job/worker`, {
     method: "POST",
     headers: auth,

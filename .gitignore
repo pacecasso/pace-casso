@@ -49,3 +49,7 @@ playwright/.cache
 
 # TypeScript incremental build cache
 tsconfig.tsbuildinfo
+
+# geometry engine: rebuilt from lib/data/nyc-core-walk-graph.json on first run (18 MB)
+/scripts/geometry/city_cache.npz
+__pycache__/
