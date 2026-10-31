@@ -1,7 +1,7 @@
 """Drop-in for the /draw worker: one upload -> routes.json in the exact shape
-worker.ts posts ({ routes: [{km, points:[[lat,lng],...], label}], note, words }).
+worker.ts posts ({ routes: [{km, points:[[lat,lng],...], label}], note, words, ranked }).
 
-  python draw_job.py <upload> <jobdir> [--text=keep|drop]
+  python draw_job.py <upload> <jobdir> [--text=keep|drop] [--lineart]
 
 Lanes: 'pick' (~20 km), 'short' (~10 km), 'alt' (~35 km). The scale budget can
 refuse a lane: if the picture's main parts cannot stay readable at a lane's
@@ -13,6 +13,10 @@ Lettering (--text=keep, Oct 30): the logo's words are read offline
 block letters (blocktext.py) that the fit squares up with the street grid.
 A logo's own type is too tight for streets: Nike's touching letters came out
 as a row of boxes. Lettering needs ~35-50 km, so word logos get their own lanes.
+
+--lineart (Oct 31): the upload is already the simple line drawing that
+simplify.py made and the person touched up. Its lines are drawn as they are
+(one centre line each), so there is no reading, lifting or readability floor.
 """
 import sys, os, json
 import numpy as np
@@ -21,6 +25,7 @@ import fit as F
 import plan as P
 import blocktext as B
 import readtext as R
+import simplify as Z
 
 MAX_KM = 65.0
 LANES = [("pick", 20.0), ("short", 10.0), ("alt", 35.0)]
@@ -32,9 +37,13 @@ WORD_KEEP = 2
 def main():
     src, out = sys.argv[1], sys.argv[2]
     text_mode = next((a.split("=", 1)[1] for a in sys.argv[3:] if a.startswith("--text=")), "drop")
+    lineart = "--lineart" in sys.argv[3:]
+    if lineart:
+        text_mode = "keep"              # the letters are already lines in the drawing
+        F.STYLE, F.OUTLINE_W = "line", 1e9   # every line is one centre line, no size floor
     os.makedirs(out, exist_ok=True)
     words, words_mask = "", None
-    if text_mode == "keep":
+    if text_mode == "keep" and not lineart:
         try:
             words, boxes = R.read_words(src)
         except Exception as e:          # no OCR available: draw the picture as it is
@@ -48,6 +57,13 @@ def main():
         F.PARTS = None                  # the canvas was re-laid; colour parts no longer line up
         lanes = WORD_LANES
         print(f"words: {words!r}")
+    elif lineart:
+        mask, words_mask = Z.masks_of(src)
+        F.PARTS = None
+        lanes = LANES
+        if words_mask.sum() > 0.05 * mask.sum():
+            lanes = WORD_LANES
+            words = "(letters)"         # rank by how well the letters read, as for word logos
     else:
         mask, F.PARTS = P.ink_parts(src)
         lanes = LANES
@@ -71,9 +87,12 @@ def main():
         F.save(res, out, label, label)
         routes.append({"km": res["km"], "label": label,
                        "points": [[float(F.C.lat[n]), float(F.C.lng[n])] for n in res["route"]]})
-    if not words and P.find_text(mask).any() and text_mode == "drop":
+    if not words and not lineart and P.find_text(mask).any() and text_mode == "drop":
         notes.append("The lettering was left out: text needs roughly 40+ km to read on streets.")
-    json.dump({"routes": routes, "note": " ".join(dict.fromkeys(notes)) or None, "words": words or None},
+    ranked = bool(words)                    # routes are best-letters-first; the worker keeps that order
+    if lineart and words: words = ""       # the worker reads "words" as typed text
+    json.dump({"routes": routes, "note": " ".join(dict.fromkeys(notes)) or None, "words": words or None,
+               "ranked": ranked},
               open(os.path.join(out, "routes.json"), "w"))
     print(f"{len(routes)} routes: " + ", ".join(f"{r['label']} {r['km']} km" for r in routes))
 
