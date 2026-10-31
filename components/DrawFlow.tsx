@@ -81,6 +81,34 @@ function loadThumbnail(jobId: string): string | null {
   }
 }
 
+/**
+ * The upload as sent to the worker for its line drawing: at most 1200 px on
+ * white (as the worker composites transparent PNGs), PNG when it fits under
+ * the API's limit, else JPEG (a large photo as PNG can run to 5+ MB).
+ */
+async function uploadCopy(file: Blob): Promise<string | null> {
+  try {
+    const bmp = await createImageBitmap(file);
+    const k = Math.min(1, 1200 / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bmp.width * k));
+    canvas.height = Math.max(1, Math.round(bmp.height * k));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    bmp.close();
+    const png = canvas.toDataURL("image/png");
+    return png.length <= MAX_IMAGE_B64 ? png : canvas.toDataURL("image/jpeg", 0.9);
+  } catch {
+    return null;
+  }
+}
+
+/** sketch job: the worker turns the upload into the simple line drawing to touch up */
+type Sketch = { state: "working" | "ready" | "failed"; lineArt: File | null };
+
 function gpxFor(route: Route, name: string): string {
   const pts = route.points.map(([lat, lng]) => `<trkpt lat="${lat}" lon="${lng}"/>`).join("");
   return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="PaceCasso" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${name}</name><trkseg>${pts}</trkseg></trk></gpx>`;
@@ -112,10 +140,60 @@ export default function DrawFlow() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [uploadThumb, setUploadThumb] = useState<string | null>(null);
+  const [sketch, setSketch] = useState<Sketch | null>(null);
 
   useEffect(() => {
     setUploadThumb(jobId ? loadThumbnail(jobId) : null);
   }, [jobId]);
+
+  // A new picture goes to the worker first, which turns it into a simple bold
+  // line drawing (Ralph, Oct 31: picture -> line art -> touch up -> plot).
+  // If that fails, the picture itself is shown to touch up, as before.
+  useEffect(() => {
+    if (!file) {
+      setSketch(null);
+      return;
+    }
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    setSketch({ state: "working", lineArt: null });
+    const fail = () => {
+      if (!stop) setSketch({ state: "failed", lineArt: null });
+    };
+    void (async () => {
+      const imageBase64 = await uploadCopy(file);
+      if (!imageBase64 || imageBase64.length > MAX_IMAGE_B64) return fail();
+      const res = await fetch("/api/draw-job", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64, mode: "sketch" }),
+      }).catch(() => null);
+      const body = res?.ok ? ((await res.json()) as { jobId?: string }) : null;
+      if (!body?.jobId) return fail();
+      const started = Date.now();
+      const tick = async () => {
+        if (stop) return;
+        const r = await fetch(`/api/draw-job?id=${body.jobId}`, { cache: "no-store" }).catch(() => null);
+        const s = r?.ok ? ((await r.json()) as { status: Status["status"]; lineArt?: string | null }) : null;
+        if (stop) return;
+        if (s?.status === "done" && s.lineArt) {
+          const blob = await (await fetch(s.lineArt)).blob();
+          if (!stop) setSketch({ state: "ready", lineArt: new File([blob], "line-drawing.png", { type: "image/png" }) });
+          return;
+        }
+        // the worker may be busy with another drawing; after 5 min show the picture instead
+        if (s?.status === "failed" || Date.now() - started > 5 * 60_000) return fail();
+        timer = setTimeout(tick, 3000);
+      };
+      void tick();
+    })().catch(fail);
+    return () => {
+      stop = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [file]);
+
+  const editorFile = sketch?.state === "ready" ? sketch.lineArt : sketch?.state === "failed" ? file : null;
 
   const poll = useCallback(async (id: string) => {
     const res = await fetch(`/api/draw-job?id=${id}`, { cache: "no-store" });
@@ -169,11 +247,17 @@ export default function DrawFlow() {
       const res = await fetch("/api/draw-job", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64, email: email.trim() || undefined }),
+        body: JSON.stringify({
+          imageBase64,
+          email: email.trim() || undefined,
+          // the touched-up line drawing is plotted line for line; the picture itself (sketch failed) as before
+          mode: sketch?.state === "ready" ? "lineart" : undefined,
+        }),
       });
       const body = (await res.json()) as { jobId?: string; error?: string };
       if (!res.ok || !body.jobId) throw new Error(body.error ?? "Upload failed.");
-      const thumb = await makeThumbnail(await (await fetch(imageBase64)).blob());
+      // the results page shows the original picture, not the line drawing
+      const thumb = await makeThumbnail(file);
       if (thumb) saveThumbnail(body.jobId, thumb);
       router.push(`/draw?job=${body.jobId}`);
     } catch (e) {
@@ -300,14 +384,21 @@ export default function DrawFlow() {
             className="sr-only"
           />
         </div>
-        {file ? (
+        {file && sketch?.state === "working" ? (
+          <div className="rounded-lg border border-pace-line bg-pace-warm p-5">
+            <p className="font-bebas text-lg tracking-[0.08em]">Turning your picture into a simple drawing…</p>
+            <p className="mt-1 text-sm text-pace-muted">This usually takes under a minute.</p>
+          </div>
+        ) : null}
+        {file && editorFile ? (
           <div>
             <p className="text-sm font-semibold">This is what we will draw - touch it up first</p>
             <p className="mt-1 mb-3 max-w-2xl text-sm leading-relaxed text-pace-muted">
-              Erase anything you do not want on the streets, like small text or tiny details. Use the pen to close
-              gaps or thicken thin lines. Bold, simple shapes read best.
+              {sketch?.state === "ready"
+                ? "We turned your picture into a simple line drawing; every line becomes streets. Erase lines you do not want, and use the pen to add or fix one. Blue lines are your words."
+                : "Erase anything you do not want on the streets, like small text or tiny details. Use the pen to close gaps or thicken thin lines. Bold, simple shapes read best."}
             </p>
-            <LineArtEditor ref={editorRef} file={file} />
+            <LineArtEditor ref={editorRef} file={editorFile} />
           </div>
         ) : null}
         <div className="flex max-w-md flex-col gap-4">
@@ -323,7 +414,7 @@ export default function DrawFlow() {
           </label>
           <button
             type="button"
-            disabled={!file || busy}
+            disabled={!file || !editorFile || busy}
             onClick={submit}
             className="pace-btn-primary self-start px-8 disabled:opacity-50"
           >

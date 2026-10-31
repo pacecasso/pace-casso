@@ -65,7 +65,7 @@ function extFor(b64: string): string {
   return "png";
 }
 
-type Claim = { job: { id: string; imageBase64: string } | null; flagUrl: string | null };
+type Claim = { job: { id: string; imageBase64: string; mode?: "sketch" | "lineart" | null } | null; flagUrl: string | null };
 
 /** Nothing over this is ever offered; a runner can bike it or split it, but 65 km is the edge. */
 const MAX_KM = 65;
@@ -190,18 +190,24 @@ async function oldEngine(img: string, dir: string): Promise<EngineResult> {
  * under SHORT_KM the short lane, and the ~10 km lane (a mess on the rabbit)
  * is not shown.
  */
-async function geometryEngine(img: string, dir: string): Promise<EngineResult> {
+async function geometryEngine(img: string, dir: string, lineart = false): Promise<EngineResult> {
   const out = path.join(dir, "geo");
-  const code = await run(PY, ["-u", "scripts/geometry/draw_job.py", img, out, "--text=keep"], path.join(dir, "geo.log"));
+  const args = ["-u", "scripts/geometry/draw_job.py", img, out, "--text=keep", ...(lineart ? ["--lineart"] : [])];
+  const code = await run(PY, args, path.join(dir, "geo.log"));
   const file = path.join(out, "routes.json");
   if (!existsSync(file)) return { code, routes: [], note: null, subject: null };
-  const j = JSON.parse(readFileSync(file, "utf8")) as { routes: Labeled[]; note: string | null; words?: string | null };
+  const j = JSON.parse(readFileSync(file, "utf8")) as {
+    routes: Labeled[];
+    note: string | null;
+    words?: string | null;
+    ranked?: boolean;
+  };
   // lettering it read off the logo and redrew as block letters (readtext.py)
   const subject = j.words ? `the words "${j.words}"` : null;
   const usable = j.routes.filter((r) => r.km <= MAX_KM && r.points.length >= 2);
   // word logos come ranked by how well the letters read (best first); keep that
   // order. Otherwise Ralph's picks were always the largest readable draft.
-  const lanes = j.words ? usable : usable.sort((a, b) => b.km - a.km);
+  const lanes = j.words || j.ranked ? usable : usable.sort((a, b) => b.km - a.km);
   const pick = lanes[0];
   if (!pick) return { code, routes: [], note: j.note, subject };
   const routes: Labeled[] = [{ ...pick, label: "pick" }];
@@ -221,8 +227,22 @@ async function work(job: NonNullable<Claim["job"]>): Promise<void> {
   const img = path.join(dir, `upload.${extFor(job.imageBase64)}`);
   writeFileSync(img, Buffer.from(b64, "base64"));
   const t0 = Date.now();
-  console.log(`${new Date().toISOString()} job ${job.id} started`);
-  const { code, routes, note, subject } = ENGINE === "old" ? await oldEngine(img, dir) : await geometryEngine(img, dir);
+  console.log(`${new Date().toISOString()} job ${job.id} started${job.mode ? ` (${job.mode})` : ""}`);
+  if (job.mode === "sketch") {
+    // upload -> the simple line drawing the person touches up (simplify.py, Oct 31)
+    const png = path.join(dir, "lineart.png");
+    const code = await run(PY, ["-u", "scripts/geometry/simplify.py", img, png], path.join(dir, "sketch.log"));
+    const lineArt = existsSync(png) ? `data:image/png;base64,${readFileSync(png).toString("base64")}` : null;
+    const post = await fetch(`${SITE}/api/draw-job/worker`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ id: job.id, lineArt, error: lineArt ? null : `sketch exit ${code}` }),
+    });
+    console.log(`  line art ${lineArt ? "made" : "FAILED"} in ${((Date.now() - t0) / 1000).toFixed(0)} s -> ${post.status}`);
+    return;
+  }
+  const { code, routes, note, subject } =
+    ENGINE === "old" ? await oldEngine(img, dir) : await geometryEngine(img, dir, job.mode === "lineart");
   const post = await fetch(`${SITE}/api/draw-job/worker`, {
     method: "POST",
     headers: auth,

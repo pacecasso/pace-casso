@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { cleanRoutes } from "./drawJob";
+import { cleanLineArt, cleanRoutes, MAX_LINE_ART_B64 } from "./drawJob";
 
 // cleanRoutes: what the worker posts back is trusted only inside the NYC box
 const inside: [number, number] = [40.7, -73.95];
@@ -17,5 +17,11 @@ const labeled = cleanRoutes([
   { km: 1, points: [inside, inside], label: "bogus" },
 ]);
 assert.deepStrictEqual(labeled.map((r) => r.label), ["pick", "short", undefined], "only known labels survive");
+
+// cleanLineArt: only a PNG data URL under the size cap is kept
+assert.strictEqual(cleanLineArt("data:image/png;base64,iVBORw0KGgo="), "data:image/png;base64,iVBORw0KGgo=");
+assert.strictEqual(cleanLineArt("data:text/html;base64,PHNjcmlwdD4="), null, "not a PNG");
+assert.strictEqual(cleanLineArt(42), null, "not a string");
+assert.strictEqual(cleanLineArt("data:image/png;base64," + "A".repeat(MAX_LINE_ART_B64)), null, "too big");
 
 console.log("drawJob.test.ts OK");

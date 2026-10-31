@@ -1,7 +1,7 @@
 import { rateLimitAllow } from "../../../lib/mapboxRateLimit";
 import { shieldExpensiveRoute, trustedClientIp } from "../../../lib/apiShield";
 import { jobStoreConfigured } from "../../../lib/routeJobStore";
-import { enqueue, loadDrawJob, newDrawJobId, saveDrawJob, type DrawJob } from "../../../lib/drawJob";
+import { DRAW_MODES, enqueue, loadDrawJob, newDrawJobId, saveDrawJob, type DrawJob } from "../../../lib/drawJob";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -10,13 +10,14 @@ const MAX_IMAGE_B64 = 4_000_000;
 
 /** Queue an upload for the GPU worker. Returns immediately. */
 export async function POST(req: Request) {
-  const shield = shieldExpensiveRoute(req, "draw-job", 200);
+  // every drawing is two jobs since Oct 31 (the line drawing, then the route), so the caps doubled
+  const shield = shieldExpensiveRoute(req, "draw-job", 400);
   if (!shield.ok) return Response.json({ error: shield.message }, { status: shield.status });
-  if (!rateLimitAllow(`draw-job:${trustedClientIp(req)}`, 6)) {
+  if (!rateLimitAllow(`draw-job:${trustedClientIp(req)}`, 12)) {
     return Response.json({ error: "Too many uploads - try again in a minute." }, { status: 429 });
   }
   if (!jobStoreConfigured()) return Response.json({ error: "job store not configured" }, { status: 503 });
-  let body: { imageBase64?: unknown; email?: unknown };
+  let body: { imageBase64?: unknown; email?: unknown; mode?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -31,8 +32,10 @@ export async function POST(req: Request) {
     typeof body.email === "string" && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.email.trim())
       ? body.email.trim().slice(0, 254)
       : null;
+  const mode = DRAW_MODES.find((m) => m === body.mode);
   const job: DrawJob = {
     kind: "draw",
+    ...(mode ? { mode } : {}),
     id: newDrawJobId(),
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -59,7 +62,9 @@ export async function GET(req: Request) {
   if (!job) return Response.json({ error: "not found" }, { status: 404 });
   return Response.json({
     jobId: job.id,
+    mode: job.mode ?? null,
     status: job.status,
+    lineArt: job.status === "done" ? (job.lineArt ?? null) : null,
     createdAt: job.createdAt,
     subject: job.subject,
     note: job.note ?? null,

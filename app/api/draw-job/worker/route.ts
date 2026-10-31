@@ -1,4 +1,4 @@
-import { cleanRoutes, dequeue, loadDrawJob, queuedIds, saveDrawJob, setQueueFlag, workerAuthorized } from "../../../../lib/drawJob";
+import { cleanLineArt, cleanRoutes, dequeue, loadDrawJob, queuedIds, saveDrawJob, setQueueFlag, workerAuthorized } from "../../../../lib/drawJob";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -28,7 +28,7 @@ export async function GET(req: Request) {
     job.status = "running";
     job.claimedAt = Date.now();
     await saveDrawJob(job);
-    return Response.json({ job: { id: job.id, imageBase64: job.imageBase64 }, flagUrl: null });
+    return Response.json({ job: { id: job.id, imageBase64: job.imageBase64, mode: job.mode ?? null }, flagUrl: null });
   }
   // A failed flag write (e.g. the Blob store suspended, Oct 4) must not turn
   // an empty claim into a 500: the worker then falls back to claiming with
@@ -39,7 +39,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   if (!workerAuthorized(req)) return Response.json({ error: "unauthorized" }, { status: 401 });
-  let body: { id?: unknown; routes?: unknown; subject?: unknown; note?: unknown; error?: unknown };
+  let body: { id?: unknown; routes?: unknown; subject?: unknown; note?: unknown; error?: unknown; lineArt?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -47,6 +47,16 @@ export async function POST(req: Request) {
   }
   const job = await loadDrawJob(typeof body.id === "string" ? body.id : "");
   if (!job) return Response.json({ error: "not found" }, { status: 404 });
+  if (job.mode === "sketch") {
+    // the line drawing for the touch-up step; the person is on the page, so no email
+    job.lineArt = cleanLineArt(body.lineArt);
+    job.status = job.lineArt ? "done" : "failed";
+    job.error = job.lineArt ? null : typeof body.error === "string" ? body.error.slice(0, 300) : "No drawing made.";
+    job.imageBase64 = null;
+    await saveDrawJob(job);
+    await dequeue(job.id);
+    return Response.json({ ok: true, lineArt: Boolean(job.lineArt) });
+  }
   const routes = cleanRoutes(body.routes);
   job.subject = typeof body.subject === "string" ? body.subject.slice(0, 120) : null;
   job.routes = routes;

@@ -26,8 +26,19 @@ export type DrawRoute = {
 export type DrawLabel = "pick" | "short" | "alt";
 const LABELS: DrawLabel[] = ["pick", "short", "alt"];
 
+/**
+ * sketch = turn the upload into the simple line drawing (simplify.py) for the
+ * person to touch up; lineart = plot that touched-up drawing (Oct 31). Jobs
+ * with no mode are uploads drawn as they are (before Oct 31).
+ */
+export type DrawMode = "sketch" | "lineart";
+export const DRAW_MODES: DrawMode[] = ["sketch", "lineart"];
+/** a line drawing is a few hundred KB at most; anything bigger is refused */
+export const MAX_LINE_ART_B64 = 2_000_000;
+
 export type DrawJob = {
   kind: "draw";
+  mode?: DrawMode;
   id: string;
   createdAt: number;
   updatedAt: number;
@@ -37,6 +48,8 @@ export type DrawJob = {
   /** what the worker's automatic reading of the upload called it */
   subject: string | null;
   routes: DrawRoute[];
+  /** sketch jobs: the line drawing as a PNG data URL */
+  lineArt?: string | null;
   /** a line for the page about what could not be offered, e.g. no version under 25 km */
   note?: string | null;
   error: string | null;
@@ -155,6 +168,11 @@ export function workerAuthorized(req: Request): boolean {
   const a = Buffer.from(got);
   const b = Buffer.from(secret);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/** a PNG data URL the worker posted, or null */
+export function cleanLineArt(raw: unknown): string | null {
+  return typeof raw === "string" && raw.startsWith("data:image/png;base64,") && raw.length <= MAX_LINE_ART_B64 ? raw : null;
 }
 
 /** keep only finite lat/lng pairs inside the NYC box; drop anything else */
