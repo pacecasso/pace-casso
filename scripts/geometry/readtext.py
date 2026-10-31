@@ -84,7 +84,7 @@ def read_words(path):
     return re.sub(r" +", " ", words).strip(), [b for _, b in lines]
 
 
-INSIDE = 0.8       # a shape this much inside a text box is lettering; less is the mark
+OUTSIDE = 0.3      # a shape with less area than this x (text height)^2 outside the text boxes is lettering
 
 
 def lift(path, boxes, out_path, pad=0.08):
@@ -100,8 +100,9 @@ def lift(path, boxes, out_path, pad=0.08):
     border = np.concatenate([a[0], a[-1], a[:, 0], a[:, -1]]).astype(int)
     vals, counts = np.unique(border // 16, axis=0, return_counts=True)
     bgc = (vals[counts.argmax()] * 16 + 8).clip(0, 255).astype(np.uint8)
-    # faint anti-aliased edges count as ink here, so no halo of them is left behind
-    ink = np.abs(a.astype(int) - bgc.astype(int)).sum(-1) > 40
+    # the ink step's own threshold (plan.ink_parts): a looser one took EMTUSA's
+    # gradient background for ink; the erased area is grown to take the edges
+    ink = np.abs(a.astype(int) - bgc.astype(int)).sum(-1) > 90
     lab, n = nd.label(ink, structure=np.ones((3, 3)))
     total = np.bincount(lab.ravel(), minlength=n + 1)
     h, w = a.shape[:2]
@@ -113,7 +114,10 @@ def lift(path, boxes, out_path, pad=0.08):
         inbox[span] = True
         spans.append(span)
     inside = np.bincount(lab[inbox].ravel(), minlength=n + 1)
-    text = inside >= INSIDE * np.maximum(total, 1)
+    # the mark has real area outside the boxes; tight letters merged into one
+    # shape (EMTUSA's E-M-T) only poke a sliver past the padding
+    tall = max(y1 - y0 for _, y0, _, y1 in boxes)
+    text = (total - inside) < OUTSIDE * tall * tall
     text[0] = False
     erase = text[lab]
     # a letter joined to the mark (the spider's thread runs into the O of
