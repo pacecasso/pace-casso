@@ -87,6 +87,10 @@ def main():
         F.save(res, out, label, label)
         routes.append({"km": res["km"], "label": label,
                        "points": [[float(F.C.lat[n]), float(F.C.lng[n])] for n in res["route"]]})
+    if routes:
+        # one size coming out too long says nothing when another size is on the page
+        # (Oct 31 review: "No readable version under 65 km" beside a 46.5 km route)
+        notes = [n for n in notes if not n.startswith("No readable version")]
     if not words and not lineart and P.find_text(mask).any() and text_mode == "drop":
         notes.append("The lettering was left out: text needs roughly 40+ km to read on streets.")
     # routes are best-letters-first and the worker keeps that order; not for line
