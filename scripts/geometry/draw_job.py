@@ -34,6 +34,26 @@ LANES = [("pick", 20.0), ("short", 10.0), ("alt", 35.0)]
 WORD_LANES = [("a", 24.0), ("b", 30.0), ("c", 38.0)]
 WORD_KEEP = 2
 
+MARK_KM = 20.0
+MARK_CELLS = 16       # blocks across the mark-only drawing (the full drawing uses simplify.CELLS = 24)
+MARK_MIN = 0.15       # the mark must be this share of the drawing's ink, else it is just a frame or a dot
+
+
+def mark_lane(mask, words_mask):
+    """the touched-up drawing without its blue letters, simplified again at
+    MARK_CELLS and fitted at ~MARK_KM; None when there is too little mark"""
+    from PIL import Image
+    from scipy import ndimage as nd
+    mark = mask & ~nd.binary_dilation(words_mask, iterations=4)
+    if mark.sum() < MARK_MIN * mask.sum(): return None
+    strokes = Z.simplify(mark, None, cells=MARK_CELLS)
+    if not strokes: return None
+    tmp = os.path.join(sys.argv[2], "mark_lineart.png")
+    Z.render(strokes).save(tmp)
+    m, _ = Z.masks_of(tmp)
+    return F.fit_lane(m, MARK_KM, "keep", words_mask=None)
+
+
 def main():
     src, out = sys.argv[1], sys.argv[2]
     text_mode = next((a.split("=", 1)[1] for a in sys.argv[3:] if a.startswith("--text=")), "drop")
@@ -82,6 +102,14 @@ def main():
         # best letters first: the largest Nike (59 km) had the messiest "IT"
         results = sorted(results, key=lambda r: -r[1]["score"])[:WORD_KEEP]
         results = [(lab, r) for lab, (_, r) in zip(("pick", "alt"), results)]
+    if lineart and words:
+        # a run under 25 km: lettering needs 30+ km, so the short version is the
+        # mark alone, redrawn coarser so its parts stay a few blocks wide
+        # (Oct 31 blind customer review: "$10-20 for a recognisable sub-25 km
+        # route of my logo"; at 24 blocks across the inside detail blurred)
+        res = mark_lane(mask, words_mask)
+        if res is not None and res["km"] <= MAX_KM:
+            results.append(("mark", res))
     routes = []
     for label, res in results:
         F.save(res, out, label, label)
