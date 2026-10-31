@@ -82,19 +82,24 @@ def search(TS, TT, H, rng, nseats=NSEATS, text=None, ntrace=NTRACE):
         if len(picked) >= ntrace: break
     return picked
 
-def connect(strokes, ink_w=0.35):
+def connect(strokes, ink_w=0.1, total_w=0.1):
     """One continuous route. Starts from the longest stroke; every other stroke
     is either APPENDED (walk from the current end) or SPLICED in where the
     route passes closest (walk out, draw it, come back over the same streets:
-    an out-and-back spike or a side loop), whichever adds fewer km. Loops can
-    be entered at any of their nodes. Connector walks prefer streets already
-    drawn (so they retrace ink instead of adding visible lines)."""
+    an out-and-back spike or a side loop), whichever adds fewer NEW visible
+    metres (streets not already drawn); total km only breaks near-ties. Loops
+    can be entered at any of their nodes. Connector walks retrace drawn streets
+    almost for free: a join that cuts across blank space is a line the picture
+    does not have (Oct 31: BIKKEL's letters traced cleanly and the joins
+    between them turned the word into scribble)."""
     strokes = [s for s in strokes if len(s) > 1]
     if not strokes: return [], 0.0
     ink = set()
     for s in strokes:
         for a, b in zip(s[:-1], s[1:]): ink.add((min(a, b), max(a, b)))
     def wlen(u, v): return math.hypot(C.NX[u] - C.NX[v], C.NY[u] - C.NY[v])
+    def visible(p):
+        return sum(wlen(a, b) for a, b in zip(p[:-1], p[1:]) if (min(a, b), max(a, b)) not in ink)
     def dijkstra(srcs, targets, limit=1e18):
         """multi-source; returns path (list) from some src to the first target reached"""
         D = {u: 0.0 for u in srcs}; prev = {}; pq = [(0.0, u) for u in srcs]; heapq.heapify(pq)
@@ -126,10 +131,10 @@ def connect(strokes, ink_w=0.35):
         if closed[k]: body = s[i:-1] + s[:i + 1]
         else: body = s if i == 0 else s[::-1]
         # option A: splice at the route node where the walk started
-        splice_cost = 2 * C.plen(path) + (C.plen(body) if closed[k] else 2 * C.plen(body))
+        splice_cost = visible(path) + total_w * (2 * C.plen(path) + (C.plen(body) if closed[k] else 2 * C.plen(body)))
         # option B: append from the route's current end
         pa = dijkstra([route[-1]], set(body if closed[k] else [s[0], s[-1]]))
-        append_cost = 1e18 if pa is None else C.plen(pa) + C.plen(body)
+        append_cost = 1e18 if pa is None else visible(pa) + total_w * (C.plen(pa) + C.plen(body))
         if append_cost <= splice_cost:
             if closed[k]:
                 j = s.index(pa[-1]) if pa[-1] in s[:-1] else 0
@@ -137,14 +142,18 @@ def connect(strokes, ink_w=0.35):
             else:
                 body = s if pa[-1] == s[0] else s[::-1]
             conn += C.plen(pa); route += pa[1:] + body[1:]
+            walk = pa
         else:
             at = route.index(path[0])
             back = body[::-1] if not closed[k] else []
             ins = path[1:] + body[1:] + back[1:] + path[::-1][1:] if not closed[k] else path[1:] + body[1:] + path[::-1][1:]
             conn += 2 * C.plen(path)
             route = route[:at + 1] + ins + route[at + 1:]
+            walk = path
         left.remove(k)
-        for a, b in zip(body[:-1], body[1:]): ink.add((min(a, b), max(a, b)))
+        # the join is drawn now too: later joins may retrace it
+        for p_ in (body, walk):
+            for a, b in zip(p_[:-1], p_[1:]): ink.add((min(a, b), max(a, b)))
     return route, conn / 1000
 
 def plan_for_km(mask, km, text_mode):
