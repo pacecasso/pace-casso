@@ -36,8 +36,10 @@ MAX_LEN = 14.0      # total line length budget, in canvas widths
 MAX_STROKES = 40
 LETTER_RGB = (20, 70, 200)
 THICK = float(os.environ.get("SIMP_THICK", "1.0"))   # half-width (blocks) above which a part is drawn as its outline
-SMOOTH = float(os.environ.get("SIMP_SMOOTH", "0.7"))  # colour-region smoothing, blocks
+SMOOTH = float(os.environ.get("SIMP_SMOOTH", "0.3"))  # colour-region smoothing, blocks
 REGION = float(os.environ.get("SIMP_REGION", "3.0"))  # colour regions under this many square blocks are absorbed
+CLOSE = float(os.environ.get("SIMP_CLOSE", "0.2"))  # gaps under twice this many blocks are closed
+REACH = float(os.environ.get("SIMP_REACH", "1.5"))     # thin ink within this many blocks of a solid part is part of its outline
 MARK_LEN = float(os.environ.get("SIMP_MARK_LEN", "9.0"))  # mark budget (canvas widths) when words are added too
 
 
@@ -74,10 +76,16 @@ def simplify(mask, parts=None, cells=CELLS, max_len=MAX_LEN):
     c = HI / cells
     tol = 0.3 * c
     pad = int(2 * c)
-    m = _crop(nd.binary_closing(np.pad(mask, pad), morphology.disk(max(1, int(0.4 * c)))), pad)
+    m = _crop(nd.binary_closing(np.pad(mask, pad), morphology.disk(max(1, int(CLOSE * c)))), pad)
     # thick = what survives opening with a disk a block wide
     thick = nd.binary_opening(m, morphology.disk(max(1, int(THICK * c))))
     thick = morphology.remove_small_objects(thick, max_size=int(1.5 * c * c))
+    if REACH > 0 and thick.any():
+        # the opening also cut every neck and point under two blocks wide (the
+        # Daraz icon's triangle opened into a notch, the crow lost its feathers,
+        # the spider its legs): give back the ink within REACH blocks of the
+        # solid parts; longer thin lines (a web's threads) stay centre lines
+        thick = m & nd.binary_dilation(thick, morphology.disk(max(1, int(REACH * c))))
     strokes = []
     if thick.any():
         if parts is None or parts.max() <= 1:
@@ -209,7 +217,78 @@ def lay_out(mark_strokes, words, gap_cells=2):
     return [s * k for s in out], [s * k for s in letters]
 
 
+PHOTO_BORDER = 0.75   # a photo's border is mostly NOT one colour (logos on paper: 0.86+)
+PHOTO_COLOURS = 0.95  # ... and its top 16 colours cover less than this (flat logos: 0.95+)
+SUBJECT_MIN = 0.05    # a subject the photo model finds must cover this much of the picture
+TONES = int(os.environ.get("SIMP_TONES", "3"))  # brightness bands inside a photo's subject
+_seg = None
+
+
+def _rgb(path):
+    im = Image.open(path)
+    if im.mode in ("RGBA", "LA", "P"):
+        im = im.convert("RGBA"); bg = Image.new("RGBA", im.size, (255, 255, 255, 255)); im = Image.alpha_composite(bg, im)
+    return im.convert("RGB")
+
+
+def is_photo(path):
+    """a photo, not a logo: its border is busy and its colours are spread out
+    (Oct 31: the Eurasier dog photo was traced from the background shapes,
+    since the logo rules take the commonest border colour as the paper)"""
+    a = np.asarray(_rgb(path)).astype(int)
+    b = np.concatenate([a[0], a[-1], a[:, 0], a[:, -1]])
+    v, n = np.unique(b // 16, axis=0, return_counts=True)
+    border = (np.abs(b - (v[n.argmax()] * 16 + 8)).sum(-1) < 60).mean()
+    small = _rgb(path); small.thumbnail((300, 300))
+    q = np.asarray(small).reshape(-1, 3) // 32
+    _, c = np.unique(q, axis=0, return_counts=True)
+    colours = np.sort(c)[::-1][:16].sum() / len(q)
+    return border < PHOTO_BORDER and colours < PHOTO_COLOURS
+
+
+def photo_subject(path):
+    """the main subject of a photo (DeepLabV3, torchvision, local and free:
+    people, animals, vehicles...) as a mask on the HI canvas, cropped and
+    centred as plan.ink_parts does; None when it finds nothing big enough"""
+    global _seg
+    import torch
+    from torchvision.models.segmentation import deeplabv3_resnet101, DeepLabV3_ResNet101_Weights
+    w = DeepLabV3_ResNet101_Weights.DEFAULT
+    if _seg is None: _seg = deeplabv3_resnet101(weights=w).eval()
+    im = _rgb(path); im.thumbnail((520, 520))
+    with torch.no_grad():
+        lab = _seg(w.transforms()(im).unsqueeze(0))["out"][0].argmax(0).numpy()
+    ids, n = np.unique(lab[lab > 0], return_counts=True)
+    if not len(ids) or n.max() < SUBJECT_MIN * lab.size: return None
+    m = lab == ids[n.argmax()]
+    lb, k = nd.label(m)
+    m = lb == np.bincount(lb.ravel())[1:].argmax() + 1      # its largest piece
+    m = nd.binary_fill_holes(m)
+    # inside the subject: its main tones as colour parts (a face's dark eyes,
+    # nose and mouth against light fur), so simplify draws their edges too
+    px = np.asarray(im.convert("L"), float)
+    lab = np.zeros(m.shape, np.int32)
+    v = px[m]
+    edges = np.quantile(v, np.linspace(0, 1, TONES + 1)[1:-1])
+    lab[m] = np.digitize(v, edges) + 1
+    ys, xs = np.nonzero(m)
+    lab = lab[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    h, wd = lab.shape; s = int(max(h, wd) * 1.04) + 2
+    sq = np.zeros((s, s), np.int32); sq[(s - h) // 2:(s - h) // 2 + h, (s - wd) // 2:(s - wd) // 2 + wd] = lab
+    mask = np.asarray(Image.fromarray(((sq > 0) * 255).astype(np.uint8)).resize((HI, HI), Image.LANCZOS)) > 127
+    parts = np.asarray(Image.fromarray(sq.astype(np.uint8)).resize((HI, HI), Image.NEAREST)).astype(np.int32)
+    return mask, np.where(mask, np.maximum(parts, 1), 0)
+
+
 def line_art(path, words_mode="keep"):
+    if is_photo(path):
+        try:
+            subject = photo_subject(path)
+        except Exception as e:      # no model available: the logo rules below
+            print(f"photo subject failed: {e}")
+            subject = None
+        if subject is not None:
+            return simplify(*subject), [], ""
     words, boxes = "", []
     if words_mode == "keep":
         try:
