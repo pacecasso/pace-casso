@@ -109,6 +109,20 @@ async function uploadCopy(file: Blob): Promise<string | null> {
 /** sketch job: the worker turns the upload into the simple line drawing to touch up */
 type Sketch = { state: "working" | "ready" | "failed"; lineArt: File | null };
 
+/**
+ * What the results are, from the labels actually shown: the Oct 31 blind
+ * test read "the shorter one is for a run you can finish in a morning"
+ * above a pick and an "Another take" that was LONGER than the pick.
+ */
+function resultsIntro(routes: Route[]): string {
+  const count = routes.length === 1 ? "One version" : routes.length === 2 ? "Two versions" : "Three versions";
+  const parts = [`${count}, each one continuous run on real streets.`];
+  if (routes.length > 1) parts.push("Our pick ★ is the one we think looks most like your picture.");
+  if (routes.some((r) => r.label === "short")) parts.push(`"${LABEL_TEXT.short}" is for a shorter run.`);
+  if (routes.some((r) => r.label === "alt")) parts.push("Another take is the same drawing at a different size.");
+  return parts.join(" ");
+}
+
 function gpxFor(route: Route, name: string): string {
   const pts = route.points.map(([lat, lng]) => `<trkpt lat="${lat}" lon="${lng}"/>`).join("");
   return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="PaceCasso" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${name}</name><trkseg>${pts}</trkseg></trk></gpx>`;
@@ -297,8 +311,8 @@ export default function DrawFlow() {
             </p>
             <p className="mt-2 text-sm leading-relaxed text-pace-muted">
               We try hundreds of places, sizes and angles across Manhattan, Brooklyn and Queens and keep the
-              ones that still look like your picture. This usually takes a minute or two ({mins} min so far). You can close this page - bookmark
-              it, or use the link in your email.
+              ones that still look like your picture. This usually takes a minute or two ({mins} min so far). You can close this page and
+              come back to this link later; if you gave us your email, we will send you the link too.
             </p>
           </div>
         ) : null}
@@ -316,10 +330,8 @@ export default function DrawFlow() {
         {status?.status === "done" ? (
           <>
             <p className="mt-3 max-w-2xl text-sm leading-relaxed text-pace-muted">
-              {status.routes.length === 1 ? "One version" : status.routes.length === 2 ? "Two versions" : "Three versions"}
-              , each one continuous run on real streets. Our pick is the one that looks most like your picture; the
-              shorter one is for a run you can finish in a morning.{status.note ? ` ${status.note}` : ""} Load the GPX
-              into Strava, Garmin or your watch.
+              {resultsIntro(status.routes)}
+              {status.note ? ` ${status.note}` : ""} Load the GPX into Strava, Garmin or your watch.
             </p>
             <div className="mt-5 grid gap-5 lg:grid-cols-3">
               {status.routes.map((r, i) => (
@@ -363,8 +375,8 @@ export default function DrawFlow() {
         give you up to two versions to choose from. Bold shapes with a clear outline work best.
       </p>
       <p className="mt-2 max-w-2xl text-sm leading-relaxed text-pace-muted">
-        We search Manhattan, Brooklyn and Queens, not only the borough you picked, because the shape has to fit the
-        street grid. Your route may land in Brooklyn or Queens.
+        We search Manhattan, Brooklyn and Queens for the streets that fit your shape best, so your route may land
+        in Brooklyn or Queens.
       </p>
       <div className="mt-6 flex flex-col gap-5 rounded-xl border border-pace-line bg-pace-white p-5">
         <div className="text-sm font-semibold">
