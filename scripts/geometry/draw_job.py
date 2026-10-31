@@ -35,23 +35,31 @@ WORD_LANES = [("a", 24.0), ("b", 30.0), ("c", 38.0)]
 WORD_KEEP = 2
 
 MARK_KM = 20.0
-MARK_CELLS = 16       # blocks across the mark-only drawing (the full drawing uses simplify.CELLS = 24)
+MARK_MAX = 24.0       # the page shows it as "Under 25 km"
 MARK_MIN = 0.15       # the mark must be this share of the drawing's ink, else it is just a frame or a dot
 
 
 def mark_lane(mask, words_mask):
-    """the touched-up drawing without its blue letters, simplified again at
-    MARK_CELLS and fitted at ~MARK_KM; None when there is too little mark"""
+    """the touched-up drawing without its blue letters, fitted at ~MARK_KM
+    (under MARK_MAX); None when there is too little mark"""
     from PIL import Image
     from scipy import ndimage as nd
     mark = mask & ~nd.binary_dilation(words_mask, iterations=4)
     if mark.sum() < MARK_MIN * mask.sum(): return None
-    strokes = Z.simplify(mark, None, cells=MARK_CELLS)
-    if not strokes: return None
+    # the drawing the customer approved, minus its letters, re-centred to fill
+    # the canvas (simplifying it a second time mangled it: New Holland's oval
+    # with an X became a tree, Oct 31)
     tmp = os.path.join(sys.argv[2], "mark_lineart.png")
-    Z.render(strokes).save(tmp)
+    Image.fromarray(np.where(mark, 0, 255).astype(np.uint8)).save(tmp)
     m, _ = Z.masks_of(tmp)
-    return F.fit_lane(m, MARK_KM, "keep", words_mask=None)
+    # the joins and the size the parts need push a 20 km target past 25 (Oct 31
+    # review: 26.5 and 35.5 km, so the page hid them): aim lower until it fits
+    target, res = MARK_KM, None
+    for _ in range(4):
+        res = F.fit_lane(m, target, "keep", words_mask=None)
+        if res is None or res["km"] <= MARK_MAX: return res
+        target *= 0.9 * MARK_MAX / res["km"]
+    return res
 
 
 def main():
