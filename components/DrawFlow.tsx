@@ -118,7 +118,9 @@ function resultsIntro(routes: Route[]): string {
   const count = routes.length === 1 ? "One version" : routes.length === 2 ? "Two versions" : "Three versions";
   const parts = [`${count}, each one continuous run on real streets.`];
   if (routes.length > 1) parts.push("Our pick ★ is the one we think looks most like your picture.");
-  if (routes.some((r) => r.label === "short")) parts.push(`"${LABEL_TEXT.short}" is for a shorter run.`);
+  if (routes.some((r) => r.label === "short")) {
+    parts.push(`"${LABEL_TEXT.short}" is a shorter run; for a logo with words it is the picture on its own.`);
+  }
   if (routes.some((r) => r.label === "alt")) parts.push("Another take is the same drawing at a different size.");
   return parts.join(" ");
 }
