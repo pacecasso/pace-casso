@@ -84,8 +84,14 @@ def read_words(path):
     return re.sub(r" +", " ", words).strip(), [b for _, b in lines]
 
 
+INSIDE = 0.8       # a shape this much inside a text box is lettering; less is the mark
+
+
 def lift(path, boxes, out_path, pad=0.08):
-    """the upload with every text box painted the background colour"""
+    """the upload with its lettering painted the background colour: every
+    shape of ink that lies mostly inside a text box. Painting the whole box
+    also erased whatever of the mark it overlapped (Oct 31: the Daraz box
+    took the right half of the icon and its play triangle with it)."""
     im = Image.open(path)
     if im.mode in ("RGBA", "LA", "P"):
         im = im.convert("RGBA"); bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
@@ -94,10 +100,32 @@ def lift(path, boxes, out_path, pad=0.08):
     border = np.concatenate([a[0], a[-1], a[:, 0], a[:, -1]]).astype(int)
     vals, counts = np.unique(border // 16, axis=0, return_counts=True)
     bgc = (vals[counts.argmax()] * 16 + 8).clip(0, 255).astype(np.uint8)
+    # faint anti-aliased edges count as ink here, so no halo of them is left behind
+    ink = np.abs(a.astype(int) - bgc.astype(int)).sum(-1) > 40
+    lab, n = nd.label(ink, structure=np.ones((3, 3)))
+    total = np.bincount(lab.ravel(), minlength=n + 1)
     h, w = a.shape[:2]
+    inbox = np.zeros((h, w), bool)
+    spans = []
     for x0, y0, x1, y1 in boxes:
         p = int(pad * (y1 - y0))
-        a[max(0, y0 - p):min(h, y1 + p), max(0, x0 - p):min(w, x1 + p)] = bgc
+        span = (slice(max(0, y0 - p), min(h, y1 + p)), slice(max(0, x0 - p), min(w, x1 + p)))
+        inbox[span] = True
+        spans.append(span)
+    inside = np.bincount(lab[inbox].ravel(), minlength=n + 1)
+    text = inside >= INSIDE * np.maximum(total, 1)
+    text[0] = False
+    erase = text[lab]
+    # a letter joined to the mark (the spider's thread runs into the O of
+    # CROOKED) is still a letter: inside a box, a piece of a bigger shape goes
+    # unless the box's left or right side cuts it, as it cuts a mark beside the word
+    for span in spans:
+        sub = ink[span] & ~erase[span]
+        pl, k = nd.label(sub, structure=np.ones((3, 3)))
+        sides = set(np.unique(pl[:, 0])) | set(np.unique(pl[:, -1]))
+        letters = np.isin(pl, [i for i in range(1, k + 1) if i not in sides])
+        erase[span] |= letters
+    a[nd.binary_dilation(erase, iterations=2)] = bgc
     Image.fromarray(a).save(out_path)
     return out_path
 
