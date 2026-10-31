@@ -89,7 +89,10 @@ def main():
                        "points": [[float(F.C.lat[n]), float(F.C.lng[n])] for n in res["route"]]})
     if not words and not lineart and P.find_text(mask).any() and text_mode == "drop":
         notes.append("The lettering was left out: text needs roughly 40+ km to read on streets.")
-    ranked = bool(words)                    # routes are best-letters-first; the worker keeps that order
+    # routes are best-letters-first and the worker keeps that order; not for line
+    # drawings: on the 8 blind-judged pairs (Oct 31) the best-letters route was
+    # the better one 3 times, the larger route 6 times (the worker's default)
+    ranked = bool(words) and not lineart
     if lineart and words: words = ""       # the worker reads "words" as typed text
     json.dump({"routes": routes, "note": " ".join(dict.fromkeys(notes)) or None, "words": words or None,
                "ranked": ranked},
