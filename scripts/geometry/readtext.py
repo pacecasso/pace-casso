@@ -9,6 +9,7 @@ word breaks, and their boxes (x0, y0, x1, y1 in image pixels) so the caller
 can lift the logo's own lettering out before redrawing it as block letters.
 """
 import re
+import unicodedata
 import numpy as np
 from PIL import Image
 from scipy import ndimage as nd
@@ -64,8 +65,11 @@ def read_words(path):
     if not r.txts: return "", []
     lines = []
     for txt, score, quad in zip(r.txts, r.scores, r.boxes):
-        clean = re.sub(r"[^A-Z0-9 ]", "", txt.upper()).strip()
-        if score < MIN_SCORE or len(clean.replace(" ", "")) < 2: continue
+        # accents to plain letters (LABORATÓRIO lost its O when they were deleted)
+        plain = unicodedata.normalize("NFKD", txt.upper()).encode("ascii", "ignore").decode()
+        clean = re.sub(r"[^A-Z0-9 ]", "", plain).strip()
+        # a word needs 3+ characters and a letter: three rings read as "80" (Oct 30)
+        if score < MIN_SCORE or len(clean.replace(" ", "")) < 3 or not re.search(r"[A-Z]", clean): continue
         q = np.asarray(quad)
         box = (int(q[:, 0].min()), int(q[:, 1].min()), int(q[:, 0].max()) + 1, int(q[:, 1].max()) + 1)
         lines.append((clean, box))
