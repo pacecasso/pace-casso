@@ -446,7 +446,8 @@ export default function DrawFlow() {
         Draw my logo
       </h1>
       <p className="mt-3 max-w-2xl text-sm leading-relaxed text-pace-muted">
-        Upload a logo or a picture. We turn it into a running route that draws it across New York City streets, and
+        <strong className="font-semibold text-pace-ink">New York City only for now.</strong> Upload a logo or a
+        picture. We turn it into a running route that draws it across New York City streets, and
         give you up to five versions to choose from, from about 10 km up. Bold shapes with a clear outline work best.
       </p>
       <p className="mt-2 max-w-2xl text-sm leading-relaxed text-pace-muted">

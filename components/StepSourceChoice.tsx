@@ -139,7 +139,7 @@ export default function StepSourceChoice({
             </span>
             <span className="mt-0.5 block text-[11px] leading-snug text-pace-muted sm:text-xs">
               {cityPreset?.id === "manhattan" || cityPreset?.id === "brooklyn"
-                ? "Upload a logo, we draw it on the streets"
+                ? "Upload a logo, we draw it on New York City streets"
                 : "New York only for now"}
             </span>
           </span>

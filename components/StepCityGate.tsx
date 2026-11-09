@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   CITY_PRESETS,
   CITY_PRESETS_ORDERED,
@@ -72,6 +73,20 @@ export default function StepCityGate({
       >
         Continue with {preset.label}
       </button>
+
+      {/* Nov 9 cold review: the wizard asked for a city, then "From a photo"
+          went to /draw, which only covers New York and ignores the choice.
+          Say so before anyone picks, and let a photo skip the wizard. */}
+      <p className="max-w-sm text-center font-dm text-xs leading-relaxed text-pace-muted sm:text-sm">
+        Have a logo or a picture to upload? That works in New York City only
+        for now, whichever city you pick here.{" "}
+        <Link
+          href="/draw"
+          className="font-semibold text-pace-blue underline-offset-2 hover:underline"
+        >
+          Upload a picture →
+        </Link>
+      </p>
     </div>
   );
 }

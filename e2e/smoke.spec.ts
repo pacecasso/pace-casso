@@ -137,6 +137,15 @@ test.describe("smoke", () => {
     ).toBeVisible({ timeout: 30_000 });
   });
 
+  test("city gate says photos are New York only and links straight to /draw", async ({ page }) => {
+    await page.goto("/create");
+    await expect(page.getByText(/New York City only\s+for now/)).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("link", { name: /Upload a picture/ }).click();
+    await expect(page).toHaveURL(/\/draw$/);
+    await expect(page.getByText("New York City only for now.")).toBeVisible();
+    await expect(page.getByText("Choose picture")).toBeVisible();
+  });
+
   test("create flow reaches artwork upload screen", async ({ page }) => {
     await page.goto("/create");
     await page.getByRole("button", { name: /^Continue\b/ }).click();
