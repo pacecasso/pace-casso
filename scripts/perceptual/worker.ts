@@ -82,7 +82,14 @@ const SCORE_GAP = 1.5;
 const FREE_KM_W = 0.02;
 
 type Draft = { seat: number; score: number; mainRank: number; km: number; points: [number, number][] };
-type Labeled = { km: number; points: [number, number][]; label: "pick" | "short" | "alt" };
+/**
+ * score: the geometry engine's 0..1 match with the drawing (the page sorts by
+ * it); label "mark" = a word logo's picture on its own. The old engine sends
+ * pick/short/alt and no score.
+ */
+type Labeled = { km: number; points: [number, number][]; label?: "pick" | "short" | "alt" | "mark"; score?: number };
+/** the page shows up to this many versions, sortable by best match or distance (Nov 9) */
+const MAX_ROUTES = 5;
 
 /**
  * The drafts a fit run believes in, best score first.
@@ -137,7 +144,7 @@ async function chooseLanes(dir: string): Promise<{ routes: Labeled[]; note: stri
   const free = readDrafts(dir, FREE_KM_W).filter((d) => d.km <= MAX_KM);
   const pick = free[0];
   if (!pick) return { routes: [], note: null };
-  const strip = (d: Draft, label: Labeled["label"]): Labeled => ({ km: d.km, points: d.points, label });
+  const strip = (d: Draft, label: "pick" | "short" | "alt"): Labeled => ({ km: d.km, points: d.points, label });
   const routes: Labeled[] = [strip(pick, "pick")];
   let note: string | null = null;
   let short = free.find((d) => d !== pick && d.km <= SHORT_KM);
@@ -185,10 +192,13 @@ async function oldEngine(img: string, dir: string): Promise<EngineResult> {
  * The Oct 28 expert's geometry-first fit (scripts/geometry/draw_job.py):
  * it scores routes against the upload's own shape, not a CLIP label. On the
  * Oct 30 rabbit the old engine had nothing under 65 km; this one read at 22
- * and 48 km. Its lanes are ~10/20/35 km targets; Ralph's picks were always
- * the largest readable draft, so the largest becomes "our pick", the largest
- * under SHORT_KM the short lane, and the ~10 km lane (a mess on the rabbit)
- * is not shown.
+ * and 48 km. It fits five sizes (~10 to ~38 km) and scores each one's match
+ * with the drawing (0..1). Until Nov 9 the worker showed two of them (the
+ * largest as "our pick", the largest under 25 km) and hid the ~10 km one;
+ * a cold review that day found the hidden 10.5 km rocket and 8.7 km duck
+ * were the ones a runner would actually run. Now every version up to
+ * MAX_ROUTES goes to the page, best match first, and the runner sorts them
+ * by best or by distance.
  */
 async function geometryEngine(img: string, dir: string, lineart = false): Promise<EngineResult> {
   const out = path.join(dir, "geo");
@@ -197,26 +207,23 @@ async function geometryEngine(img: string, dir: string, lineart = false): Promis
   const file = path.join(out, "routes.json");
   if (!existsSync(file)) return { code, routes: [], note: null, subject: null };
   const j = JSON.parse(readFileSync(file, "utf8")) as {
-    routes: Labeled[];
+    routes: { km: number; points: [number, number][]; label?: string; score?: number }[];
     note: string | null;
     words?: string | null;
-    ranked?: boolean;
   };
   // lettering it read off the logo and redrew as block letters (readtext.py)
   const subject = j.words ? `the words "${j.words}"` : null;
-  const usable = j.routes.filter((r) => r.km <= MAX_KM && r.points.length >= 2);
-  // word logos come ranked by how well the letters read (best first); keep that
-  // order. Otherwise Ralph's picks were always the largest readable draft.
-  const lanes = j.words || j.ranked ? usable : usable.sort((a, b) => b.km - a.km);
-  const pick = lanes[0];
-  if (!pick) return { code, routes: [], note: j.note, subject };
-  const routes: Labeled[] = [{ ...pick, label: "pick" }];
-  const short = lanes.find((r) => r !== pick && r.km <= SHORT_KM && r.label !== "short");
-  if (short) routes.push({ ...short, label: "short" });
-  // word logos have no lane under SHORT_KM (lettering needs ~30+ km); show the
-  // other size as "Another take" rather than hide it (Nike: 31 km read best)
-  const alt = short ? undefined : lanes.find((r) => r !== pick && r.label !== "short");
-  if (alt) routes.push({ ...alt, label: "alt" });
+  const routes: Labeled[] = j.routes
+    .filter((r) => r.km <= MAX_KM && r.points.length >= 2)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+    .slice(0, MAX_ROUTES)
+    .map((r) => ({
+      km: r.km,
+      points: r.points,
+      ...(typeof r.score === "number" ? { score: r.score } : {}),
+      // the engine's size names (s10, a, b...) mean nothing to the page; "mark" does
+      ...(r.label === "mark" ? { label: "mark" as const } : {}),
+    }));
   return { code, routes, note: j.note, subject };
 }
 
@@ -248,7 +255,7 @@ async function work(job: NonNullable<Claim["job"]>): Promise<void> {
     headers: auth,
     body: JSON.stringify({ id: job.id, routes, subject, note, error: routes.length ? null : `pipeline exit ${code}` }),
   });
-  console.log(`  ${routes.length} routes (${routes.map((r) => `${r.label} ${r.km} km`).join(", ")}) in ${((Date.now() - t0) / 60000).toFixed(1)} min -> ${post.status}`);
+  console.log(`  ${routes.length} routes (${routes.map((r) => `${r.label ? `${r.label} ` : ""}${r.km} km`).join(", ")}) in ${((Date.now() - t0) / 60000).toFixed(1)} min -> ${post.status}`);
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

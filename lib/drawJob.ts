@@ -19,12 +19,19 @@ export type DrawRoute = {
   km: number;
   /** [lat, lng], street-following, one continuous line */
   points: [number, number][];
-  /** pick = best with no distance limit; short = best under 25 km; alt = the runner-up */
+  /**
+   * mark = a word logo's picture on its own. Jobs before Nov 9 carry
+   * pick = best with no distance limit; short = best under 25 km; alt = the runner-up.
+   */
   label?: DrawLabel;
+  /** how much the route looks like the drawing, 0..1 (the page's "best" sort); absent before Nov 9 */
+  score?: number;
 };
 
-export type DrawLabel = "pick" | "short" | "alt";
-const LABELS: DrawLabel[] = ["pick", "short", "alt"];
+export type DrawLabel = "pick" | "short" | "alt" | "mark";
+const LABELS: DrawLabel[] = ["pick", "short", "alt", "mark"];
+/** the page shows up to five versions, sortable by best match or by distance */
+export const MAX_DRAW_ROUTES = 5;
 
 /**
  * sketch = turn the upload into the simple line drawing (simplify.py) for the
@@ -179,7 +186,7 @@ export function cleanLineArt(raw: unknown): string | null {
 export function cleanRoutes(raw: unknown): DrawRoute[] {
   if (!Array.isArray(raw)) return [];
   const out: DrawRoute[] = [];
-  for (const r of raw.slice(0, 3)) {
+  for (const r of raw.slice(0, MAX_DRAW_ROUTES)) {
     const pts = Array.isArray((r as { points?: unknown })?.points) ? (r as { points: unknown[] }).points : [];
     const points: [number, number][] = [];
     for (const p of pts.slice(0, 20_000)) {
@@ -194,6 +201,10 @@ export function cleanRoutes(raw: unknown): DrawRoute[] {
     if (points.length >= 2) {
       const route: DrawRoute = { km: Number.isFinite(km) ? km : 0, points };
       if (LABELS.includes(label as DrawLabel)) route.label = label as DrawLabel;
+      const score = (r as { score?: unknown }).score;
+      if (typeof score === "number" && Number.isFinite(score)) {
+        route.score = Math.round(Math.max(0, Math.min(1, score)) * 1000) / 1000;
+      }
       out.push(route);
     }
   }

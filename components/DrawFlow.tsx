@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { rankDrawRoutes, routesScored, sortDrawRoutes, type DrawSort } from "../lib/drawRouteSort";
 import { formatDistance, formatDuration, useRunnerProfile } from "../lib/runnerProfile";
 import LineArtEditor, { type LineArtEditorHandle } from "./LineArtEditor";
 
@@ -15,13 +16,24 @@ const Step5PreviewMap = dynamic(() => import("./Step5PreviewMap"), {
   ),
 });
 
-type Route = { km: number; points: [number, number][]; label?: "pick" | "short" | "alt" };
+/** score: the engine's 0..1 match with the drawing (jobs since Nov 9); the page sorts by it */
+type Route = { km: number; points: [number, number][]; label?: "pick" | "short" | "alt" | "mark"; score?: number };
 
+/** card titles for jobs from before Nov 9, which carry these labels and no score */
 const LABEL_TEXT: Record<NonNullable<Route["label"]>, string> = {
   pick: "Our pick",
   short: "Under 25 km",
   alt: "Another take",
+  mark: "Picture only",
 };
+const SORT_TEXT: Record<DrawSort, string> = { best: "Best match", distance: "Distance" };
+/**
+ * One array for every render: the preview map refits its view whenever this
+ * prop changes identity, so a fresh [] on each render threw away the runner's
+ * zoom and pan every time the page re-rendered (e.g. on a sort click).
+ */
+const NO_ART: [number, number][] = [];
+const COUNT_TEXT = ["One version", "Two versions", "Three versions", "Four versions", "Five versions"];
 type Status = {
   status: "queued" | "running" | "done" | "failed";
   createdAt: number;
@@ -115,8 +127,18 @@ type Sketch = { state: "working" | "ready" | "failed"; lineArt: File | null };
  * above a pick and an "Another take" that was LONGER than the pick.
  */
 function resultsIntro(routes: Route[]): string {
-  const count = routes.length === 1 ? "One version" : routes.length === 2 ? "Two versions" : "Three versions";
+  const count = COUNT_TEXT[routes.length - 1] ?? `${routes.length} versions`;
   const parts = [`${count}, each one continuous run on real streets.`];
+  if (routesScored(routes)) {
+    // since Nov 9: every size the engine fitted, ranked by its match score
+    if (routes.length > 1) {
+      parts.push("They are your drawing at different sizes: ★ is the one that looks most like your picture, and you can sort them by best match or by distance.");
+    }
+    if (routes.some((r) => r.label === "mark")) {
+      parts.push('"Picture only" is your picture without its words, which makes a shorter run.');
+    }
+    return parts.join(" ");
+  }
   if (routes.length > 1) parts.push("Our pick ★ is the one we think looks most like your picture.");
   if (routes.some((r) => r.label === "short")) {
     parts.push(`"${LABEL_TEXT.short}" is a shorter run; for a logo with words it is the picture on its own.`);
@@ -130,6 +152,7 @@ function gpxFor(route: Route, name: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="PaceCasso" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${name}</name><trkseg>${pts}</trkseg></trk></gpx>`;
 }
 
+/** i: the route's best-match rank, so a file keeps its number however the page is sorted */
 function download(route: Route, i: number) {
   const blob = new Blob([gpxFor(route, `PaceCasso option ${i + 1}`)], { type: "application/gpx+xml" });
   const a = document.createElement("a");
@@ -140,7 +163,7 @@ function download(route: Route, i: number) {
 }
 
 /**
- * Upload -> queued job -> three street routes. The search runs on the GPU
+ * Upload -> queued job -> up to five street routes. The search runs on the GPU
  * worker (scripts/perceptual/worker.ts) and takes minutes, so the page
  * polls and the job id lives in the URL: closing the tab loses nothing.
  */
@@ -157,6 +180,7 @@ export default function DrawFlow() {
   const [status, setStatus] = useState<Status | null>(null);
   const [uploadThumb, setUploadThumb] = useState<string | null>(null);
   const [sketch, setSketch] = useState<Sketch | null>(null);
+  const [sort, setSort] = useState<DrawSort>("best");
 
   useEffect(() => {
     setUploadThumb(jobId ? loadThumbnail(jobId) : null);
@@ -285,6 +309,14 @@ export default function DrawFlow() {
 
   if (jobId) {
     const mins = status ? Math.max(0, Math.round((Date.now() - status.createdAt) / 60000)) : 0;
+    const routes = status?.status === "done" ? status.routes : [];
+    const scored = routesScored(routes);
+    // The cards stay in best-match order in the page and only their grid
+    // position (CSS order) changes with the sort: moving a live Leaflet map
+    // to another place in the page crashed it (Nov 9, "_leaflet_pos" of a
+    // map that had been torn down).
+    const ranked = rankDrawRoutes(routes);
+    const place = new Map(sortDrawRoutes(ranked, sort).map((r, at) => [r.index, at]));
     return (
       <div>
         <h1 className="font-pace-heading text-3xl uppercase tracking-wide text-pace-blue sm:text-4xl">
@@ -332,31 +364,72 @@ export default function DrawFlow() {
         {status?.status === "done" ? (
           <>
             <p className="mt-3 max-w-2xl text-sm leading-relaxed text-pace-muted">
-              {resultsIntro(status.routes)}
+              {resultsIntro(routes)}
               {status.note ? ` ${status.note}` : ""} Load the GPX into Strava, Garmin or your watch.
             </p>
+            {routes.length > 1 ? (
+              <div className="mt-4 flex flex-wrap items-center gap-2" role="group" aria-label="Sort the versions">
+                <span className="font-bebas text-xs tracking-[0.14em] text-pace-muted">Sort by</span>
+                {(["best", "distance"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    aria-pressed={sort === m}
+                    onClick={() => setSort(m)}
+                    className={`rounded border px-3 py-1.5 font-bebas text-xs tracking-[0.1em] transition ${
+                      sort === m
+                        ? "border-pace-blue bg-pace-blue text-white"
+                        : "border-pace-line bg-pace-white text-pace-ink hover:border-pace-blue"
+                    }`}
+                  >
+                    {SORT_TEXT[m]}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <div className="mt-5 grid gap-5 lg:grid-cols-3">
-              {status.routes.map((r, i) => (
-                <div key={i} className="flex flex-col overflow-hidden rounded-xl border border-pace-line bg-pace-white">
-                  <div className="h-[340px] p-2">
-                    <Step5PreviewMap routeLine={r.points} originalArt={[]} showOriginalArt={false} />
+              {ranked.map(({ route: r, rank, index }) => {
+                // jobs since Nov 9 are titled by their best-match rank, which a card
+                // keeps when the page is sorted by distance; older jobs keep their labels
+                const best = scored ? rank === 0 : r.label === "pick";
+                const title = scored
+                  ? rank === 0
+                    ? "Best match"
+                    : `Match #${rank + 1}`
+                  : r.label
+                    ? LABEL_TEXT[r.label]
+                    : `Option ${index + 1}`;
+                return (
+                  <div
+                    key={index}
+                    style={{ order: place.get(index) ?? rank }}
+                    className="flex flex-col overflow-hidden rounded-xl border border-pace-line bg-pace-white"
+                  >
+                    <div className="h-[340px] p-2">
+                      <Step5PreviewMap routeLine={r.points} originalArt={NO_ART} showOriginalArt={false} />
+                    </div>
+                    <div className="flex items-center justify-between gap-3 border-t border-pace-line px-4 py-3">
+                      <div>
+                        <p className="font-bebas text-sm tracking-[0.1em]">
+                          {title}
+                          {best ? <span className="ml-2 text-pace-yellow">★</span> : null} ·{" "}
+                          {formatDistance(r.km, profile.unit)} · {formatDuration(r.km * profile.paceSecPerKm)}
+                        </p>
+                        {scored && r.label === "mark" ? (
+                          <p className="mt-0.5 text-xs text-pace-muted">Picture only, without the words</p>
+                        ) : null}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => download(r, scored ? rank : index)}
+                        className="pace-btn-primary px-4 py-2 text-xs"
+                      >
+                        GPX
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between gap-3 border-t border-pace-line px-4 py-3">
-                    <p className="font-bebas text-sm tracking-[0.1em]">
-                      {r.label ? LABEL_TEXT[r.label] : `Option ${i + 1}`}
-                      {r.label === "pick" ? <span className="ml-2 text-pace-yellow">★</span> : null} ·{" "}
-                      {formatDistance(r.km, profile.unit)} · {formatDuration(r.km * profile.paceSecPerKm)}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => download(r, i)}
-                      className="pace-btn-primary px-4 py-2 text-xs"
-                    >
-                      GPX
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <a href="/draw" className="mt-8 inline-block text-sm font-semibold text-pace-blue">
               Draw another →
@@ -374,7 +447,7 @@ export default function DrawFlow() {
       </h1>
       <p className="mt-3 max-w-2xl text-sm leading-relaxed text-pace-muted">
         Upload a logo or a picture. We turn it into a running route that draws it across New York City streets, and
-        give you up to two versions to choose from. Bold shapes with a clear outline work best.
+        give you up to five versions to choose from, from about 10 km up. Bold shapes with a clear outline work best.
       </p>
       <p className="mt-2 max-w-2xl text-sm leading-relaxed text-pace-muted">
         We search Manhattan, Brooklyn and Queens for the streets that fit your shape best, so your route may land

@@ -1,12 +1,14 @@
 """Drop-in for the /draw worker: one upload -> routes.json in the exact shape
-worker.ts posts ({ routes: [{km, points:[[lat,lng],...], label}], note, words, ranked }).
+worker.ts posts ({ routes: [{km, points:[[lat,lng],...], label, score}], note, words, ranked }).
 
   python draw_job.py <upload> <jobdir> [--text=keep|drop] [--lineart]
 
-Lanes: 'pick' (~20 km), 'short' (~10 km), 'alt' (~35 km). The scale budget can
-refuse a lane: if the picture's main parts cannot stay readable at a lane's
-length the lane is grown to the smallest readable size, and if that lands
-over MAX_KM it is dropped with a note. Nothing calls a paid API or the GPU.
+Lanes: five sizes from ~10 to ~38 km, delivered best match first with a 0..1
+score each (match()), so the page can sort them by best or by distance. The
+scale budget can refuse a lane: if the picture's main parts cannot stay
+readable at a lane's length the lane is grown to the smallest readable size,
+and if that lands over MAX_KM it is dropped with a note. Nothing calls a paid
+API or the GPU.
 
 Lettering (--text=keep, Oct 30): the logo's words are read offline
 (readtext.py), lifted out of the picture, and set back under the mark as
@@ -28,11 +30,14 @@ import readtext as R
 import simplify as Z
 
 MAX_KM = 65.0
-LANES = [("pick", 20.0), ("short", 10.0), ("alt", 35.0)]
-# word logos: three sizes, keep the two whose letters the streets cover best
-# (one try per size swung between readable and not on Chanel, Oct 30)
-WORD_LANES = [("a", 24.0), ("b", 30.0), ("c", 38.0)]
-WORD_KEEP = 2
+# the page shows up to MAX_ROUTES versions and lets the runner sort them by best
+# match or by distance (Ralph, Nov 9), so every size is delivered with its score
+MAX_ROUTES = 5
+LANES = [("s10", 10.0), ("s15", 15.0), ("s20", 20.0), ("s28", 28.0), ("s38", 38.0)]
+# word logos: lettering needs ~25+ km, so their sizes start there; the fifth
+# version is the mark on its own (mark_lane). One try per size swung between
+# readable and not on Chanel (Oct 30), which is what the score sorts out.
+WORD_LANES = [("a", 24.0), ("b", 28.0), ("c", 33.0), ("d", 38.0)]
 
 MARK_KM = 20.0
 MARK_MAX = 24.0       # the page shows it as "Under 25 km"
@@ -60,6 +65,17 @@ def mark_lane(mask, words_mask):
         if res is None or res["km"] <= MARK_MAX: return res
         target *= 0.9 * MARK_MAX / res["km"]
     return res
+
+
+def match(res):
+    """how much the route looks like the drawing, on one 0..1 scale for every
+    version: the likeness of the whole drawing (less the tilt and broken-line
+    charges) and, where there is lettering, how much of it the streets cover,
+    half and half (the same order as the fit's own score among word versions;
+    the mark on its own has no letters to cover and is judged as a picture)"""
+    tcov = res["text_cov"]
+    if tcov is None: return float(res["score"])
+    return 0.5 * float(res["score"] - tcov) + 0.5 * float(tcov)
 
 
 def main():
@@ -106,10 +122,6 @@ def main():
         if key in seen: continue          # a bumped lane can duplicate another
         seen.add(key)
         results.append((label, res))
-    if words:
-        # best letters first: the largest Nike (59 km) had the messiest "IT"
-        results = sorted(results, key=lambda r: -r[1]["score"])[:WORD_KEEP]
-        results = [(lab, r) for lab, (_, r) in zip(("pick", "alt"), results)]
     if lineart and words:
         # a run under 25 km: lettering needs 30+ km, so the short version is the
         # mark alone, redrawn coarser so its parts stay a few blocks wide
@@ -118,10 +130,13 @@ def main():
         res = mark_lane(mask, words_mask)
         if res is not None and res["km"] <= MAX_KM:
             results.append(("mark", res))
+    # best match first (for word logos that is best letters first: the largest
+    # Nike, 59 km, had the messiest "IT"); the page can re-sort by distance
+    results = sorted(results, key=lambda r: -match(r[1]))[:MAX_ROUTES]
     routes = []
     for label, res in results:
         F.save(res, out, label, label)
-        routes.append({"km": res["km"], "label": label,
+        routes.append({"km": res["km"], "label": label, "score": round(match(res), 3),
                        "points": [[float(F.C.lat[n]), float(F.C.lng[n])] for n in res["route"]]})
     if routes:
         # one size coming out too long says nothing when another size is on the page
@@ -129,15 +144,11 @@ def main():
         notes = [n for n in notes if not n.startswith("No readable version")]
     if not words and not lineart and P.find_text(mask).any() and text_mode == "drop":
         notes.append("The lettering was left out: text needs roughly 40+ km to read on streets.")
-    # routes are best-letters-first and the worker keeps that order; not for line
-    # drawings: on the 8 blind-judged pairs (Oct 31) the best-letters route was
-    # the better one 3 times, the larger route 6 times (the worker's default)
-    ranked = bool(words) and not lineart
     if lineart and words: words = ""       # the worker reads "words" as typed text
     json.dump({"routes": routes, "note": " ".join(dict.fromkeys(notes)) or None, "words": words or None,
-               "ranked": ranked},
+               "ranked": True},
               open(os.path.join(out, "routes.json"), "w"))
-    print(f"{len(routes)} routes: " + ", ".join(f"{r['label']} {r['km']} km" for r in routes))
+    print(f"{len(routes)} routes: " + ", ".join(f"{r['label']} {r['km']} km ({r['score']})" for r in routes))
 
 if __name__ == "__main__":
     main()
