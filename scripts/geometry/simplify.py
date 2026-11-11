@@ -133,6 +133,94 @@ def simplify(mask, parts=None, cells=CELLS, max_len=MAX_LEN):
     return kept
 
 
+GAP = float(os.environ.get("SIMP_GAP", "0.6"))        # bold(): gaps under twice this many blocks belong to the body
+COLLAPSED = 0.75    # a drawing that covers less than this share of the mark's edges has lost the picture
+BETTER = 0.15       # ... and the bold drawing takes its place when it covers this much more
+SAME = 0.92         # two drawings whose lines lie on each other this much are one drawing
+
+
+def _length(s):
+    return float(np.hypot(*np.diff(s, axis=0).T).sum())
+
+
+def bold(mask, cells=CELLS, max_len=MAX_LEN):
+    """the mark as ONE bold shape: its outline with the narrow gaps closed, and
+    the gaps themselves as the lines inside it. simplify() reads a mark made of
+    tightly packed pieces as thin ink and merges it into a blob with a single
+    line through it (Nov 11 review: the Three Weavers knot, 25 woven tiles a
+    block or two wide, came out as two stray lines). A person draws that knot
+    as an oval with the weave's white channels as lines across it."""
+    if not mask.any(): return []
+    c = HI / cells
+    tol = 0.3 * c
+    pad = int(2 * c)
+    body = _crop(nd.binary_closing(np.pad(mask, pad), morphology.disk(max(1, int(GAP * c)))), pad)
+    body = morphology.remove_small_objects(body, max_size=int(c * c))
+    if not body.any(): return []
+    # holes under ~2 square blocks are part of the body; bigger ones (a ring's) stay
+    hl, n = nd.label(nd.binary_fill_holes(body) & ~body)
+    if n:
+        small = np.bincount(hl.ravel()) < 2.0 * c * c; small[0] = False
+        body |= small[hl]
+    sm = nd.gaussian_filter(np.pad(body, pad).astype(float), SMOOTH * c) > 0.5
+    edge = sm & ~nd.binary_erosion(sm)
+    outline = _paths(_crop(morphology.skeletonize(nd.binary_dilation(edge)), pad), 1.5 * c, tol)
+    # the gaps well inside the body, as centre lines
+    gaps = body & ~mask & nd.binary_erosion(body, morphology.disk(max(1, int(0.5 * c))))
+    gaps = morphology.remove_small_objects(gaps, max_size=int(0.3 * c * c))
+    inner = _paths(_prune(morphology.skeletonize(gaps), c), 2.0 * c, tol) if gaps.any() else []
+    # the outline first, then the inner lines, longest first, within the budget
+    kept, total = [], 0.0
+    for s in sorted(outline, key=lambda s: -_length(s)) + sorted(inner, key=lambda s: -_length(s)):
+        L = _length(s)
+        if len(kept) >= MAX_STROKES or (kept and total + L > max_len * HI): continue
+        kept.append(s); total += L
+    return kept
+
+
+def _raster(strokes):
+    im = Image.new("L", (HI, HI), 0)
+    d = ImageDraw.Draw(im)
+    for s in strokes:
+        if len(s) >= 2: d.line([(float(x), float(y)) for y, x in s], fill=255, width=2)
+    return np.asarray(im) > 0
+
+
+def cover(mask, strokes, cells=CELLS):
+    """the share of the mark's edges with a drawn line within a block: 0.9+
+    for a drawing that follows the picture, 0.17 for the knot's stray lines"""
+    if not mask.any(): return 1.0
+    if not strokes: return 0.0
+    edge = mask & ~nd.binary_erosion(mask)
+    near = nd.binary_dilation(_raster(strokes), morphology.disk(int(HI / cells)))
+    return float((edge & near).sum() / max(edge.sum(), 1))
+
+
+def same(a, b, cells=CELLS):
+    """two stroke sets that draw the same picture: each one's lines lie within
+    half a block of the other's"""
+    if not a or not b: return not a and not b
+    ra, rb = _raster(a), _raster(b)
+    d = morphology.disk(max(1, int(0.5 * HI / cells)))
+    return min((ra & nd.binary_dilation(rb, d)).sum() / max(ra.sum(), 1),
+               (rb & nd.binary_dilation(ra, d)).sum() / max(rb.sum(), 1)) >= SAME
+
+
+def mark_options(mask, parts, max_len):
+    """the drawings of one mark to offer, the one to show first at the front:
+    the detailed drawing (simplify) and, when it differs, the bold one. The
+    detailed drawing leads unless it has lost the picture and the bold one has
+    not (Nov 11: the customer was shown the knot's two stray lines with no
+    other choice and no warning)."""
+    detail = simplify(mask, parts, max_len=max_len)
+    strong = bold(mask, max_len=max_len)
+    if not strong or same(detail, strong): return [detail]
+    if not detail: return [strong]
+    cd, cb = cover(mask, detail), cover(mask, strong)
+    print(f"cover: detail {cd:.2f}, bold {cb:.2f}")
+    return [strong, detail] if cd < COLLAPSED and cb >= cd + BETTER else [detail, strong]
+
+
 def _letters(g, cell, oy, ox):
     """single-line block letters: the skeleton of each glyph's font pixels"""
     up = 8
@@ -281,6 +369,13 @@ def photo_subject(path):
 
 
 def line_art(path, words_mode="keep"):
+    """the drawing shown first (see line_art_options)"""
+    return line_art_options(path, words_mode)[0]
+
+
+def line_art_options(path, words_mode="keep"):
+    """-> [(strokes, letters, words), ...]: one or two drawings of the upload
+    for the person to choose from, the one to show first at the front"""
     if is_photo(path):
         try:
             subject = photo_subject(path)
@@ -288,7 +383,7 @@ def line_art(path, words_mode="keep"):
             print(f"photo subject failed: {e}")
             subject = None
         if subject is not None:
-            return simplify(*subject), [], ""
+            return [(st, [], "") for st in mark_options(*subject, MAX_LEN)]
     words, boxes = "", []
     if words_mode == "keep":
         try:
@@ -305,11 +400,13 @@ def line_art(path, words_mode="keep"):
         mask, parts = P.ink_parts(src)
     except ValueError:            # nothing but words
         mask, parts = np.zeros((HI, HI), bool), None
-    strokes = simplify(mask, parts, max_len=MARK_LEN if words else MAX_LEN)
-    letters = []
-    if words:
-        strokes, letters = lay_out(strokes, words)
-    return strokes, letters, words
+    out = []
+    for strokes in mark_options(mask, parts, MARK_LEN if words else MAX_LEN):
+        letters = []
+        if words:
+            strokes, letters = lay_out(strokes, words)
+        out.append((strokes, letters, words))
+    return out
 
 
 def render(strokes, letters=(), size=800, width_frac=0.012):
@@ -350,6 +447,7 @@ def masks_of(path):
 if __name__ == "__main__":
     import sys
     src, out = sys.argv[1], sys.argv[2]
-    st, let, words = line_art(src)
-    render(st, let).save(out)
-    print(f"{len(st)} strokes, {len(let)} letter strokes, words {words!r}")
+    # <out>: the drawing shown first; <out minus .png>-2.png: the other choice, when there is one
+    for i, (st, let, words) in enumerate(line_art_options(src)):
+        render(st, let).save(out if i == 0 else f"{os.path.splitext(out)[0]}-{i + 1}.png")
+        print(f"drawing {i + 1}: {len(st)} strokes, {len(let)} letter strokes, words {words!r}")

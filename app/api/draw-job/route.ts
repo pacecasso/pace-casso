@@ -65,6 +65,8 @@ export async function GET(req: Request) {
     mode: job.mode ?? null,
     status: job.status,
     lineArt: job.status === "done" ? (job.lineArt ?? null) : null,
+    // every drawing to choose from, the one shown first at the front (sketch jobs since Nov 11)
+    lineArts: job.status === "done" ? (job.lineArts ?? (job.lineArt ? [job.lineArt] : [])) : [],
     createdAt: job.createdAt,
     subject: job.subject,
     note: job.note ?? null,

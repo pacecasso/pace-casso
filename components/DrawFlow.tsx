@@ -118,8 +118,13 @@ async function uploadCopy(file: Blob): Promise<string | null> {
   }
 }
 
-/** sketch job: the worker turns the upload into the simple line drawing to touch up */
-type Sketch = { state: "working" | "ready" | "failed"; lineArt: File | null };
+/**
+ * sketch job: the worker turns the upload into the simple line drawing to
+ * touch up. Since Nov 11 it can send two (a detailed one and a bold one) and
+ * the person picks; `url` is the drawing's data URL, for its thumbnail.
+ */
+type LineArt = { url: string; file: File };
+type Sketch = { state: "working" | "ready" | "failed"; lineArts: LineArt[] };
 
 /**
  * What the results are, from the labels actually shown: the Oct 31 blind
@@ -180,6 +185,8 @@ export default function DrawFlow() {
   const [status, setStatus] = useState<Status | null>(null);
   const [uploadThumb, setUploadThumb] = useState<string | null>(null);
   const [sketch, setSketch] = useState<Sketch | null>(null);
+  /** which of the worker's drawings is in the editor */
+  const [choice, setChoice] = useState(0);
   const [sort, setSort] = useState<DrawSort>("best");
 
   useEffect(() => {
@@ -196,9 +203,10 @@ export default function DrawFlow() {
     }
     let stop = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    setSketch({ state: "working", lineArt: null });
+    setSketch({ state: "working", lineArts: [] });
+    setChoice(0);
     const fail = () => {
-      if (!stop) setSketch({ state: "failed", lineArt: null });
+      if (!stop) setSketch({ state: "failed", lineArts: [] });
     };
     void (async () => {
       const imageBase64 = await uploadCopy(file);
@@ -214,11 +222,20 @@ export default function DrawFlow() {
       const tick = async () => {
         if (stop) return;
         const r = await fetch(`/api/draw-job?id=${body.jobId}`, { cache: "no-store" }).catch(() => null);
-        const s = r?.ok ? ((await r.json()) as { status: Status["status"]; lineArt?: string | null }) : null;
+        const s = r?.ok
+          ? ((await r.json()) as { status: Status["status"]; lineArt?: string | null; lineArts?: string[] })
+          : null;
         if (stop) return;
         if (s?.status === "done" && s.lineArt) {
-          const blob = await (await fetch(s.lineArt)).blob();
-          if (!stop) setSketch({ state: "ready", lineArt: new File([blob], "line-drawing.png", { type: "image/png" }) });
+          // the drawing to show first leads the list; a site build from before Nov 11 sends no list
+          const urls = s.lineArts?.length ? s.lineArts : [s.lineArt];
+          const lineArts = await Promise.all(
+            urls.map(async (url, i) => ({
+              url,
+              file: new File([await (await fetch(url)).blob()], `line-drawing-${i + 1}.png`, { type: "image/png" }),
+            })),
+          );
+          if (!stop) setSketch({ state: "ready", lineArts });
           return;
         }
         // the worker may be busy with another drawing; after 5 min show the picture instead
@@ -233,7 +250,9 @@ export default function DrawFlow() {
     };
   }, [file]);
 
-  const editorFile = sketch?.state === "ready" ? sketch.lineArt : sketch?.state === "failed" ? file : null;
+  const drawings = sketch?.state === "ready" ? sketch.lineArts : [];
+  const editorFile =
+    sketch?.state === "ready" ? (drawings[choice] ?? drawings[0])?.file ?? null : sketch?.state === "failed" ? file : null;
 
   const poll = useCallback(async (id: string) => {
     const res = await fetch(`/api/draw-job?id=${id}`, { cache: "no-store" });
@@ -486,6 +505,37 @@ export default function DrawFlow() {
                 ? "We turned your picture into a simple line drawing; every line becomes streets. Erase lines you do not want, and use the pen to add or fix one. Blue lines are your words."
                 : "Erase anything you do not want on the streets, like small text or tiny details. Use the pen to close gaps or thicken thin lines. Bold, simple shapes read best."}
             </p>
+            {drawings.length > 1 ? (
+              <div className="mb-4">
+                <p className="text-sm font-semibold">We made {drawings.length === 2 ? "two" : drawings.length} drawings - pick the one that looks more like your picture</p>
+                <p className="mt-1 max-w-2xl text-sm leading-relaxed text-pace-muted">
+                  You can still touch up the one you pick. Switching starts the touch-up over.
+                </p>
+                <div className="mt-3 flex flex-wrap gap-3" role="group" aria-label="Choose a drawing">
+                  {drawings.map((d, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      aria-pressed={choice === i}
+                      onClick={() => setChoice(i)}
+                      className={`overflow-hidden rounded-lg border-2 bg-white transition ${
+                        choice === i ? "border-pace-blue" : "border-pace-line hover:border-pace-blue"
+                      }`}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={d.url} alt={`Drawing ${i + 1}`} className="h-36 w-36 object-contain sm:h-44 sm:w-44" />
+                      <span
+                        className={`block px-2 py-1 font-bebas text-xs tracking-[0.1em] ${
+                          choice === i ? "bg-pace-blue text-white" : "text-pace-ink"
+                        }`}
+                      >
+                        {choice === i ? `Drawing ${i + 1} - chosen` : `Drawing ${i + 1}`}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             <LineArtEditor ref={editorRef} file={editorFile} />
           </div>
         ) : null}

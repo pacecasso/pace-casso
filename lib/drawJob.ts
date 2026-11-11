@@ -57,6 +57,11 @@ export type DrawJob = {
   routes: DrawRoute[];
   /** sketch jobs: the line drawing as a PNG data URL */
   lineArt?: string | null;
+  /**
+   * sketch jobs since Nov 11: every drawing the person can choose from, the
+   * one shown first at the front (it is also `lineArt`); one or two
+   */
+  lineArts?: string[];
   /** a line for the page about what could not be offered, e.g. no version under 25 km */
   note?: string | null;
   error: string | null;
@@ -180,6 +185,24 @@ export function workerAuthorized(req: Request): boolean {
 /** a PNG data URL the worker posted, or null */
 export function cleanLineArt(raw: unknown): string | null {
   return typeof raw === "string" && raw.startsWith("data:image/png;base64,") && raw.length <= MAX_LINE_ART_B64 ? raw : null;
+}
+
+/** the page offers at most this many drawings of one upload */
+export const MAX_LINE_ARTS = 3;
+
+/**
+ * The drawings to choose from: `first` (the one shown first) and then the
+ * worker's other drawings, each a valid PNG data URL, no repeats. A worker
+ * from before Nov 11 posts no list, which leaves just `first`.
+ */
+export function cleanLineArts(first: string | null, raw: unknown): string[] {
+  if (!first) return [];
+  const out = [first];
+  for (const r of Array.isArray(raw) ? raw : []) {
+    const art = cleanLineArt(r);
+    if (art && !out.includes(art) && out.length < MAX_LINE_ARTS) out.push(art);
+  }
+  return out;
 }
 
 /** keep only finite lat/lng pairs inside the NYC box; drop anything else */

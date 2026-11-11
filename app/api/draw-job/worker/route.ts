@@ -1,4 +1,4 @@
-import { cleanLineArt, cleanRoutes, dequeue, loadDrawJob, queuedIds, saveDrawJob, setQueueFlag, workerAuthorized } from "../../../../lib/drawJob";
+import { cleanLineArt, cleanLineArts, cleanRoutes, dequeue, loadDrawJob, queuedIds, saveDrawJob, setQueueFlag, workerAuthorized } from "../../../../lib/drawJob";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -39,7 +39,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   if (!workerAuthorized(req)) return Response.json({ error: "unauthorized" }, { status: 401 });
-  let body: { id?: unknown; routes?: unknown; subject?: unknown; note?: unknown; error?: unknown; lineArt?: unknown };
+  let body: { id?: unknown; routes?: unknown; subject?: unknown; note?: unknown; error?: unknown; lineArt?: unknown; lineArts?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -50,6 +50,7 @@ export async function POST(req: Request) {
   if (job.mode === "sketch") {
     // the line drawing for the touch-up step; the person is on the page, so no email
     job.lineArt = cleanLineArt(body.lineArt);
+    job.lineArts = cleanLineArts(job.lineArt, body.lineArts);
     job.status = job.lineArt ? "done" : "failed";
     job.error = job.lineArt ? null : typeof body.error === "string" ? body.error.slice(0, 300) : "No drawing made.";
     job.imageBase64 = null;

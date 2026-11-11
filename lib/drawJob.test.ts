@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { cleanLineArt, cleanRoutes, MAX_LINE_ART_B64 } from "./drawJob";
+import { cleanLineArt, cleanLineArts, cleanRoutes, MAX_LINE_ART_B64, MAX_LINE_ARTS } from "./drawJob";
 
 // cleanRoutes: what the worker posts back is trusted only inside the NYC box
 const inside: [number, number] = [40.7, -73.95];
@@ -34,5 +34,13 @@ assert.strictEqual(cleanLineArt("data:image/png;base64,iVBORw0KGgo="), "data:ima
 assert.strictEqual(cleanLineArt("data:text/html;base64,PHNjcmlwdD4="), null, "not a PNG");
 assert.strictEqual(cleanLineArt(42), null, "not a string");
 assert.strictEqual(cleanLineArt("data:image/png;base64," + "A".repeat(MAX_LINE_ART_B64)), null, "too big");
+
+// cleanLineArts: the drawings to choose from, the one shown first at the front
+const png = (s: string) => `data:image/png;base64,${s}`;
+assert.deepStrictEqual(cleanLineArts(png("AAAA"), [png("AAAA"), png("BBBB")]), [png("AAAA"), png("BBBB")], "the first is not repeated");
+assert.deepStrictEqual(cleanLineArts(png("AAAA"), undefined), [png("AAAA")], "an older worker posts no list");
+assert.deepStrictEqual(cleanLineArts(png("AAAA"), [42, "data:text/html;base64,PHNjcmlwdD4=", png("BBBB")]), [png("AAAA"), png("BBBB")], "bad entries are dropped");
+assert.deepStrictEqual(cleanLineArts(null, [png("BBBB")]), [], "no first drawing, no choices");
+assert.strictEqual(cleanLineArts(png("A"), ["B", "C", "D", "E", "F"].map(png)).length, MAX_LINE_ARTS, "capped");
 
 console.log("drawJob.test.ts OK");

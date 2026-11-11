@@ -239,13 +239,18 @@ async function work(job: NonNullable<Claim["job"]>): Promise<void> {
     // upload -> the simple line drawing the person touches up (simplify.py, Oct 31)
     const png = path.join(dir, "lineart.png");
     const code = await run(PY, ["-u", "scripts/geometry/simplify.py", img, png], path.join(dir, "sketch.log"));
-    const lineArt = existsSync(png) ? `data:image/png;base64,${readFileSync(png).toString("base64")}` : null;
+    const dataUrl = (f: string) => `data:image/png;base64,${readFileSync(f).toString("base64")}`;
+    const lineArt = existsSync(png) ? dataUrl(png) : null;
+    // a second drawing to choose from, when simplify.py made one (Nov 11): the
+    // bold shape beside the detailed one, whichever kept the picture first
+    const png2 = path.join(dir, "lineart-2.png");
+    const lineArts = lineArt ? [lineArt, ...(existsSync(png2) ? [dataUrl(png2)] : [])] : [];
     const post = await fetch(`${SITE}/api/draw-job/worker`, {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ id: job.id, lineArt, error: lineArt ? null : `sketch exit ${code}` }),
+      body: JSON.stringify({ id: job.id, lineArt, lineArts, error: lineArt ? null : `sketch exit ${code}` }),
     });
-    console.log(`  line art ${lineArt ? "made" : "FAILED"} in ${((Date.now() - t0) / 1000).toFixed(0)} s -> ${post.status}`);
+    console.log(`  line art ${lineArt ? `made (${lineArts.length})` : "FAILED"} in ${((Date.now() - t0) / 1000).toFixed(0)} s -> ${post.status}`);
     return;
   }
   const { code, routes, note, subject } =
