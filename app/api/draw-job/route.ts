@@ -1,7 +1,7 @@
 import { rateLimitAllow } from "../../../lib/mapboxRateLimit";
 import { shieldExpensiveRoute, trustedClientIp } from "../../../lib/apiShield";
 import { jobStoreConfigured } from "../../../lib/routeJobStore";
-import { DRAW_MODES, enqueue, loadDrawJob, newDrawJobId, saveDrawJob, type DrawJob } from "../../../lib/drawJob";
+import { cleanWords, DRAW_MODES, enqueue, loadDrawJob, newDrawJobId, saveDrawJob, type DrawJob } from "../../../lib/drawJob";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -17,7 +17,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "Too many uploads - try again in a minute." }, { status: 429 });
   }
   if (!jobStoreConfigured()) return Response.json({ error: "job store not configured" }, { status: 503 });
-  let body: { imageBase64?: unknown; email?: unknown; mode?: unknown };
+  let body: { imageBase64?: unknown; email?: unknown; mode?: unknown; words?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -33,9 +33,12 @@ export async function POST(req: Request) {
       ? body.email.trim().slice(0, 254)
       : null;
   const mode = DRAW_MODES.find((m) => m === body.mode);
+  const words = cleanWords(body.words);
   const job: DrawJob = {
     kind: "draw",
     ...(mode ? { mode } : {}),
+    // a touched-up drawing comes with the name its sketch job read off the upload
+    ...(mode === "lineart" && words ? { words } : {}),
     id: newDrawJobId(),
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -67,6 +70,8 @@ export async function GET(req: Request) {
     lineArt: job.status === "done" ? (job.lineArt ?? null) : null,
     // every drawing to choose from, the one shown first at the front (sketch jobs since Nov 11)
     lineArts: job.status === "done" ? (job.lineArts ?? (job.lineArt ? [job.lineArt] : [])) : [],
+    // sketch jobs: the name read off the upload, which the page sends on with the touched-up drawing
+    words: job.mode === "sketch" && job.status === "done" ? (job.words ?? null) : null,
     createdAt: job.createdAt,
     subject: job.subject,
     note: job.note ?? null,

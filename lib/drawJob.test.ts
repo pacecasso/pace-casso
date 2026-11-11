@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { cleanLineArt, cleanLineArts, cleanRoutes, MAX_LINE_ART_B64, MAX_LINE_ARTS } from "./drawJob";
+import { cleanLineArt, cleanLineArts, cleanRoutes, cleanWords, MAX_LINE_ART_B64, MAX_LINE_ARTS, MAX_WORDS } from "./drawJob";
 
 // cleanRoutes: what the worker posts back is trusted only inside the NYC box
 const inside: [number, number] = [40.7, -73.95];
@@ -42,5 +42,20 @@ assert.deepStrictEqual(cleanLineArts(png("AAAA"), undefined), [png("AAAA")], "an
 assert.deepStrictEqual(cleanLineArts(png("AAAA"), [42, "data:text/html;base64,PHNjcmlwdD4=", png("BBBB")]), [png("AAAA"), png("BBBB")], "bad entries are dropped");
 assert.deepStrictEqual(cleanLineArts(null, [png("BBBB")]), [], "no first drawing, no choices");
 assert.strictEqual(cleanLineArts(png("A"), ["B", "C", "D", "E", "F"].map(png)).length, MAX_LINE_ARTS, "capped");
+
+// cleanWords: the name read off the upload travels worker -> page -> worker, so it is cut down to plain capitals
+assert.strictEqual(cleanWords("Three  Weavers"), "THREE WEAVERS");
+assert.strictEqual(cleanWords('  A&B "; rm -rf /'), "A&B RM RF");
+assert.strictEqual(cleanWords("!!!"), null, "nothing left");
+assert.strictEqual(cleanWords(42), null, "not a string");
+assert.strictEqual(cleanWords("X".repeat(200))!.length, MAX_WORDS, "capped");
+
+// the short version's letters: kept on an initials route only, and only when short
+const lettered = cleanRoutes([
+  { km: 1, points: [inside, inside], label: "initials", text: "tw" },
+  { km: 1, points: [inside, inside], label: "initials", text: "THREE WEAVERS" },
+  { km: 1, points: [inside, inside], label: "mark", text: "TW" },
+]);
+assert.deepStrictEqual(lettered.map((r) => [r.label, r.text]), [["initials", "TW"], ["initials", undefined], ["mark", undefined]]);
 
 console.log("drawJob.test.ts OK");

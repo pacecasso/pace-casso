@@ -20,16 +20,19 @@ export type DrawRoute = {
   /** [lat, lng], street-following, one continuous line */
   points: [number, number][];
   /**
-   * mark = a word logo's picture on its own. Jobs before Nov 9 carry
+   * mark = a word logo's picture on its own; initials = that picture with
+   * `text` lettered under it, under 25 km (Nov 11). Jobs before Nov 9 carry
    * pick = best with no distance limit; short = best under 25 km; alt = the runner-up.
    */
   label?: DrawLabel;
+  /** initials routes: the letters drawn under the picture, e.g. "TW" */
+  text?: string;
   /** how much the route looks like the drawing, 0..1 (the page's "best" sort); absent before Nov 9 */
   score?: number;
 };
 
-export type DrawLabel = "pick" | "short" | "alt" | "mark";
-const LABELS: DrawLabel[] = ["pick", "short", "alt", "mark"];
+export type DrawLabel = "pick" | "short" | "alt" | "mark" | "initials";
+const LABELS: DrawLabel[] = ["pick", "short", "alt", "mark", "initials"];
 /** the page shows up to five versions, sortable by best match or by distance */
 export const MAX_DRAW_ROUTES = 5;
 
@@ -62,6 +65,12 @@ export type DrawJob = {
    * one shown first at the front (it is also `lineArt`); one or two
    */
   lineArts?: string[];
+  /**
+   * the name read off the upload (Nov 11): a sketch job reports it, the page
+   * hands it to the lineart job, and the worker letters the short version
+   * with it (the name itself when very short, else its initials)
+   */
+  words?: string | null;
   /** a line for the page about what could not be offered, e.g. no version under 25 km */
   note?: string | null;
   error: string | null;
@@ -205,6 +214,22 @@ export function cleanLineArts(first: string | null, raw: unknown): string[] {
   return out;
 }
 
+/** the longest name kept; logo names run to a few words */
+export const MAX_WORDS = 40;
+
+/** a name the worker read or the page handed back: capitals, digits, & and single spaces; else null */
+export function cleanWords(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const words = raw
+    .toUpperCase()
+    .replace(/[^A-Z0-9& ]+/g, " ")
+    .replace(/ +/g, " ")
+    .trim()
+    .slice(0, MAX_WORDS)
+    .trim();
+  return words || null;
+}
+
 /** keep only finite lat/lng pairs inside the NYC box; drop anything else */
 export function cleanRoutes(raw: unknown): DrawRoute[] {
   if (!Array.isArray(raw)) return [];
@@ -224,6 +249,8 @@ export function cleanRoutes(raw: unknown): DrawRoute[] {
     if (points.length >= 2) {
       const route: DrawRoute = { km: Number.isFinite(km) ? km : 0, points };
       if (LABELS.includes(label as DrawLabel)) route.label = label as DrawLabel;
+      const text = cleanWords((r as { text?: unknown }).text);
+      if (route.label === "initials" && text && text.length <= 5) route.text = text;
       const score = (r as { score?: unknown }).score;
       if (typeof score === "number" && Number.isFinite(score)) {
         route.score = Math.round(Math.max(0, Math.min(1, score)) * 1000) / 1000;

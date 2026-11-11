@@ -65,7 +65,10 @@ function extFor(b64: string): string {
   return "png";
 }
 
-type Claim = { job: { id: string; imageBase64: string; mode?: "sketch" | "lineart" | null } | null; flagUrl: string | null };
+type Claim = {
+  job: { id: string; imageBase64: string; mode?: "sketch" | "lineart" | null; words?: string | null } | null;
+  flagUrl: string | null;
+};
 
 /** Nothing over this is ever offered; a runner can bike it or split it, but 65 km is the edge. */
 const MAX_KM = 65;
@@ -87,7 +90,14 @@ type Draft = { seat: number; score: number; mainRank: number; km: number; points
  * it); label "mark" = a word logo's picture on its own. The old engine sends
  * pick/short/alt and no score.
  */
-type Labeled = { km: number; points: [number, number][]; label?: "pick" | "short" | "alt" | "mark"; score?: number };
+type Labeled = {
+  km: number;
+  points: [number, number][];
+  label?: "pick" | "short" | "alt" | "mark" | "initials";
+  /** initials routes: the letters under the picture */
+  text?: string;
+  score?: number;
+};
 /** the page shows up to this many versions, sortable by best match or distance (Nov 9) */
 const MAX_ROUTES = 5;
 
@@ -200,14 +210,23 @@ async function oldEngine(img: string, dir: string): Promise<EngineResult> {
  * MAX_ROUTES goes to the page, best match first, and the runner sorts them
  * by best or by distance.
  */
-async function geometryEngine(img: string, dir: string, lineart = false): Promise<EngineResult> {
+async function geometryEngine(img: string, dir: string, lineart = false, words: string | null = null): Promise<EngineResult> {
   const out = path.join(dir, "geo");
-  const args = ["-u", "scripts/geometry/draw_job.py", img, out, "--text=keep", ...(lineart ? ["--lineart"] : [])];
+  // --words: the name the sketch step read, for the short version's letters (the site keeps it to A-Z 0-9 & and spaces)
+  const args = [
+    "-u",
+    "scripts/geometry/draw_job.py",
+    img,
+    out,
+    "--text=keep",
+    ...(lineart ? ["--lineart"] : []),
+    ...(lineart && words ? [`--words=${words}`] : []),
+  ];
   const code = await run(PY, args, path.join(dir, "geo.log"));
   const file = path.join(out, "routes.json");
   if (!existsSync(file)) return { code, routes: [], note: null, subject: null };
   const j = JSON.parse(readFileSync(file, "utf8")) as {
-    routes: { km: number; points: [number, number][]; label?: string; score?: number }[];
+    routes: { km: number; points: [number, number][]; label?: string; text?: string; score?: number }[];
     note: string | null;
     words?: string | null;
   };
@@ -221,8 +240,10 @@ async function geometryEngine(img: string, dir: string, lineart = false): Promis
       km: r.km,
       points: r.points,
       ...(typeof r.score === "number" ? { score: r.score } : {}),
-      // the engine's size names (s10, a, b...) mean nothing to the page; "mark" does
+      // the engine's size names (s10, a, b...) mean nothing to the page; "mark" and
+      // "initials" (the mark with a few letters under it, in `text`) do
       ...(r.label === "mark" ? { label: "mark" as const } : {}),
+      ...(r.label === "initials" && r.text ? { label: "initials" as const, text: r.text } : {}),
     }));
   return { code, routes, note: j.note, subject };
 }
@@ -245,16 +266,19 @@ async function work(job: NonNullable<Claim["job"]>): Promise<void> {
     // bold shape beside the detailed one, whichever kept the picture first
     const png2 = path.join(dir, "lineart-2.png");
     const lineArts = lineArt ? [lineArt, ...(existsSync(png2) ? [dataUrl(png2)] : [])] : [];
+    // the name it read off the upload; the page sends it back with the touched-up drawing
+    const wordsFile = path.join(dir, "lineart.words.txt");
+    const words = existsSync(wordsFile) ? readFileSync(wordsFile, "utf8").trim() || null : null;
     const post = await fetch(`${SITE}/api/draw-job/worker`, {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ id: job.id, lineArt, lineArts, error: lineArt ? null : `sketch exit ${code}` }),
+      body: JSON.stringify({ id: job.id, lineArt, lineArts, words, error: lineArt ? null : `sketch exit ${code}` }),
     });
     console.log(`  line art ${lineArt ? `made (${lineArts.length})` : "FAILED"} in ${((Date.now() - t0) / 1000).toFixed(0)} s -> ${post.status}`);
     return;
   }
   const { code, routes, note, subject } =
-    ENGINE === "old" ? await oldEngine(img, dir) : await geometryEngine(img, dir, job.mode === "lineart");
+    ENGINE === "old" ? await oldEngine(img, dir) : await geometryEngine(img, dir, job.mode === "lineart", job.words ?? null);
   const post = await fetch(`${SITE}/api/draw-job/worker`, {
     method: "POST",
     headers: auth,

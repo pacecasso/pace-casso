@@ -1,4 +1,4 @@
-import { cleanLineArt, cleanLineArts, cleanRoutes, dequeue, loadDrawJob, queuedIds, saveDrawJob, setQueueFlag, workerAuthorized } from "../../../../lib/drawJob";
+import { cleanLineArt, cleanLineArts, cleanRoutes, cleanWords, dequeue, loadDrawJob, queuedIds, saveDrawJob, setQueueFlag, workerAuthorized } from "../../../../lib/drawJob";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -28,7 +28,10 @@ export async function GET(req: Request) {
     job.status = "running";
     job.claimedAt = Date.now();
     await saveDrawJob(job);
-    return Response.json({ job: { id: job.id, imageBase64: job.imageBase64, mode: job.mode ?? null }, flagUrl: null });
+    return Response.json({
+      job: { id: job.id, imageBase64: job.imageBase64, mode: job.mode ?? null, words: job.words ?? null },
+      flagUrl: null,
+    });
   }
   // A failed flag write (e.g. the Blob store suspended, Oct 4) must not turn
   // an empty claim into a 500: the worker then falls back to claiming with
@@ -39,7 +42,16 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   if (!workerAuthorized(req)) return Response.json({ error: "unauthorized" }, { status: 401 });
-  let body: { id?: unknown; routes?: unknown; subject?: unknown; note?: unknown; error?: unknown; lineArt?: unknown; lineArts?: unknown };
+  let body: {
+    id?: unknown;
+    routes?: unknown;
+    subject?: unknown;
+    note?: unknown;
+    error?: unknown;
+    lineArt?: unknown;
+    lineArts?: unknown;
+    words?: unknown;
+  };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -51,6 +63,8 @@ export async function POST(req: Request) {
     // the line drawing for the touch-up step; the person is on the page, so no email
     job.lineArt = cleanLineArt(body.lineArt);
     job.lineArts = cleanLineArts(job.lineArt, body.lineArts);
+    // the name it read off the upload, for the short version's letters later
+    job.words = cleanWords(body.words);
     job.status = job.lineArt ? "done" : "failed";
     job.error = job.lineArt ? null : typeof body.error === "string" ? body.error.slice(0, 300) : "No drawing made.";
     job.imageBase64 = null;

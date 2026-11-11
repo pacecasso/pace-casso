@@ -17,7 +17,14 @@ const Step5PreviewMap = dynamic(() => import("./Step5PreviewMap"), {
 });
 
 /** score: the engine's 0..1 match with the drawing (jobs since Nov 9); the page sorts by it */
-type Route = { km: number; points: [number, number][]; label?: "pick" | "short" | "alt" | "mark"; score?: number };
+type Route = {
+  km: number;
+  points: [number, number][];
+  label?: "pick" | "short" | "alt" | "mark" | "initials";
+  /** initials routes: the letters drawn under the picture */
+  text?: string;
+  score?: number;
+};
 
 /** card titles for jobs from before Nov 9, which carry these labels and no score */
 const LABEL_TEXT: Record<NonNullable<Route["label"]>, string> = {
@@ -25,6 +32,7 @@ const LABEL_TEXT: Record<NonNullable<Route["label"]>, string> = {
   short: "Under 25 km",
   alt: "Another take",
   mark: "Picture only",
+  initials: "Picture and initials",
 };
 const SORT_TEXT: Record<DrawSort, string> = { best: "Best match", distance: "Distance" };
 /**
@@ -124,7 +132,12 @@ async function uploadCopy(file: Blob): Promise<string | null> {
  * the person picks; `url` is the drawing's data URL, for its thumbnail.
  */
 type LineArt = { url: string; file: File };
-type Sketch = { state: "working" | "ready" | "failed"; lineArts: LineArt[] };
+type Sketch = {
+  state: "working" | "ready" | "failed";
+  lineArts: LineArt[];
+  /** the name the worker read off the picture; it goes back with the touched-up drawing */
+  words?: string | null;
+};
 
 /**
  * What the results are, from the labels actually shown: the Oct 31 blind
@@ -141,6 +154,10 @@ function resultsIntro(routes: Route[]): string {
     }
     if (routes.some((r) => r.label === "mark")) {
       parts.push('"Picture only" is your picture without its words, which makes a shorter run.');
+    }
+    const lettered = routes.find((r) => r.label === "initials" && r.text);
+    if (lettered) {
+      parts.push(`A whole name needs a long run, so one shorter version has your picture with "${lettered.text}" under it.`);
     }
     return parts.join(" ");
   }
@@ -223,7 +240,7 @@ export default function DrawFlow() {
         if (stop) return;
         const r = await fetch(`/api/draw-job?id=${body.jobId}`, { cache: "no-store" }).catch(() => null);
         const s = r?.ok
-          ? ((await r.json()) as { status: Status["status"]; lineArt?: string | null; lineArts?: string[] })
+          ? ((await r.json()) as { status: Status["status"]; lineArt?: string | null; lineArts?: string[]; words?: string | null })
           : null;
         if (stop) return;
         if (s?.status === "done" && s.lineArt) {
@@ -235,7 +252,7 @@ export default function DrawFlow() {
               file: new File([await (await fetch(url)).blob()], `line-drawing-${i + 1}.png`, { type: "image/png" }),
             })),
           );
-          if (!stop) setSketch({ state: "ready", lineArts });
+          if (!stop) setSketch({ state: "ready", lineArts, words: s.words ?? null });
           return;
         }
         // the worker may be busy with another drawing; after 5 min show the picture instead
@@ -311,6 +328,8 @@ export default function DrawFlow() {
           email: email.trim() || undefined,
           // the touched-up line drawing is plotted line for line; the picture itself (sketch failed) as before
           mode: sketch?.state === "ready" ? "lineart" : undefined,
+          // the name read off the picture: the short version is lettered with it or its initials
+          words: (sketch?.state === "ready" && sketch.words) || undefined,
         }),
       });
       const body = (await res.json()) as { jobId?: string; error?: string };
@@ -436,6 +455,9 @@ export default function DrawFlow() {
                         </p>
                         {scored && r.label === "mark" ? (
                           <p className="mt-0.5 text-xs text-pace-muted">Picture only, without the words</p>
+                        ) : null}
+                        {scored && r.label === "initials" && r.text ? (
+                          <p className="mt-0.5 text-xs text-pace-muted">Your picture with &quot;{r.text}&quot; under it</p>
                         ) : null}
                       </div>
                       <button

@@ -449,5 +449,8 @@ if __name__ == "__main__":
     src, out = sys.argv[1], sys.argv[2]
     # <out>: the drawing shown first; <out minus .png>-2.png: the other choice, when there is one
     for i, (st, let, words) in enumerate(line_art_options(src)):
+        if i == 0:
+            # the whole name as read, for the short version's letters (draw_job.py --words)
+            with open(os.path.splitext(out)[0] + ".words.txt", "w", encoding="utf-8") as f: f.write(words or "")
         render(st, let).save(out if i == 0 else f"{os.path.splitext(out)[0]}-{i + 1}.png")
         print(f"drawing {i + 1}: {len(st)} strokes, {len(let)} letter strokes, words {words!r}")

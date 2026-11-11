@@ -67,6 +67,102 @@ def mark_lane(mask, words_mask):
     return res
 
 
+SHORT_MIN = 21.0      # a short version smaller than this is fitted once more, larger
+SHORT_CHARS = 4       # letters that still read under 25 km: beside a mark, this many at most
+SHORT_WORD = 5        # ... and a name with no mark, this many
+SHORT_COLS = 12       # the short letters are at least 1/12 of the mark's width a cell
+# a block letter is 5 cells wide and 7 tall; on the Nov 11 set letters with
+# cells of 120+ m read (L, H, D, YUBA, ZETEO) and under 95 m did not (TW, NH,
+# CS, CHEF beside busy marks, whose own lines use up the 25 km)
+LETTER_CELL_M = 110.0
+
+
+def fit_under(m, words_mask):
+    """the largest fit of this drawing that comes out under MARK_MAX, or None.
+    The joins make a route longer than its target by a share that differs per
+    drawing (a 20 km target came out 26 to 32 km on the Nov 11 logos), so the
+    target is moved by the miss, then halved in between, until the route
+    lands between SHORT_MIN and MARK_MAX (or five tries are up)."""
+    target, best, lo, hi = MARK_KM, None, None, None
+    for _ in range(5):
+        res = F.fit_lane(m, target, "keep", words_mask=words_mask)
+        if res is None: break
+        if res["km"] > MARK_MAX:
+            hi = target
+        else:
+            lo = target
+            if best is None or res["km"] > best["km"]: best = res
+            if res["km"] >= SHORT_MIN: break
+        # between a target that fitted and one that did not, else by the miss
+        target = (lo + hi) / 2 if lo and hi else target * (MARK_MAX - 1.5) / res["km"]
+    return best
+
+
+def short_text(words):
+    """what is lettered beside the mark on the short version: the name when it
+    is SHORT_CHARS or less, else its initials (Nov 11: under 25 km the knot
+    with THREE under it was a scribble, the knot with a large TW read)"""
+    ws = ["".join(c for c in w if c != " " and c in B.FONT) for w in (words or "").upper().split()]
+    ws = [w for w in ws if w]
+    if not ws: return ""
+    name = " ".join(ws)
+    return name if len(name) <= SHORT_CHARS else "".join(w[0] for w in ws)[:SHORT_CHARS]
+
+
+def letter_count(words_mask):
+    """how many block letters the drawing's one row of lettering holds (each
+    is 5 cells wide and 7 tall, a cell apart)"""
+    ys, xs = np.nonzero(words_mask)
+    if not len(ys): return 0
+    h, w = ys.max() - ys.min() + 1, xs.max() - xs.min() + 1
+    return int(round((w / h * 7 + 1) / 6))
+
+
+def cell_m(words_mask, res):
+    """the size on the street, in metres, of one cell of the block letters"""
+    ys, _ = np.nonzero(words_mask)
+    return (ys.max() - ys.min() + 1) / 7 * 2 * res["placement"][2] / P.HI
+
+
+def short_lane(m, words_mask):
+    """fit_under, kept only when its letters come out large enough to read"""
+    res = fit_under(m, words_mask)
+    if res is None: return None
+    c = cell_m(words_mask, res)
+    print(f"  short version: {res['km']} km, letter cells {c:.0f} m" + ("" if c >= LETTER_CELL_M else " - too small, left out"))
+    return res if c >= LETTER_CELL_M else None
+
+
+def initials_lane(mask, words_mask, text):
+    """the mark with `text` in large block letters under it, under MARK_MAX;
+    None when there is too little mark, it does not fit, or the letters
+    would be too small to read"""
+    from PIL import Image, ImageDraw
+    from scipy import ndimage as nd
+    mark = mask & ~nd.binary_dilation(words_mask, iterations=4)
+    if not text or mark.sum() < MARK_MIN * mask.sum(): return None
+    ys, xs = np.nonzero(mark)
+    mark = mark[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    mh, mw = mark.shape
+    g = Z.row_grid(text)
+    rows, cols = g.shape
+    cell = mw / max(cols, SHORT_COLS)
+    th, tw, gap = rows * cell, cols * cell, 2 * cell
+    pad = 12
+    W, H = int(max(mw, tw)) + 2 * pad, int(mh + gap + th) + 2 * pad
+    im = Image.new("RGB", (W, H), "white")
+    ox = (W - mw) // 2
+    a = np.asarray(im).copy()
+    a[pad:pad + mh, ox:ox + mw][mark] = 0
+    im = Image.fromarray(a)
+    d = ImageDraw.Draw(im)
+    for s in Z._letters(g, cell, pad + mh + gap, (W - tw) / 2):
+        d.line([(float(x), float(y)) for y, x in s], fill=Z.LETTER_RGB, width=7, joint="curve")
+    tmp = os.path.join(sys.argv[2], "short_lineart.png")
+    im.save(tmp)
+    return short_lane(*Z.masks_of(tmp))
+
+
 def match(res):
     """how much the route looks like the drawing, on one 0..1 scale for every
     version: the likeness of the whole drawing (less the tilt and broken-line
@@ -82,6 +178,8 @@ def main():
     src, out = sys.argv[1], sys.argv[2]
     text_mode = next((a.split("=", 1)[1] for a in sys.argv[3:] if a.startswith("--text=")), "drop")
     lineart = "--lineart" in sys.argv[3:]
+    # the name read off the upload at the drawing step, for the short version's letters
+    name = next((a.split("=", 1)[1] for a in sys.argv[3:] if a.startswith("--words=")), "")
     if lineart:
         text_mode = "keep"              # the letters are already lines in the drawing
         F.STYLE, F.OUTLINE_W = "line", 1e9   # every line is one centre line, no size floor
@@ -127,9 +225,25 @@ def main():
         # mark alone, redrawn coarser so its parts stay a few blocks wide
         # (Oct 31 blind customer review: "$10-20 for a recognisable sub-25 km
         # route of my logo"; at 24 blocks across the inside detail blurred)
+        short = []
         res = mark_lane(mask, words_mask)
         if res is not None and res["km"] <= MAX_KM:
-            results.append(("mark", res))
+            short.append(("mark", res))
+        # ... and the mark with the name's initials, or the name itself when it
+        # is very short (Nov 11 blind review: "mark + name under ~25 km" was the
+        # one ask; whole names need 40+ km, two to four large letters do not)
+        text = short_text(name)
+        res = initials_lane(mask, words_mask, text)
+        if res is not None:
+            res["text"] = text
+            short.append(("initials", res))
+        if res is None and not short and 0 < letter_count(words_mask) <= SHORT_WORD:
+            # no mark, a short name: the whole drawing fits under 25 km (YUBA, 22 km)
+            res = short_lane(mask, words_mask)
+            if res is not None and round(res["km"]) not in seen:
+                short.append(("word", res))
+        # the short versions are always shown; the longer ones fill the rest
+        results = sorted(results, key=lambda r: -match(r[1]))[:MAX_ROUTES - len(short)] + short
     # best match first (for word logos that is best letters first: the largest
     # Nike, 59 km, had the messiest "IT"); the page can re-sort by distance
     results = sorted(results, key=lambda r: -match(r[1]))[:MAX_ROUTES]
@@ -138,6 +252,7 @@ def main():
         F.save(res, out, label, label)
         routes.append({"km": res["km"], "label": label, "score": round(match(res), 3),
                        "points": [[float(F.C.lat[n]), float(F.C.lng[n])] for n in res["route"]]})
+        if res.get("text"): routes[-1]["text"] = res["text"]
     if routes:
         # one size coming out too long says nothing when another size is on the page
         # (Oct 31 review: "No readable version under 65 km" beside a 46.5 km route)
