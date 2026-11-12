@@ -33,8 +33,32 @@ export function rankDrawRoutes<R extends Sortable>(routes: R[]): RankedRoute<R>[
   return order.map((o, rank) => ({ ...o, rank }));
 }
 
-/** the ranked routes in the order the page shows them; distance = shortest first */
-export function sortDrawRoutes<R extends Sortable>(ranked: RankedRoute<R>[], mode: DrawSort): RankedRoute<R>[] {
-  if (mode === "best") return [...ranked].sort((a, b) => a.rank - b.rank);
+/** a run most people can do in one go; the star goes to the best match at or under this */
+export const RUNNABLE_KM = 25;
+
+/**
+ * The delivered index of the starred version: the best match of 25 km or
+ * less, or the best match overall when every version is longer. The Nov 11
+ * blind review: "the starred best match is never one I could run" (it was
+ * always the 50 km one with the whole name). Null for unscored (older) jobs.
+ */
+export function pickIndex<R extends Sortable>(ranked: RankedRoute<R>[]): number | null {
+  if (!routesScored(ranked.map((r) => r.route))) return null;
+  const byRank = [...ranked].sort((a, b) => a.rank - b.rank);
+  return (byRank.find((r) => r.route.km <= RUNNABLE_KM) ?? byRank[0]).index;
+}
+
+/**
+ * The ranked routes in the order the page shows them; distance = shortest
+ * first. `first` (the starred version's index) leads the best-match order.
+ */
+export function sortDrawRoutes<R extends Sortable>(
+  ranked: RankedRoute<R>[],
+  mode: DrawSort,
+  first: number | null = null,
+): RankedRoute<R>[] {
+  if (mode === "best") {
+    return [...ranked].sort((a, b) => Number(b.index === first) - Number(a.index === first) || a.rank - b.rank);
+  }
   return [...ranked].sort((a, b) => a.route.km - b.route.km || a.rank - b.rank);
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { rankDrawRoutes, routesScored, sortDrawRoutes } from "./drawRouteSort";
+import { pickIndex, rankDrawRoutes, routesScored, sortDrawRoutes } from "./drawRouteSort";
 
 // the Nov 9 rocket as the engine delivered it: five sizes, each with a match score
 const rocket = [
@@ -41,5 +41,21 @@ assert.deepStrictEqual(rankDrawRoutes([{ km: 1 }, { km: 2, score: 0.9 }]).map((r
 
 assert.ok(!routesScored([]));
 assert.deepStrictEqual(rankDrawRoutes([]), []);
+
+// the star: the best match of 25 km or less (the Nov 11 lighthouse: the whole
+// name scored best at 50 km, the picture with its initial was the one to run)
+const logo = rankDrawRoutes([
+  { km: 50.0, score: 0.9 },
+  { km: 45.1, score: 0.85 },
+  { km: 23.0, score: 0.75 },
+  { km: 21.2, score: 0.81 },
+]);
+assert.strictEqual(pickIndex(logo), 3, "best match under 25 km");
+assert.deepStrictEqual(sortDrawRoutes(logo, "best", pickIndex(logo)).map((r) => r.route.km), [21.2, 50.0, 45.1, 23.0], "the star leads");
+assert.deepStrictEqual(sortDrawRoutes(logo, "distance", pickIndex(logo)).map((r) => r.route.km), [21.2, 23.0, 45.1, 50.0]);
+assert.strictEqual(pickIndex(ranked), 0, "the best match is short enough: it keeps the star");
+assert.strictEqual(pickIndex(rankDrawRoutes([{ km: 40, score: 0.7 }, { km: 30, score: 0.9 }])), 1, "nothing under 25 km: best match");
+assert.strictEqual(pickIndex(rankDrawRoutes(old)), null, "older jobs star their own pick");
+assert.strictEqual(pickIndex([]), null);
 
 console.log("drawRouteSort.test.ts OK");

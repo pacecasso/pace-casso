@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { rankDrawRoutes, routesScored, sortDrawRoutes, type DrawSort } from "../lib/drawRouteSort";
+import { pickIndex, rankDrawRoutes, routesScored, RUNNABLE_KM, sortDrawRoutes, type DrawSort } from "../lib/drawRouteSort";
 import { formatDistance, formatDuration, useRunnerProfile } from "../lib/runnerProfile";
 import LineArtEditor, { type LineArtEditorHandle } from "./LineArtEditor";
 
@@ -150,7 +150,13 @@ function resultsIntro(routes: Route[]): string {
   if (routesScored(routes)) {
     // since Nov 9: every size the engine fitted, ranked by its match score
     if (routes.length > 1) {
-      parts.push("They are your drawing at different sizes: ★ is the one that looks most like your picture, and you can sort them by best match or by distance.");
+      const ranked = rankDrawRoutes(routes);
+      const starIsBest = ranked.find((r) => r.rank === 0)?.index === pickIndex(ranked);
+      parts.push(
+        starIsBest
+          ? "They are your drawing at different sizes: ★ is the one that looks most like your picture, and you can sort them by best match or by distance."
+          : `They are your drawing at different sizes: ★ is our pick, the best match you can run in one go (under ${RUNNABLE_KM} km). "Best match" looks a little more like your picture but is a much longer run. You can sort them by best match or by distance.`,
+      );
     }
     if (routes.some((r) => r.label === "mark")) {
       parts.push('"Picture only" is your picture without its words, which makes a shorter run.');
@@ -354,7 +360,9 @@ export default function DrawFlow() {
     // to another place in the page crashed it (Nov 9, "_leaflet_pos" of a
     // map that had been torn down).
     const ranked = rankDrawRoutes(routes);
-    const place = new Map(sortDrawRoutes(ranked, sort).map((r, at) => [r.index, at]));
+    // the star: the best match short enough to run in one go
+    const pick = pickIndex(ranked);
+    const place = new Map(sortDrawRoutes(ranked, sort, pick).map((r, at) => [r.index, at]));
     return (
       <div>
         <h1 className="font-pace-heading text-3xl uppercase tracking-wide text-pace-blue sm:text-4xl">
@@ -429,11 +437,13 @@ export default function DrawFlow() {
               {ranked.map(({ route: r, rank, index }) => {
                 // jobs since Nov 9 are titled by their best-match rank, which a card
                 // keeps when the page is sorted by distance; older jobs keep their labels
-                const best = scored ? rank === 0 : r.label === "pick";
+                const best = scored ? index === pick : r.label === "pick";
                 const title = scored
                   ? rank === 0
                     ? "Best match"
-                    : `Match #${rank + 1}`
+                    : best
+                      ? "Our pick"
+                      : `Match #${rank + 1}`
                   : r.label
                     ? LABEL_TEXT[r.label]
                     : `Option ${index + 1}`;
