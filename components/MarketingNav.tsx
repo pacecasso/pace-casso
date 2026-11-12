@@ -1,10 +1,17 @@
 import Link from "next/link";
 import BrandLogo from "./BrandLogo";
 
+const CTA_CLASS =
+  "pace-btn-primary order-2 shrink-0 rounded px-4 py-2 text-sm font-bold uppercase tracking-wide sm:px-6 sm:text-base lg:order-3";
+
 /**
  * Same structure as `public/landing.html` nav: logo, centered links, yellow CTA.
+ *
+ * `cta` replaces the yellow button. /draw uses it: there "Start Creating" led
+ * away to the /create city picker, which the Nov 11 reviewer took for a broken
+ * link in the middle of uploading a logo.
  */
-export default function MarketingNav() {
+export default function MarketingNav({ cta }: { cta?: { href: string; label: string } }) {
   return (
     <header className="sticky top-0 z-50 bg-pace-white shadow-sm">
       <div className="pace-app-nav flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
@@ -54,14 +61,18 @@ export default function MarketingNav() {
             Help
           </Link>
         </nav>
-        {/* ?new=1 — "Start Creating" always begins a clean design, never
-            drops the user back into a half-finished draft. */}
-        <Link
-          href="/create?new=1"
-          className="pace-btn-primary order-2 shrink-0 rounded px-4 py-2 text-sm font-bold uppercase tracking-wide sm:px-6 sm:text-base lg:order-3"
-        >
-          Start Creating
-        </Link>
+        {cta ? (
+          // a plain link: the full page load also clears a half-made upload on the same page
+          <a href={cta.href} className={CTA_CLASS}>
+            {cta.label}
+          </a>
+        ) : (
+          /* ?new=1 — "Start Creating" always begins a clean design, never
+             drops the user back into a half-finished draft. */
+          <Link href="/create?new=1" className={CTA_CLASS}>
+            Start Creating
+          </Link>
+        )}
       </div>
     </header>
   );
