@@ -51,6 +51,7 @@ export async function POST(req: Request) {
     lineArt?: unknown;
     lineArts?: unknown;
     words?: unknown;
+    left?: unknown;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -65,6 +66,8 @@ export async function POST(req: Request) {
     job.lineArts = cleanLineArts(job.lineArt, body.lineArts);
     // the name it read off the upload, for the short version's letters later
     job.words = cleanWords(body.words);
+    // ... and the wording it read but left out of the drawing, which the page says
+    job.left = cleanWords(body.left);
     job.status = job.lineArt ? "done" : "failed";
     job.error = job.lineArt ? null : typeof body.error === "string" ? body.error.slice(0, 300) : "No drawing made.";
     job.imageBase64 = null;

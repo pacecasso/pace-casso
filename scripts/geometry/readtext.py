@@ -99,7 +99,15 @@ def _flat_read(a, box, ink, bg):
     return r.txts[k], float(r.scores[k])
 
 
+# the smaller lines of the last read_words() call (a tagline, "CREDIT UNION"
+# under LIGHTHOUSE), top to bottom: they are lifted off the picture with the
+# name but not redrawn, and the page tells the customer so
+last_small = []
+
+
 def read_words(path):
+    global last_small
+    last_small = []
     im = Image.open(path)
     if im.mode in ("RGBA", "LA", "P"):
         im = im.convert("RGBA"); bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
@@ -136,6 +144,7 @@ def read_words(path):
     tallest = max(b[3] - b[1] for _, b in lines)
     main = sorted([l for l in lines if l[1][3] - l[1][1] >= TAGLINE * tallest], key=lambda l: l[1][1])
     words = " ".join(_spaced(t, b, ink) for t, b in main)
+    last_small = [t for t, b in sorted(lines, key=lambda l: l[1][1]) if b[3] - b[1] < TAGLINE * tallest]
     return re.sub(r" +", " ", words).strip(), [b for _, b in lines]
 
 

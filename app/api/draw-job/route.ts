@@ -72,6 +72,7 @@ export async function GET(req: Request) {
     lineArts: job.status === "done" ? (job.lineArts ?? (job.lineArt ? [job.lineArt] : [])) : [],
     // sketch jobs: the name read off the upload, which the page sends on with the touched-up drawing
     words: job.mode === "sketch" && job.status === "done" ? (job.words ?? null) : null,
+    left: job.mode === "sketch" && job.status === "done" ? (job.left ?? null) : null,
     createdAt: job.createdAt,
     subject: job.subject,
     note: job.note ?? null,

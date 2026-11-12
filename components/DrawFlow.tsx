@@ -137,6 +137,8 @@ type Sketch = {
   lineArts: LineArt[];
   /** the name the worker read off the picture; it goes back with the touched-up drawing */
   words?: string | null;
+  /** wording read off the picture that the drawing leaves out */
+  left?: string | null;
 };
 
 /**
@@ -253,7 +255,7 @@ export default function DrawFlow() {
         if (stop) return;
         const r = await fetch(`/api/draw-job?id=${body.jobId}`, { cache: "no-store" }).catch(() => null);
         const s = r?.ok
-          ? ((await r.json()) as { status: Status["status"]; lineArt?: string | null; lineArts?: string[]; words?: string | null })
+          ? ((await r.json()) as { status: Status["status"]; lineArt?: string | null; lineArts?: string[]; words?: string | null; left?: string | null })
           : null;
         if (stop) return;
         if (s?.status === "done" && s.lineArt) {
@@ -265,7 +267,7 @@ export default function DrawFlow() {
               file: new File([await (await fetch(url)).blob()], `line-drawing-${i + 1}.png`, { type: "image/png" }),
             })),
           );
-          if (!stop) setSketch({ state: "ready", lineArts, words: s.words ?? null });
+          if (!stop) setSketch({ state: "ready", lineArts, words: s.words ?? null, left: s.left ?? null });
           return;
         }
         // the worker may be busy with another drawing; after 5 min show the picture instead
@@ -571,6 +573,13 @@ export default function DrawFlow() {
                 ? "We turned your picture into a simple line drawing; every line becomes streets. Erase lines you do not want, and use the pen to add or fix one. Blue lines are your words."
                 : "Erase anything you do not want on the streets, like small text or tiny details. Use the pen to close gaps or thicken thin lines. Bold, simple shapes read best."}
             </p>
+            {sketch?.state === "ready" && sketch.left ? (
+              <p className="mb-3 max-w-2xl rounded-lg border border-pace-line bg-pace-warm px-3 py-2 text-sm leading-relaxed text-pace-ink">
+                <span className="font-semibold">Left out: &quot;{sketch.left}&quot;.</span> Words are drawn as one row of
+                big block capitals, at most 12 letters, because small print and long names cannot be read at street
+                size. The blue lines are the words we kept.
+              </p>
+            ) : null}
             {drawings.length > 1 ? (
               <div className="mb-4">
                 <p className="text-sm font-semibold">We made {drawings.length === 2 ? "two" : drawings.length} drawings - pick the one that looks more like your picture</p>

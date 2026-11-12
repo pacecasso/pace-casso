@@ -452,5 +452,12 @@ if __name__ == "__main__":
         if i == 0:
             # the whole name as read, for the short version's letters (draw_job.py --words)
             with open(os.path.splitext(out)[0] + ".words.txt", "w", encoding="utf-8") as f: f.write(words or "")
+            # what was read but is not drawn: the name past its one row, and the smaller lines
+            left = []
+            if words:
+                import readtext as R
+                left = [words.upper()[len(street_words(words)):].strip()] + list(R.last_small)
+            with open(os.path.splitext(out)[0] + ".left.txt", "w", encoding="utf-8") as f:
+                f.write(" ".join(t for t in left if t))
         render(st, let).save(out if i == 0 else f"{os.path.splitext(out)[0]}-{i + 1}.png")
         print(f"drawing {i + 1}: {len(st)} strokes, {len(let)} letter strokes, words {words!r}")

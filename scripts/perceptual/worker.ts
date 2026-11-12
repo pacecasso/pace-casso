@@ -269,10 +269,13 @@ async function work(job: NonNullable<Claim["job"]>): Promise<void> {
     // the name it read off the upload; the page sends it back with the touched-up drawing
     const wordsFile = path.join(dir, "lineart.words.txt");
     const words = existsSync(wordsFile) ? readFileSync(wordsFile, "utf8").trim() || null : null;
+    // wording it read but did not draw (small print, a name past one row); the page says so
+    const leftFile = path.join(dir, "lineart.left.txt");
+    const left = existsSync(leftFile) ? readFileSync(leftFile, "utf8").trim() || null : null;
     const post = await fetch(`${SITE}/api/draw-job/worker`, {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ id: job.id, lineArt, lineArts, words, error: lineArt ? null : `sketch exit ${code}` }),
+      body: JSON.stringify({ id: job.id, lineArt, lineArts, words, left, error: lineArt ? null : `sketch exit ${code}` }),
     });
     console.log(`  line art ${lineArt ? `made (${lineArts.length})` : "FAILED"} in ${((Date.now() - t0) / 1000).toFixed(0)} s -> ${post.status}`);
     return;

@@ -71,6 +71,8 @@ export type DrawJob = {
    * with it (the name itself when very short, else its initials)
    */
   words?: string | null;
+  /** sketch jobs: wording read off the upload that the drawing leaves out (small print, a name past one row) */
+  left?: string | null;
   /** a line for the page about what could not be offered, e.g. no version under 25 km */
   note?: string | null;
   error: string | null;
