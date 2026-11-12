@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import L from "leaflet";
 import type { LatLngExpression } from "leaflet";
-import { MapContainer, Polyline, TileLayer, useMap } from "react-leaflet";
+import { CircleMarker, MapContainer, Polyline, TileLayer, Tooltip, useMap } from "react-leaflet";
 import { OSM_TILE_ATTRIBUTION, OSM_TILE_URL } from "../lib/mapAttribution";
 import { useLeafletContainerId } from "../lib/useLeafletContainerId";
 
@@ -40,6 +40,8 @@ export type Step5PreviewMapProps = {
   originalArt: LatLng[];
   originalArtConnectorSegments?: [LatLng, LatLng][];
   showOriginalArt: boolean;
+  /** mark where the route starts (green) and finishes (dark); /draw results */
+  showEndpoints?: boolean;
 };
 
 export default function Step5PreviewMap({
@@ -47,6 +49,7 @@ export default function Step5PreviewMap({
   originalArt,
   originalArtConnectorSegments = [],
   showOriginalArt,
+  showEndpoints = false,
 }: Step5PreviewMapProps) {
   const center: LatLng =
     routeLine[0] ??
@@ -110,6 +113,24 @@ export default function Step5PreviewMap({
             lineJoin: "round",
           }}
         />
+      )}
+      {showEndpoints && routeLine.length > 1 && (
+        <>
+          <CircleMarker
+            center={routeLine[routeLine.length - 1] as LatLngExpression}
+            radius={7}
+            pathOptions={{ color: "#ffffff", weight: 2, fillColor: "#111827", fillOpacity: 1 }}
+          >
+            <Tooltip>Finish</Tooltip>
+          </CircleMarker>
+          <CircleMarker
+            center={routeLine[0] as LatLngExpression}
+            radius={8}
+            pathOptions={{ color: "#ffffff", weight: 2, fillColor: "#16a34a", fillOpacity: 1 }}
+          >
+            <Tooltip>Start</Tooltip>
+          </CircleMarker>
+        </>
       )}
     </MapContainer>
   );
