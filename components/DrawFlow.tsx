@@ -180,14 +180,19 @@ function gpxFor(route: Route, name: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="PaceCasso" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${name}</name><trkseg>${pts}</trkseg></trk></gpx>`;
 }
 
-/** i: the route's best-match rank, so a file keeps its number however the page is sorted */
-function download(route: Route, i: number) {
+/**
+ * i: the route's best-match rank, so a file keeps its number however the page is sorted.
+ * Returns the file's name, which the card then shows: the browser saves it
+ * without a word, and the Nov 11 reviewer could not tell the click had worked.
+ */
+function download(route: Route, i: number): string {
   const blob = new Blob([gpxFor(route, `PaceCasso option ${i + 1}`)], { type: "application/gpx+xml" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `pacecasso-option-${i + 1}-${route.km.toFixed(1)}km.gpx`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  return a.download;
 }
 
 /**
@@ -211,6 +216,8 @@ export default function DrawFlow() {
   /** which of the worker's drawings is in the editor */
   const [choice, setChoice] = useState(0);
   const [sort, setSort] = useState<DrawSort>("best");
+  /** the GPX file last saved, and the card (delivered index) it came from */
+  const [saved, setSaved] = useState<{ index: number; name: string } | null>(null);
 
   useEffect(() => {
     setUploadThumb(jobId ? loadThumbnail(jobId) : null);
@@ -472,12 +479,19 @@ export default function DrawFlow() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => download(r, scored ? rank : index)}
+                        onClick={() => setSaved({ index, name: download(r, scored ? rank : index) })}
                         className="pace-btn-primary px-4 py-2 text-xs"
                       >
                         GPX
                       </button>
                     </div>
+                    {saved?.index === index ? (
+                      <p role="status" className="border-t border-pace-line bg-pace-warm px-4 py-3 text-xs leading-relaxed text-pace-ink">
+                        <span className="font-semibold">Saved {saved.name}</span> - look in your Downloads folder. To
+                        follow it on a run, import the file as a route in Strava (website: My Routes, Create New Route,
+                        then upload) or as a course in Garmin Connect (Training, Courses, Import).
+                      </p>
+                    ) : null}
                   </div>
                 );
               })}
