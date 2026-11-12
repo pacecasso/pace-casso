@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pickIndex, rankDrawRoutes, routesScored, RUNNABLE_KM, sortDrawRoutes, type DrawSort } from "../lib/drawRouteSort";
 import { formatDistance, formatDuration, useRunnerProfile } from "../lib/runnerProfile";
+import { drawShareImage } from "../lib/shareImage";
 import LineArtEditor, { type LineArtEditorHandle } from "./LineArtEditor";
 
 const Step5PreviewMap = dynamic(() => import("./Step5PreviewMap"), {
@@ -197,6 +198,18 @@ function download(route: Route, i: number): string {
   return a.download;
 }
 
+/** the share picture: the upload beside its route, saved as a PNG; returns the file's name, or null if it could not be made */
+async function downloadShare(route: Route, i: number, picture: string | null, stats: string): Promise<string | null> {
+  const blob = await drawShareImage(route.points, picture, stats).catch(() => null);
+  if (!blob) return null;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `pacecasso-option-${i + 1}-${route.km.toFixed(1)}km.png`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  return a.download;
+}
+
 /**
  * Upload -> queued job -> up to five street routes. The search runs on the GPU
  * worker (scripts/perceptual/worker.ts) and takes minutes, so the page
@@ -218,8 +231,8 @@ export default function DrawFlow() {
   /** which of the worker's drawings is in the editor */
   const [choice, setChoice] = useState(0);
   const [sort, setSort] = useState<DrawSort>("best");
-  /** the GPX file last saved, and the card (delivered index) it came from */
-  const [saved, setSaved] = useState<{ index: number; name: string } | null>(null);
+  /** the file last saved (GPX or share picture), and the card (delivered index) it came from */
+  const [saved, setSaved] = useState<{ index: number; name: string; kind: "gpx" | "picture" } | null>(null);
 
   useEffect(() => {
     setUploadThumb(jobId ? loadThumbnail(jobId) : null);
@@ -479,13 +492,26 @@ export default function DrawFlow() {
                           <p className="mt-0.5 text-xs text-pace-muted">Your picture with &quot;{r.text}&quot; under it</p>
                         ) : null}
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setSaved({ index, name: download(r, scored ? rank : index) })}
-                        className="pace-btn-primary px-4 py-2 text-xs"
-                      >
-                        GPX
-                      </button>
+                      <div className="flex shrink-0 gap-2">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const stats = `${formatDistance(r.km, profile.unit)} · ${formatDuration(r.km * profile.paceSecPerKm)}`;
+                            const name = await downloadShare(r, scored ? rank : index, uploadThumb, stats);
+                            if (name) setSaved({ index, name, kind: "picture" });
+                          }}
+                          className="pace-btn-ghost pace-btn-ghost--sm"
+                        >
+                          Share picture
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSaved({ index, name: download(r, scored ? rank : index), kind: "gpx" })}
+                          className="pace-btn-primary px-4 py-2 text-xs"
+                        >
+                          GPX
+                        </button>
+                      </div>
                     </div>
                     {r.points.length > 1 ? (
                       <p className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-pace-line px-4 py-2 text-xs text-pace-muted">
@@ -509,9 +535,10 @@ export default function DrawFlow() {
                     ) : null}
                     {saved?.index === index ? (
                       <p role="status" className="border-t border-pace-line bg-pace-warm px-4 py-3 text-xs leading-relaxed text-pace-ink">
-                        <span className="font-semibold">Saved {saved.name}</span> - look in your Downloads folder. To
-                        follow it on a run, import the file as a route in Strava (website: My Routes, Create New Route,
-                        then upload) or as a course in Garmin Connect (Training, Courses, Import).
+                        <span className="font-semibold">Saved {saved.name}</span> - look in your Downloads folder.{" "}
+                        {saved.kind === "gpx"
+                          ? "To follow it on a run, import the file as a route in Strava (website: My Routes, Create New Route, then upload) or as a course in Garmin Connect (Training, Courses, Import)."
+                          : "It is a square picture of your logo beside its route, ready to post."}
                       </p>
                     ) : null}
                   </div>
