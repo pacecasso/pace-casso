@@ -410,7 +410,7 @@ export default function StepTapRoute({
             type="button"
             aria-expanded={tipsOpen}
             onClick={() => setTipsOpen((o) => !o)}
-            className="mt-2 py-1.5 font-dm text-[13px] font-semibold text-pace-blue lg:hidden"
+            className="mt-2 block py-1.5 font-dm text-[13px] font-semibold text-pace-blue lg:hidden"
           >
             {tipsOpen ? "Hide drawing tips" : "Show drawing tips"}
           </button>
@@ -448,7 +448,7 @@ export default function StepTapRoute({
             <button
               type="button"
               onClick={onSwitchToSketch}
-              className="mt-3 font-dm text-[11px] font-semibold text-pace-blue underline-offset-2 hover:underline"
+              className="mt-3 block font-dm text-[11px] font-semibold text-pace-blue underline-offset-2 hover:underline"
             >
               Rather sketch it freehand?
             </button>
