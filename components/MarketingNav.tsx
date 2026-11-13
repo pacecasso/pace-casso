@@ -12,8 +12,10 @@ const CTA_CLASS =
  * link in the middle of uploading a logo.
  */
 export default function MarketingNav({ cta }: { cta?: { href: string; label: string } }) {
+  // fixed to the top on wide screens only: on a phone the two-row header is
+  // 170 px, a quarter of the screen, and it covered the page while scrolling
   return (
-    <header className="sticky top-0 z-50 bg-pace-white shadow-sm">
+    <header className="z-50 bg-pace-white shadow-sm lg:sticky lg:top-0">
       <div className="pace-app-nav flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
         <Link
           href="/landing.html"
