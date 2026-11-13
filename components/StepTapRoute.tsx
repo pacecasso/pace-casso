@@ -386,6 +386,8 @@ export default function StepTapRoute({
   }, [canFinish, line, meters, onComplete]);
 
   const nPoints = route.points.length;
+  /** phones: the how-to list above the map, closed until asked for */
+  const [tipsOpen, setTipsOpen] = useState(false);
 
   return (
     <MapStepSplitLayout
@@ -402,7 +404,19 @@ export default function StepTapRoute({
               from your last point.
             </span>
           </div>
-          <ul className="mt-3 space-y-1.5 font-dm text-[12px] leading-snug text-pace-ink/80">
+          {/* a phone shows this panel above the map: with the tips open it left a
+              250 px strip of map to draw on (Nov 12), so there they sit behind a tap */}
+          <button
+            type="button"
+            aria-expanded={tipsOpen}
+            onClick={() => setTipsOpen((o) => !o)}
+            className="mt-2 py-1.5 font-dm text-[13px] font-semibold text-pace-blue lg:hidden"
+          >
+            {tipsOpen ? "Hide drawing tips" : "Show drawing tips"}
+          </button>
+          <ul
+            className={`mt-3 space-y-1.5 font-dm text-[12px] leading-snug text-pace-ink/80 lg:block ${tipsOpen ? "" : "hidden"}`}
+          >
             <li>
               <strong className="text-pace-ink">Drag a point</strong> to move it.{" "}
               <strong className="text-pace-ink">Drag the line</strong> to bend it.
