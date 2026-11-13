@@ -42,6 +42,15 @@ export type Step5PreviewMapProps = {
   showOriginalArt: boolean;
   /** mark where the route starts (green) and finishes (dark); /draw results */
   showEndpoints?: boolean;
+  /**
+   * For a map that sits in a long page (/draw results): the page must keep
+   * scrolling when a thumb or the mouse wheel passes over it. On a phone one
+   * finger scrolls the page and two fingers move and zoom the map; with a
+   * mouse the wheel scrolls the page, and dragging and the +/- buttons work
+   * the map. Nov 12 phone check: a swipe that began on a map did nothing, and
+   * the five maps fill most of the results page.
+   */
+  pageScroll?: boolean;
 };
 
 export default function Step5PreviewMap({
@@ -50,6 +59,7 @@ export default function Step5PreviewMap({
   originalArtConnectorSegments = [],
   showOriginalArt,
   showEndpoints = false,
+  pageScroll = false,
 }: Step5PreviewMapProps) {
   const center: LatLng =
     routeLine[0] ??
@@ -63,8 +73,8 @@ export default function Step5PreviewMap({
       center={center as LatLngExpression}
       zoom={14}
       className="z-0 h-full min-h-[280px] w-full rounded-xl border border-pace-line bg-pace-white shadow-inner"
-      scrollWheelZoom
-      dragging
+      scrollWheelZoom={!pageScroll}
+      dragging={!(pageScroll && L.Browser.mobile)}
       doubleClickZoom
     >
       <FitCombinedBounds

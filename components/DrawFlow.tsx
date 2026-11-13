@@ -476,7 +476,7 @@ export default function DrawFlow() {
                     className="flex flex-col overflow-hidden rounded-xl border border-pace-line bg-pace-white"
                   >
                     <div className="h-[340px] p-2">
-                      <Step5PreviewMap routeLine={r.points} originalArt={NO_ART} showOriginalArt={false} showEndpoints />
+                      <Step5PreviewMap routeLine={r.points} originalArt={NO_ART} showOriginalArt={false} showEndpoints pageScroll />
                     </div>
                     <div className="flex items-center justify-between gap-3 border-t border-pace-line px-4 py-3">
                       <div>
@@ -515,6 +515,7 @@ export default function DrawFlow() {
                     </div>
                     {r.points.length > 1 ? (
                       <p className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-pace-line px-4 py-2 text-xs text-pace-muted">
+                        <span className="w-full lg:hidden">Use two fingers to move or zoom the map.</span>
                         <span>
                           <span aria-hidden className="mr-1 inline-block h-2.5 w-2.5 rounded-full bg-green-600" />
                           Start
