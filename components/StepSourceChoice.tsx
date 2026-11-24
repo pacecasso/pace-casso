@@ -172,12 +172,12 @@ export default function StepSourceChoice({
                 Ready-to-run artwork
               </p>
               <p className="mt-1 max-w-2xl font-dm text-[11px] leading-relaxed text-pace-muted sm:text-xs">
-                These are the strongest precompiled Manhattan routes in the
-                app today. Each preserves a runnable street polyline end to end.
+                Routes we have already drawn in Manhattan. Pick one and it
+                is ready to run, start to finish, on real streets.
               </p>
             </div>
             <span className="font-bebas text-[11px] tracking-[0.14em] text-pace-yellow">
-              Best current path
+              Ready now
             </span>
           </div>
 

@@ -14,180 +14,138 @@ export default function HelpPage() {
             Help
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-pace-muted">
-            Common questions for the{" "}
-            <Link
-              href="/create"
-              className="font-semibold text-pace-blue underline-offset-2 hover:underline"
-            >
-              create flow
-            </Link>
-            . Want a step-by-step walkthrough?{" "}
-            <Link
-              href="/how"
-              className="font-semibold text-pace-blue underline-offset-2 hover:underline"
-            >
+            There are two ways to make a route.{" "}
+            <Link href="/draw" className="font-semibold text-pace-blue underline-offset-2 hover:underline">
+              Draw my logo
+            </Link>{" "}
+            turns a picture you upload into a route for you (New York City only for now).{" "}
+            <Link href="/create" className="font-semibold text-pace-blue underline-offset-2 hover:underline">
+              Draw it yourself
+            </Link>{" "}
+            lets you sketch or place a shape on the map in {cityLabels.length} cities. Want a walkthrough?{" "}
+            <Link href="/how" className="font-semibold text-pace-blue underline-offset-2 hover:underline">
               How It Works
             </Link>
             .
           </p>
 
-          <Section title="Connecting disconnected shapes (R, A, B, P, etc.)">
-            <p>
-              A walking route is a single continuous path — so the shape you
-              trace has to be one connected line. Some letters have inner holes
-              (the eye of an R, the loops of a B, the counter of an A) — the
-              system automatically <strong className="text-pace-ink">bridges the inner hole
-              to the outer boundary</strong> with a tiny connector, so you
-              don&apos;t have to.
-            </p>
-            <p className="mt-3">
-              If your image has <strong className="text-pace-ink">two entirely
-              separate pieces</strong> (e.g., two side-by-side letters, or a
-              shape that broke into fragments during line-art extraction), only
-              the largest piece will survive. To include both, use the{" "}
-              <strong className="text-pace-ink">draw tool</strong> in Step 1 to
-              sketch a thin connector line between the two pieces before you
-              click Next — the pipeline then sees one connected shape.
-            </p>
-          </Section>
+          <h2 className="mt-10 font-pace-heading text-xl uppercase tracking-wide text-pace-blue">Draw my logo</h2>
 
-          <Section title="Auto-find placement vs. Refine">
-            <p>
-              On the <em>Place on map</em> step you have two buttons:
-            </p>
-            <ul className="mt-2 ml-4 list-disc space-y-1">
+          <Section title="How it works">
+            <ol className="ml-4 list-decimal space-y-1">
+              <li>Choose a picture: a logo, a drawing or a photo (PNG, JPG or WebP).</li>
               <li>
-                <strong className="text-pace-ink">Auto-find placement</strong> —
-                PaceCasso searches the whole city (25 positions × 5–12 rotations
-                × 5–7 scales), snaps each candidate to streets, renders a small
-                map of each, and ranks the best 5 using AI vision. Ignores
-                wherever you have the shape currently.
+                In under a minute we show a simple line drawing of it. This is what goes on the streets, so check it:
+                erase lines you do not want, add or fix one with the pen, and correct the name if we read it wrong.
               </li>
               <li>
-                <strong className="text-pace-ink">Refine around my placement</strong> —
-                searches tightly near where you&apos;ve dragged the shape (±2
-                km), at similar size (±30%) and rotation (±20°). Use this once
-                you&apos;ve manually put the shape roughly where you want it.
+                Press <strong className="text-pace-ink">Draw it</strong>. A minute or two later you get up to five
+                routes at different sizes, each one continuous run on real streets.
               </li>
-            </ul>
-            <p className="mt-3">
-              Both take ~30–60 seconds because Mapbox snaps 20 candidates and
-              PaceCasso&apos;s AI analyzes them. The top picks appear as 5
-              thumbnails in the sidebar — click any to try it.
+              <li>Download the GPX of the one you like, or a share picture of your logo beside its route.</li>
+            </ol>
+          </Section>
+
+          <Section title="Why is the route with my name so long?">
+            <p>
+              A letter has to be several blocks tall before anyone can read it on a map, so a whole name usually needs
+              a run of 40 km or more. For a run under 25 km we offer shorter versions: your picture on its own, your
+              picture with your initials, or your initials in large letters. The ★ marks the best match you can run in
+              one go. A shorter name, or a drawing with fewer lines, makes a shorter run.
             </p>
           </Section>
 
-          <Section title="Saved draft (browser only)">
+          <Section title="Some of my words are missing">
             <p>
-              Your wizard progress is saved in this browser under the key{" "}
-              <code className="rounded bg-pace-panel px-1 py-0.5 text-xs text-pace-ink ring-1 ring-pace-line">
-                pacecasso-create-draft-v1
-              </code>{" "}
-              in{" "}
-              <code className="rounded bg-pace-panel px-1 text-xs ring-1 ring-pace-line">
-                localStorage
-              </code>
-              . Refreshing typically restores where you left off, including your
-              uploaded image (when small enough to fit localStorage). Private or
-              incognito windows won&apos;t persist the draft. Click{" "}
-              <strong className="text-pace-ink">START OVER</strong> in the
-              header to clear it. Your image is never uploaded to our servers.
+              Words are drawn as one row of big block capitals, at most 12 letters. Small print, taglines and second
+              lines are left out because they cannot be read at street size; the touch-up step tells you which words
+              were left out. To choose a different word, type it in the name box there and press{" "}
+              <strong className="text-pace-ink">Redraw with this name</strong>.
             </p>
           </Section>
 
-          <Section title="Snapping errors &amp; rate limits">
+          <Section title="Why is my route in Brooklyn or Queens?">
             <p>
-              Snapping uses the Mapbox Directions API. If you see errors or
-              empty routes, hit <strong className="text-pace-ink">Retry</strong>,
-              check your network, or wait a minute if you&apos;ve been clicking
-              Auto-find rapidly (Mapbox rate-limits free-tier tokens at 300
-              requests/min; each auto-find uses ~20 of those).
-            </p>
-            <p className="mt-3">
-              A missing or invalid{" "}
-              <code className="rounded bg-pace-panel px-1 text-xs ring-1 ring-pace-line">
-                NEXT_PUBLIC_MAPBOX_TOKEN
-              </code>{" "}
-              in production will block all snapping. If you&apos;re running
-              locally, check{" "}
-              <code className="rounded bg-pace-panel px-1 text-xs ring-1 ring-pace-line">
-                .env.local
-              </code>
-              .
+              We search Manhattan, Brooklyn and Queens for the streets that fit your drawing best, and the best fit is
+              often outside Manhattan. Each route has a <strong className="text-pace-ink">See where it starts</strong>{" "}
+              link so you can check before you go.
             </p>
           </Section>
 
-          <Section title="PaceCasso AI / auto-find not running">
+          <Section title="What pictures work best?">
             <p>
-              Auto-find uses PaceCasso&apos;s AI to classify your shape and
-              rank candidates. If the server isn&apos;t configured with an
-              AI key, auto-find silently falls back to showing 5 diverse snap
-              candidates ordered by survival — the sidebar header will say
-              &quot;Candidates&quot; instead of &quot;PaceCasso top picks.&quot;
-              The results will be less tuned to your shape.
+              Bold, simple shapes with a clear outline: one strong mark, a short name. Fine detail, thin lines, shading
+              and long names do not survive the trip onto a street grid. Photos work when there is one clear subject.
             </p>
           </Section>
 
-          <Section title="GPX &amp; export">
+          <Section title="Getting the route onto your watch">
             <p>
-              The final step offers three downloads:
-            </p>
-            <ul className="mt-2 ml-4 list-disc space-y-1">
-              <li>
-                <strong className="text-pace-ink">GPX</strong> — the universal
-                format. Import via your watch brand&apos;s app (often under
-                &quot;Courses&quot; or &quot;Routes&quot;). Garmin, Coros,
-                Suunto, Apple Watch, Polar all accept GPX.
-              </li>
-              <li>
-                <strong className="text-pace-ink">GeoJSON</strong> — for custom
-                maps, sharing, or importing into mapping tools.
-              </li>
-              <li>
-                <strong className="text-pace-ink">Plain-text cues</strong> —
-                turn-by-turn directions you can read on your phone while running
-                if your watch doesn&apos;t show them.
-              </li>
-            </ul>
-            <p className="mt-3">
-              Turn-by-turn may render differently on different watches — some
-              show them as on-course waypoints, others only as a list.
+              The <strong className="text-pace-ink">GPX</strong> button saves a file to your Downloads folder. In
+              Strava, import it on the website under My Routes, Create New Route. In Garmin Connect, use Training,
+              Courses, Import. Coros, Suunto, Polar and Apple Watch apps accept GPX as well. If nothing is saved, your
+              browser may be blocking a second download from the page: look for a prompt in the address bar and allow
+              it.
             </p>
           </Section>
 
-          <Section title="Cities &amp; coverage">
+          <Section title="What happens to my picture?">
             <p>
-              Available today: {cityLabels.join(", ")}. Each preset defines a
-              map bounding box and the dominant street-grid bearings (Manhattan
-              runs ~29° off true north — that&apos;s why letters often look
-              best slightly tilted). More cities coming.
+              Your picture is sent to our drawing computer to make the route. We keep a copy there so we can improve
+              the drawings; it is not published or shared. The results page has its own link, which you can bookmark
+              or share. There are no accounts.
             </p>
           </Section>
 
-          <Section title="Why do my routes look 'jagged'?">
-            <p>
-              Because they are. Walking routes follow real streets, and real
-              streets are a grid — so any diagonal or curve in your original
-              shape becomes a staircase of blocks. That&apos;s the etch-a-sketch
-              aesthetic. If your shape looks unrecognizable, try:
-            </p>
-            <ul className="mt-2 ml-4 list-disc space-y-1">
-              <li>Scaling up (bigger routes = less zigzag relative to strokes).</li>
-              <li>
-                Rotating to align with the street grid (29° on Manhattan).
-              </li>
-              <li>
-                Clicking <em>Refine around my placement</em> after nudging it to
-                a neighborhood with a cleaner grid.
-              </li>
-            </ul>
+          <h2 className="mt-12 font-pace-heading text-xl uppercase tracking-wide text-pace-blue">Draw it yourself</h2>
+
+          <Section title="Cities">
+            <p>Available today: {cityLabels.join(", ")}. More cities are coming.</p>
           </Section>
 
-          <Section title="Accounts, sync, social">
+          <Section title="Shapes in more than one piece">
             <p>
-              Coming in a later release. Today everything is browser-local — no
-              accounts, no cloud sync, no sharing built in. If you clear the
-              browser draft, you lose the route.
+              A route is one continuous line, so your shape has to be one connected line too. Holes inside letters (the
+              eye of an R, the loops of a B) are joined up for you. If your picture has two separate pieces, only the
+              largest is kept: draw a thin line between them before you continue and both stay.
+            </p>
+          </Section>
+
+          <Section title="Find a spot for me, or refine mine">
+            <p>
+              When you place your shape on the map, <strong className="text-pace-ink">Auto-find placement</strong>{" "}
+              searches the whole city and shows the five best spots.{" "}
+              <strong className="text-pace-ink">Refine around my placement</strong> searches only near where you have
+              put the shape, at about the same size and angle. Either takes up to a minute.
+            </p>
+          </Section>
+
+          <Section title="Why do my routes look jagged?">
+            <p>
+              Routes follow real streets, and streets are a grid, so a diagonal or a curve becomes a staircase of
+              blocks. A bigger shape shows less of it, and so does turning the shape to line up with the streets
+              (Manhattan&apos;s grid runs about 29° off north).
+            </p>
+          </Section>
+
+          <Section title="If a route will not appear">
+            <p>
+              Press <strong className="text-pace-ink">Retry</strong>, check your connection, or wait a minute if you
+              have been searching many times in a row.
+            </p>
+          </Section>
+
+          <Section title="Your saved draft">
+            <p>
+              Your progress is saved in this browser only, so a refresh brings you back to where you were. A private
+              window does not keep it. <strong className="text-pace-ink">Start over</strong> in the header clears it.
+            </p>
+          </Section>
+
+          <Section title="Downloads">
+            <p>
+              The last step offers a GPX file for your watch, a GeoJSON file for mapping tools, and plain-text turn
+              directions you can read on your phone.
             </p>
           </Section>
         </div>

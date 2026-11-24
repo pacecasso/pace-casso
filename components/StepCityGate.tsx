@@ -77,16 +77,18 @@ export default function StepCityGate({
       {/* Nov 9 cold review: the wizard asked for a city, then "From a photo"
           went to /draw, which only covers New York and ignores the choice.
           Say so before anyone picks, and let a photo skip the wizard. */}
-      <p className="max-w-sm text-center font-dm text-xs leading-relaxed text-pace-muted sm:text-sm">
-        Have a logo or a picture to upload? That works in New York City only
-        for now, whichever city you pick here.{" "}
-        <Link
-          href="/draw"
-          className="font-semibold text-pace-blue underline-offset-2 hover:underline"
-        >
+      {/* Nov 24 blind review: the upload was "a small text link under the
+          button"; it is the main thing a logo owner came for, so it gets its
+          own box and a real button. */}
+      <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-xl border border-pace-line bg-pace-white p-4 text-center">
+        <p className="font-dm text-xs leading-relaxed text-pace-muted sm:text-sm">
+          Have a logo or a picture to upload? That works in New York City only
+          for now, whichever city you pick here.
+        </p>
+        <Link href="/draw" className="pace-btn-ghost pace-btn-ghost--sm">
           Upload a picture →
         </Link>
-      </p>
+      </div>
     </div>
   );
 }
