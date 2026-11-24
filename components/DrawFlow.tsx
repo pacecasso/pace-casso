@@ -213,28 +213,36 @@ function gpxFor(route: Route, name: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="PaceCasso" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${name}</name><trkseg>${pts}</trkseg></trk></gpx>`;
 }
 
+/** a card's title as part of a file name: "Match #3" -> "match-3" */
+const fileSlug = (title: string) =>
+  title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+
 /**
- * i: the route's best-match rank, so a file keeps its number however the page is sorted.
+ * title: the card's title, so the file is named as the card is (Nov 24 review 6:
+ * the card "Match #3" saved as "option-4").
  * Returns the file's name, which the card then shows: the browser saves it
  * without a word, and the Nov 11 reviewer could not tell the click had worked.
  */
-function download(route: Route, i: number): string {
-  const blob = new Blob([gpxFor(route, `PaceCasso option ${i + 1}`)], { type: "application/gpx+xml" });
+function download(route: Route, title: string): string {
+  const blob = new Blob([gpxFor(route, `PaceCasso ${title.toLowerCase()}`)], { type: "application/gpx+xml" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `pacecasso-option-${i + 1}-${route.km.toFixed(1)}km.gpx`;
+  a.download = `pacecasso-${fileSlug(title)}-${route.km.toFixed(1)}km.gpx`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   return a.download;
 }
 
 /** the share picture: the upload beside its route, saved as a PNG; returns the file's name, or null if it could not be made */
-async function downloadShare(route: Route, i: number, picture: string | null, stats: string): Promise<string | null> {
+async function downloadShare(route: Route, title: string, picture: string | null, stats: string): Promise<string | null> {
   const blob = await drawShareImage(route.points, picture, stats).catch(() => null);
   if (!blob) return null;
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `pacecasso-option-${i + 1}-${route.km.toFixed(1)}km.png`;
+  a.download = `pacecasso-${fileSlug(title)}-${route.km.toFixed(1)}km.png`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   return a.download;
@@ -540,7 +548,7 @@ export default function DrawFlow() {
                           type="button"
                           onClick={async () => {
                             const stats = `${formatDistance(r.km, profile.unit)} · ${formatDuration(r.km * profile.paceSecPerKm)}`;
-                            const name = await downloadShare(r, scored ? rank : index, uploadThumb, stats);
+                            const name = await downloadShare(r, title, uploadThumb, stats);
                             if (name) setSaved({ index, name, kind: "picture" });
                           }}
                           className="pace-btn-ghost pace-btn-ghost--sm"
@@ -549,7 +557,7 @@ export default function DrawFlow() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setSaved({ index, name: download(r, scored ? rank : index), kind: "gpx" })}
+                          onClick={() => setSaved({ index, name: download(r, title), kind: "gpx" })}
                           className="pace-btn-primary px-4 py-2 text-xs"
                         >
                           GPX
@@ -670,11 +678,17 @@ export default function DrawFlow() {
                   {sketch.words ? "The name on your route" : "Want your name on the route?"}
                 </label>
                 <p className="mt-1 text-sm leading-relaxed text-pace-muted">
-                  {sketch.words
-                    ? `We read "${sketch.words}" off your picture. If that is wrong, or you would rather have another word, type it here.`
-                    : "We found no name on your picture. Type one and we will letter it under the drawing."}{" "}
-                  Up to {NAME_ROW} letters fit on the row, and a short name makes a shorter run. Redrawing starts the
-                  touch-up over.
+                  {/* Nov 24 review 6: it said 'We read "TORNION"' after the customer typed it, and showed
+                      "LANYON BOWDLER" in the box over a drawing that says LANYON with no word on why */}
+                  {!sketch.words
+                    ? "We found no name on your picture. Type one and we will letter it under the drawing."
+                    : typed && plainName(sketch.words) === typed
+                      ? `The drawing now uses the name you typed, "${sketch.words}". To change it again, type another.`
+                      : `We read "${sketch.words}" off your picture. If that is wrong, or you would rather have another word, type it here.`}{" "}
+                  {sketch.words && plainName(sketch.words).length > NAME_ROW
+                    ? `Only ${NAME_ROW} letters fit on the row, so the drawing shows just the first part of it: the blue lines are what will be drawn. To have a different word, type that word alone.`
+                    : `Up to ${NAME_ROW} letters fit on the row, and a short name makes a shorter run.`}{" "}
+                  Redrawing starts the touch-up over.
                 </p>
                 <div className="mt-2 flex flex-wrap items-center gap-3">
                   <input
