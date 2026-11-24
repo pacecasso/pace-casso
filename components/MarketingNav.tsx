@@ -13,9 +13,11 @@ const CTA_CLASS =
  */
 export default function MarketingNav({ cta }: { cta?: { href: string; label: string } }) {
   // fixed to the top on wide screens only: on a phone the two-row header is
-  // 170 px, a quarter of the screen, and it covered the page while scrolling
+  // 170 px, a quarter of the screen, and it covered the page while scrolling.
+  // Not on /draw (the page that passes `cta`): there the 170 px bar hid the
+  // top of the result maps on a laptop screen (Nov 24 blind review).
   return (
-    <header className="z-50 bg-pace-white shadow-sm lg:sticky lg:top-0">
+    <header className={`z-50 bg-pace-white shadow-sm ${cta ? "" : "lg:sticky lg:top-0"}`}>
       <div className="pace-app-nav flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
         <Link
           href="/landing.html"

@@ -496,12 +496,16 @@ export default function DrawFlow() {
                 // jobs since Nov 9 are titled by their best-match rank, which a card
                 // keeps when the page is sorted by distance; older jobs keep their labels
                 const best = scored ? index === pick : r.label === "pick";
+                // the other cards count on from the best match, skipping the pick: with the
+                // pick ranked fourth the page read "Match #3" then "Match #5" (Nov 12 and 24 reviews)
+                const pickRank = ranked.find((x) => x.index === pick)?.rank ?? -1;
+                const number = rank + 1 - (pickRank > 0 && pickRank < rank ? 1 : 0);
                 const title = scored
                   ? rank === 0
                     ? "Best match"
                     : best
                       ? "Our pick"
-                      : `Match #${rank + 1}`
+                      : `Match #${number}`
                   : r.label
                     ? LABEL_TEXT[r.label]
                     : `Option ${index + 1}`;
@@ -575,10 +579,12 @@ export default function DrawFlow() {
                     ) : null}
                     {saved?.index === index ? (
                       <p role="status" className="border-t border-pace-line bg-pace-warm px-4 py-3 text-xs leading-relaxed text-pace-ink">
-                        <span className="font-semibold">Saved {saved.name}</span> - look in your Downloads folder.{" "}
+                        <span className="font-semibold">Downloading {saved.name}</span> - look in your Downloads folder.{" "}
                         {saved.kind === "gpx"
                           ? "To follow it on a run, import the file as a route in Strava (website: My Routes, Create New Route, then upload) or as a course in Garmin Connect (Training, Courses, Import)."
-                          : "It is a square picture of your logo beside its route, ready to post."}
+                          : "It is a square picture of your logo beside its route, ready to post."}{" "}
+                        If no file arrives, your browser is asking whether this page may download more than one file:
+                        look for a prompt by the address bar and allow it.
                       </p>
                     ) : null}
                   </div>
