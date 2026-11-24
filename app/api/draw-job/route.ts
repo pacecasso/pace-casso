@@ -37,8 +37,9 @@ export async function POST(req: Request) {
   const job: DrawJob = {
     kind: "draw",
     ...(mode ? { mode } : {}),
-    // a touched-up drawing comes with the name its sketch job read off the upload
-    ...(mode === "lineart" && words ? { words } : {}),
+    // a touched-up drawing comes with the name its sketch job read off the upload;
+    // a sketch job with a name is a redraw with the name the person typed
+    ...(mode && words ? { words } : {}),
     id: newDrawJobId(),
     createdAt: Date.now(),
     updatedAt: Date.now(),

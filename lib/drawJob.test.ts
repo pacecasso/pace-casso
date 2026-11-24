@@ -47,6 +47,11 @@ assert.strictEqual(cleanLineArts(png("A"), ["B", "C", "D", "E", "F"].map(png)).l
 assert.strictEqual(cleanWords("Three  Weavers"), "THREE WEAVERS");
 assert.strictEqual(cleanWords('  A&B "; rm -rf /'), "A&B RM RF");
 assert.strictEqual(cleanWords("!!!"), null, "nothing left");
+// a letters route (the initials of a name on their own, Nov 24) keeps its label and text
+assert.deepStrictEqual(
+  cleanRoutes([{ km: 11, label: "letters", text: "MR", points: [[40.7, -73.9], [40.71, -73.9]] }])[0],
+  { km: 11, points: [[40.7, -73.9], [40.71, -73.9]], label: "letters", text: "MR" },
+);
 assert.strictEqual(cleanWords(42), null, "not a string");
 assert.strictEqual(cleanWords("X".repeat(200))!.length, MAX_WORDS, "capped");
 

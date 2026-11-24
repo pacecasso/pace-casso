@@ -21,18 +21,19 @@ export type DrawRoute = {
   points: [number, number][];
   /**
    * mark = a word logo's picture on its own; initials = that picture with
-   * `text` lettered under it, under 25 km (Nov 11). Jobs before Nov 9 carry
+   * `text` lettered under it, under 25 km (Nov 11); letters = `text` (a name's
+   * initials) on its own, for a logo that is all name (Nov 24). Jobs before Nov 9 carry
    * pick = best with no distance limit; short = best under 25 km; alt = the runner-up.
    */
   label?: DrawLabel;
-  /** initials routes: the letters drawn under the picture, e.g. "TW" */
+  /** initials and letters routes: the letters drawn, e.g. "TW" */
   text?: string;
   /** how much the route looks like the drawing, 0..1 (the page's "best" sort); absent before Nov 9 */
   score?: number;
 };
 
-export type DrawLabel = "pick" | "short" | "alt" | "mark" | "initials";
-const LABELS: DrawLabel[] = ["pick", "short", "alt", "mark", "initials"];
+export type DrawLabel = "pick" | "short" | "alt" | "mark" | "initials" | "letters";
+const LABELS: DrawLabel[] = ["pick", "short", "alt", "mark", "initials", "letters"];
 /** the page shows up to five versions, sortable by best match or by distance */
 export const MAX_DRAW_ROUTES = 5;
 
@@ -68,7 +69,9 @@ export type DrawJob = {
   /**
    * the name read off the upload (Nov 11): a sketch job reports it, the page
    * hands it to the lineart job, and the worker letters the short version
-   * with it (the name itself when very short, else its initials)
+   * with it (the name itself when very short, else its initials). A sketch
+   * job can also be queued WITH a name (Nov 24): the one the person typed at
+   * the touch-up step, which the worker letters in place of what it reads
    */
   words?: string | null;
   /** sketch jobs: wording read off the upload that the drawing leaves out (small print, a name past one row) */
@@ -252,7 +255,7 @@ export function cleanRoutes(raw: unknown): DrawRoute[] {
       const route: DrawRoute = { km: Number.isFinite(km) ? km : 0, points };
       if (LABELS.includes(label as DrawLabel)) route.label = label as DrawLabel;
       const text = cleanWords((r as { text?: unknown }).text);
-      if (route.label === "initials" && text && text.length <= 5) route.text = text;
+      if ((route.label === "initials" || route.label === "letters") && text && text.length <= 5) route.text = text;
       const score = (r as { score?: unknown }).score;
       if (typeof score === "number" && Number.isFinite(score)) {
         route.score = Math.round(Math.max(0, Math.min(1, score)) * 1000) / 1000;

@@ -163,6 +163,47 @@ def initials_lane(mask, words_mask, text):
     return short_lane(*Z.masks_of(tmp))
 
 
+LETTERS_KM = 16.0     # the target for two to four large letters on their own; comes out 19-24 km
+                      # (Nov 24: at a 10 km target MR came out 13 km and its M was a scribble)
+
+
+def letters_text(words):
+    """a name of two or more words, as its initials (MAD RIVER -> MR); one
+    long word has no short form that is still the name"""
+    ws = ["".join(c for c in w if c != " " and c in B.FONT) for w in (words or "").upper().split()]
+    ws = [w for w in ws if w]
+    return "".join(w[0] for w in ws)[:SHORT_CHARS] if len(ws) >= 2 else ""
+
+
+def letters_lane(text):
+    """`text` alone in large block letters, under MARK_MAX: a short version
+    that still says whose logo it is (Nov 24 blind review: MAD RIVER had
+    nothing under 48 km and no initials, since there was no mark to set them
+    under; LANYON BOWDLER's short version was its oval with an L and a box,
+    where LB alone reads at 19.5 km)"""
+    from PIL import Image, ImageDraw
+    if not text: return None
+    g = Z.row_grid(text)
+    rows, cols = g.shape
+    cell, pad = 40, 20
+    im = Image.new("RGB", (cols * cell + 2 * pad, rows * cell + 2 * pad), "white")
+    d = ImageDraw.Draw(im)
+    for s in Z._letters(g, cell, pad, pad):
+        d.line([(float(x), float(y)) for y, x in s], fill=Z.LETTER_RGB, width=7, joint="curve")
+    tmp = os.path.join(sys.argv[2], "letters_lineart.png")
+    im.save(tmp)
+    m, wm = Z.masks_of(tmp)
+    target, res = LETTERS_KM, None
+    for _ in range(3):
+        res = F.fit_lane(m, target, "keep", words_mask=wm)
+        if res is None or res["km"] <= MARK_MAX: break
+        target *= 0.9 * MARK_MAX / res["km"]
+    if res is None or res["km"] > MARK_MAX: return None
+    c = cell_m(wm, res)
+    print(f"  letters {text!r}: {res['km']} km, letter cells {c:.0f} m" + ("" if c >= LETTER_CELL_M else " - too small, left out"))
+    return res if c >= LETTER_CELL_M else None
+
+
 def match(res):
     """how much the route looks like the drawing, on one 0..1 scale for every
     version: the likeness of the whole drawing (less the tilt and broken-line
@@ -242,6 +283,14 @@ def main():
             res = short_lane(mask, words_mask)
             if res is not None and round(res["km"]) not in seen:
                 short.append(("word", res))
+        if len(short) < 3:
+            # ... and the initials on their own, large: the one short version of a
+            # logo that is all name, and a plainer one beside a mark
+            text = letters_text(name)
+            res = letters_lane(text)
+            if res is not None:
+                res["text"] = text
+                short.append(("letters", res))
         # the short versions are always shown; the longer ones fill the rest
         results = sorted(results, key=lambda r: -match(r[1]))[:MAX_ROUTES - len(short)] + short
     # best match first (for word logos that is best letters first: the largest

@@ -21,8 +21,8 @@ const Step5PreviewMap = dynamic(() => import("./Step5PreviewMap"), {
 type Route = {
   km: number;
   points: [number, number][];
-  label?: "pick" | "short" | "alt" | "mark" | "initials";
-  /** initials routes: the letters drawn under the picture */
+  label?: "pick" | "short" | "alt" | "mark" | "initials" | "letters";
+  /** initials routes: the letters drawn under the picture; letters routes: the letters drawn on their own */
   text?: string;
   score?: number;
 };
@@ -34,6 +34,7 @@ const LABEL_TEXT: Record<NonNullable<Route["label"]>, string> = {
   alt: "Another take",
   mark: "Picture only",
   initials: "Picture and initials",
+  letters: "Initials only",
 };
 const SORT_TEXT: Record<DrawSort, string> = { best: "Best match", distance: "Distance" };
 /**
@@ -53,6 +54,21 @@ type Status = {
   note?: string | null;
   error: string | null;
 };
+
+/**
+ * A typed name as the worker letters it: capitals, digits and single spaces
+ * (cleanWords in lib/drawJob.ts keeps "&" too, but the block letters have
+ * none, so the worker drops it)
+ */
+const plainName = (s: string) =>
+  s
+    .toUpperCase()
+    .replace(/&/g, "")
+    .replace(/[^A-Z0-9 ]+/g, " ")
+    .replace(/ +/g, " ")
+    .trim();
+/** one row of block capitals holds this many characters (ROW_CHARS in scripts/geometry/simplify.py) */
+const NAME_ROW = 12;
 
 /** matches MAX_IMAGE_B64 in app/api/draw-job/route.ts */
 const MAX_IMAGE_B64 = 4_000_000;
@@ -168,6 +184,20 @@ function resultsIntro(routes: Route[]): string {
     if (lettered) {
       parts.push(`A whole name needs a long run, so one shorter version has your picture with "${lettered.text}" under it.`);
     }
+    const alone = routes.find((r) => r.label === "letters" && r.text);
+    if (alone) {
+      parts.push(
+        lettered
+          ? `Another is just "${alone.text}" in large letters.`
+          : `A whole name needs a long run, so one shorter version is just "${alone.text}" in large letters.`,
+      );
+    }
+    if (routes.every((r) => r.km > RUNNABLE_KM)) {
+      // Nov 24 blind review: a 54 km star and nothing said about why there was no short one
+      parts.push(
+        `We could not make a version under ${RUNNABLE_KM} km that still reads: this drawing needs the longer distance. A drawing with fewer lines or a shorter name makes a shorter run.`,
+      );
+    }
     return parts.join(" ");
   }
   if (routes.length > 1) parts.push("Our pick ★ is the one we think looks most like your picture.");
@@ -228,6 +258,9 @@ export default function DrawFlow() {
   const [status, setStatus] = useState<Status | null>(null);
   const [uploadThumb, setUploadThumb] = useState<string | null>(null);
   const [sketch, setSketch] = useState<Sketch | null>(null);
+  /** the name box at the touch-up step, and the name last sent for a redraw (null: letter what was read) */
+  const [name, setName] = useState("");
+  const [typed, setTyped] = useState<string | null>(null);
   /** which of the worker's drawings is in the editor */
   const [choice, setChoice] = useState(0);
   const [sort, setSort] = useState<DrawSort>("best");
@@ -259,7 +292,7 @@ export default function DrawFlow() {
       const res = await fetch("/api/draw-job", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64, mode: "sketch" }),
+        body: JSON.stringify({ imageBase64, mode: "sketch", words: typed ?? undefined }),
       }).catch(() => null);
       const body = res?.ok ? ((await res.json()) as { jobId?: string }) : null;
       if (!body?.jobId) return fail();
@@ -280,7 +313,10 @@ export default function DrawFlow() {
               file: new File([await (await fetch(url)).blob()], `line-drawing-${i + 1}.png`, { type: "image/png" }),
             })),
           );
-          if (!stop) setSketch({ state: "ready", lineArts, words: s.words ?? null, left: s.left ?? null });
+          if (!stop) {
+            setSketch({ state: "ready", lineArts, words: s.words ?? null, left: s.left ?? null });
+            setName(s.words ?? "");
+          }
           return;
         }
         // the worker may be busy with another drawing; after 5 min show the picture instead
@@ -293,7 +329,7 @@ export default function DrawFlow() {
       stop = true;
       if (timer) clearTimeout(timer);
     };
-  }, [file]);
+  }, [file, typed]);
 
   const drawings = sketch?.state === "ready" ? sketch.lineArts : [];
   const editorFile =
@@ -491,6 +527,9 @@ export default function DrawFlow() {
                         {scored && r.label === "initials" && r.text ? (
                           <p className="mt-0.5 text-xs text-pace-muted">Your picture with &quot;{r.text}&quot; under it</p>
                         ) : null}
+                        {scored && r.label === "letters" && r.text ? (
+                          <p className="mt-0.5 text-xs text-pace-muted">Just &quot;{r.text}&quot;, in large letters</p>
+                        ) : null}
                       </div>
                       <div className="flex shrink-0 gap-2">
                         <button
@@ -583,7 +622,11 @@ export default function DrawFlow() {
             id="draw-file"
             type="file"
             accept="image/png,image/jpeg,image/webp"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            onChange={(e) => {
+              setTyped(null);
+              setName("");
+              setFile(e.target.files?.[0] ?? null);
+            }}
             className="sr-only"
           />
         </div>
@@ -607,6 +650,52 @@ export default function DrawFlow() {
                 big block capitals, at most 12 letters, because small print and long names cannot be read at street
                 size. The blue lines are the words we kept.
               </p>
+            ) : null}
+            {sketch?.state === "ready" ? (
+              <form
+                className="mb-4 max-w-2xl rounded-lg border border-pace-line bg-pace-white px-3 py-3"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const next = plainName(name);
+                  if (next && next !== plainName(sketch.words ?? "")) setTyped(next);
+                }}
+              >
+                <label htmlFor="draw-name" className="text-sm font-semibold">
+                  {sketch.words ? "The name on your route" : "Want your name on the route?"}
+                </label>
+                <p className="mt-1 text-sm leading-relaxed text-pace-muted">
+                  {sketch.words
+                    ? `We read "${sketch.words}" off your picture. If that is wrong, or you would rather have another word, type it here.`
+                    : "We found no name on your picture. Type one and we will letter it under the drawing."}{" "}
+                  Up to {NAME_ROW} letters fit on the row, and a short name makes a shorter run. Redrawing starts the
+                  touch-up over.
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-3">
+                  <input
+                    id="draw-name"
+                    type="text"
+                    value={name}
+                    maxLength={40}
+                    autoComplete="off"
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="YOUR NAME"
+                    className="block w-56 rounded border border-pace-line px-3 py-2 text-sm font-normal uppercase"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!plainName(name) || plainName(name) === plainName(sketch.words ?? "")}
+                    className="pace-btn-ghost pace-btn-ghost--sm disabled:opacity-50"
+                  >
+                    Redraw with this name
+                  </button>
+                </div>
+                {typed && plainName(sketch.words ?? "") !== typed ? (
+                  <p className="mt-2 text-sm text-red-700">
+                    We could not change the name just now - the drawing still shows what we read. Use the eraser and
+                    pen instead, or try again in a few minutes.
+                  </p>
+                ) : null}
+              </form>
             ) : null}
             {drawings.length > 1 ? (
               <div className="mb-4">

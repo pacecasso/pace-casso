@@ -93,8 +93,8 @@ type Draft = { seat: number; score: number; mainRank: number; km: number; points
 type Labeled = {
   km: number;
   points: [number, number][];
-  label?: "pick" | "short" | "alt" | "mark" | "initials";
-  /** initials routes: the letters under the picture */
+  label?: "pick" | "short" | "alt" | "mark" | "initials" | "letters";
+  /** initials and letters routes: the letters drawn */
   text?: string;
   score?: number;
 };
@@ -244,6 +244,8 @@ async function geometryEngine(img: string, dir: string, lineart = false, words: 
       // "initials" (the mark with a few letters under it, in `text`) do
       ...(r.label === "mark" ? { label: "mark" as const } : {}),
       ...(r.label === "initials" && r.text ? { label: "initials" as const, text: r.text } : {}),
+      // a logo that is all name: its initials on their own, the one version under 25 km
+      ...(r.label === "letters" && r.text ? { label: "letters" as const, text: r.text } : {}),
     }));
   return { code, routes, note: j.note, subject };
 }
@@ -259,7 +261,12 @@ async function work(job: NonNullable<Claim["job"]>): Promise<void> {
   if (job.mode === "sketch") {
     // upload -> the simple line drawing the person touches up (simplify.py, Oct 31)
     const png = path.join(dir, "lineart.png");
-    const code = await run(PY, ["-u", "scripts/geometry/simplify.py", img, png], path.join(dir, "sketch.log"));
+    // job.words on a sketch job: the name the person typed, lettered in place of what is read (Nov 24)
+    const code = await run(
+      PY,
+      ["-u", "scripts/geometry/simplify.py", img, png, ...(job.words ? [`--words=${job.words}`] : [])],
+      path.join(dir, "sketch.log"),
+    );
     const dataUrl = (f: string) => `data:image/png;base64,${readFileSync(f).toString("base64")}`;
     const lineArt = existsSync(png) ? dataUrl(png) : null;
     // a second drawing to choose from, when simplify.py made one (Nov 11): the

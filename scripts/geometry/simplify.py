@@ -373,9 +373,13 @@ def line_art(path, words_mode="keep"):
     return line_art_options(path, words_mode)[0]
 
 
-def line_art_options(path, words_mode="keep"):
+def line_art_options(path, words_mode="keep", name=None):
     """-> [(strokes, letters, words), ...]: one or two drawings of the upload
-    for the person to choose from, the one to show first at the front"""
+    for the person to choose from, the one to show first at the front.
+    name: the name the person typed at the touch-up step, lettered in place
+    of whatever was read (Nov 24 blind review: an emblem read as "SE" gave
+    MADSERIVER, an R read as P, and PANIMO was kept over TORNION, with only
+    an eraser and a pen to put it right)"""
     if is_photo(path):
         try:
             subject = photo_subject(path)
@@ -383,6 +387,8 @@ def line_art_options(path, words_mode="keep"):
             print(f"photo subject failed: {e}")
             subject = None
         if subject is not None:
+            if name:
+                return [(*lay_out(st, name), name) for st in mark_options(*subject, MARK_LEN)]
             return [(st, [], "") for st in mark_options(*subject, MAX_LEN)]
     words, boxes = "", []
     if words_mode == "keep":
@@ -393,9 +399,13 @@ def line_art_options(path, words_mode="keep"):
             print(f"reading text failed: {e}")
     src = path
     if words:
+        # the logo's own lettering comes off the picture whether the name was read or typed
         src = os.path.join(tempfile.mkdtemp(), "lifted.png")
         import readtext as R
         R.lift(path, boxes, src)
+    if name:
+        if words: print(f"read {words!r}, lettering the typed name {name!r}")
+        words = name
     try:
         mask, parts = P.ink_parts(src)
     except ValueError:            # nothing but words
@@ -447,8 +457,11 @@ def masks_of(path):
 if __name__ == "__main__":
     import sys
     src, out = sys.argv[1], sys.argv[2]
+    # --words=NAME: the name the person typed, lettered in place of what was read
+    typed = next((a.split("=", 1)[1] for a in sys.argv[3:] if a.startswith("--words=")), "")
+    typed = " ".join("".join(c for c in w if c in B.FONT and c != " ") for w in typed.upper().split()).strip()
     # <out>: the drawing shown first; <out minus .png>-2.png: the other choice, when there is one
-    for i, (st, let, words) in enumerate(line_art_options(src)):
+    for i, (st, let, words) in enumerate(line_art_options(src, name=typed or None)):
         if i == 0:
             # the whole name as read, for the short version's letters (draw_job.py --words)
             with open(os.path.splitext(out)[0] + ".words.txt", "w", encoding="utf-8") as f: f.write(words or "")
@@ -456,7 +469,8 @@ if __name__ == "__main__":
             left = []
             if words:
                 import readtext as R
-                left = [words.upper()[len(street_words(words)):].strip()] + list(R.last_small)
+                # of a typed name only what did not fit the row: the person chose it over the logo's other lines
+                left = [words.upper()[len(street_words(words)):].strip()] + ([] if typed else list(R.last_small))
             with open(os.path.splitext(out)[0] + ".left.txt", "w", encoding="utf-8") as f:
                 f.write(" ".join(t for t in left if t))
         render(st, let).save(out if i == 0 else f"{os.path.splitext(out)[0]}-{i + 1}.png")
