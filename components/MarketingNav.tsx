@@ -36,9 +36,17 @@ export default function MarketingNav({ cta }: { cta?: { href: string; label: str
             href="/landing.html"
 
             prefetch={false}
-            className="pace-nav-link font-bebas text-[0.92rem] tracking-[0.08em] text-pace-ink transition hover:text-pace-yellow sm:text-[1.05rem] sm:tracking-[0.12em]"
+            // not on a phone: six links wrapped to a third row, and the logo is the home link there
+            className="max-sm:hidden! pace-nav-link font-bebas text-[0.92rem] tracking-[0.08em] text-pace-ink transition hover:text-pace-yellow sm:text-[1.05rem] sm:tracking-[0.12em]"
           >
             Home
+          </Link>
+          {/* Nov 24 review 6: the logo upload was reachable only from a button below the fold */}
+          <Link
+            href="/draw"
+            className="pace-nav-link font-bebas text-[0.92rem] tracking-[0.08em] text-pace-ink transition hover:text-pace-yellow sm:text-[1.05rem] sm:tracking-[0.12em]"
+          >
+            Draw My Logo
           </Link>
           <Link
             href="/gallery"
