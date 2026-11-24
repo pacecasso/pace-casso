@@ -455,7 +455,7 @@ export default function DrawFlow() {
                 ))}
               </div>
             ) : null}
-            <div className="mt-5 grid gap-5 lg:grid-cols-3">
+            <div className="mt-5 grid gap-5 lg:grid-cols-2">
               {ranked.map(({ route: r, rank, index }) => {
                 // jobs since Nov 9 are titled by their best-match rank, which a card
                 // keeps when the page is sorted by distance; older jobs keep their labels
@@ -475,8 +475,8 @@ export default function DrawFlow() {
                     style={{ order: place.get(index) ?? rank }}
                     className="flex flex-col overflow-hidden rounded-xl border border-pace-line bg-pace-white"
                   >
-                    <div className="h-[340px] p-2">
-                      <Step5PreviewMap routeLine={r.points} originalArt={NO_ART} showOriginalArt={false} showEndpoints pageScroll />
+                    <div className="h-[340px] p-2 lg:h-[420px]">
+                      <Step5PreviewMap routeLine={r.points} originalArt={NO_ART} showOriginalArt={false} showEndpoints pageScroll slim />
                     </div>
                     <div className="flex items-center justify-between gap-3 border-t border-pace-line px-4 py-3">
                       <div>

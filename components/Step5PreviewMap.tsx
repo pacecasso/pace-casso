@@ -13,10 +13,12 @@ function FitCombinedBounds({
   routeLine,
   originalArt,
   showArt,
+  pad,
 }: {
   routeLine: LatLng[];
   originalArt: LatLng[];
   showArt: boolean;
+  pad: number;
 }) {
   const map = useMap();
   useEffect(() => {
@@ -30,8 +32,8 @@ function FitCombinedBounds({
     if (pts.length < 2) return;
     const b = L.latLngBounds(pts);
     if (!b.isValid()) return;
-    map.fitBounds(b, { padding: [48, 48], maxZoom: 17, animate: false });
-  }, [map, routeLine, originalArt, showArt]);
+    map.fitBounds(b, { padding: [pad, pad], maxZoom: 17, animate: false });
+  }, [map, routeLine, originalArt, showArt, pad]);
   return null;
 }
 
@@ -51,6 +53,14 @@ export type Step5PreviewMapProps = {
    * the five maps fill most of the results page.
    */
   pageScroll?: boolean;
+  /**
+   * For a route that is a drawing to be read at a glance (/draw results): a
+   * thin line on a faded map that fills the frame, with small start and
+   * finish dots. Nov 24 blind review: with the 6 px line on the full-colour
+   * map a 50 km "MAD RIVER" was "a red smear until zoomed", and the dots sat
+   * on top of the letters.
+   */
+  slim?: boolean;
 };
 
 export default function Step5PreviewMap({
@@ -60,6 +70,7 @@ export default function Step5PreviewMap({
   showOriginalArt,
   showEndpoints = false,
   pageScroll = false,
+  slim = false,
 }: Step5PreviewMapProps) {
   const center: LatLng =
     routeLine[0] ??
@@ -81,8 +92,9 @@ export default function Step5PreviewMap({
         routeLine={routeLine}
         originalArt={originalArt}
         showArt={showOriginalArt}
+        pad={slim ? 14 : 48}
       />
-      <TileLayer attribution={OSM_TILE_ATTRIBUTION} url={OSM_TILE_URL} />
+      <TileLayer attribution={OSM_TILE_ATTRIBUTION} url={OSM_TILE_URL} opacity={slim ? 0.5 : 1} />
       {showOriginalArt && originalArt.length > 1 && (
         <>
           <Polyline
@@ -117,8 +129,8 @@ export default function Step5PreviewMap({
           positions={routeLine as LatLngExpression[]}
           pathOptions={{
             color: "#b91c1c",
-            weight: 6,
-            opacity: 0.95,
+            weight: slim ? 3 : 6,
+            opacity: slim ? 1 : 0.95,
             lineCap: "round",
             lineJoin: "round",
           }}
@@ -128,15 +140,15 @@ export default function Step5PreviewMap({
         <>
           <CircleMarker
             center={routeLine[routeLine.length - 1] as LatLngExpression}
-            radius={7}
-            pathOptions={{ color: "#ffffff", weight: 2, fillColor: "#111827", fillOpacity: 1 }}
+            radius={slim ? 4 : 7}
+            pathOptions={{ color: "#ffffff", weight: slim ? 1 : 2, fillColor: "#111827", fillOpacity: 1 }}
           >
             <Tooltip>Finish</Tooltip>
           </CircleMarker>
           <CircleMarker
             center={routeLine[0] as LatLngExpression}
-            radius={8}
-            pathOptions={{ color: "#ffffff", weight: 2, fillColor: "#16a34a", fillOpacity: 1 }}
+            radius={slim ? 5 : 8}
+            pathOptions={{ color: "#ffffff", weight: slim ? 1 : 2, fillColor: "#16a34a", fillOpacity: 1 }}
           >
             <Tooltip>Start</Tooltip>
           </CircleMarker>
