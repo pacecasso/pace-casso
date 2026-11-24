@@ -52,6 +52,11 @@ assert.deepStrictEqual(
   cleanRoutes([{ km: 11, label: "letters", text: "MR", points: [[40.7, -73.9], [40.71, -73.9]] }])[0],
   { km: 11, points: [[40.7, -73.9], [40.71, -73.9]], label: "letters", text: "MR" },
 );
+// ... and since review 6 it is one word of the name, up to 7 letters
+assert.strictEqual(
+  cleanRoutes([{ km: 23, label: "letters", text: "TORNION", points: [[40.7, -73.9], [40.71, -73.9]] }])[0].text,
+  "TORNION",
+);
 assert.strictEqual(cleanWords(42), null, "not a string");
 assert.strictEqual(cleanWords("X".repeat(200))!.length, MAX_WORDS, "capped");
 

@@ -255,7 +255,9 @@ export function cleanRoutes(raw: unknown): DrawRoute[] {
       const route: DrawRoute = { km: Number.isFinite(km) ? km : 0, points };
       if (LABELS.includes(label as DrawLabel)) route.label = label as DrawLabel;
       const text = cleanWords((r as { text?: unknown }).text);
-      if ((route.label === "initials" || route.label === "letters") && text && text.length <= 5) route.text = text;
+      // initials are 4 letters at most; a letters route is one word of the name, 7 at most
+      const max = route.label === "initials" ? 5 : route.label === "letters" ? 7 : 0;
+      if (text && text.length <= max) route.text = text;
       const score = (r as { score?: unknown }).score;
       if (typeof score === "number" && Number.isFinite(score)) {
         route.score = Math.round(Math.max(0, Math.min(1, score)) * 1000) / 1000;

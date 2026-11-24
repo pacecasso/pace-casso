@@ -77,14 +77,14 @@ SHORT_COLS = 12       # the short letters are at least 1/12 of the mark's width 
 LETTER_CELL_M = 110.0
 
 
-def fit_under(m, words_mask):
+def fit_under(m, words_mask, start=MARK_KM, tries=5):
     """the largest fit of this drawing that comes out under MARK_MAX, or None.
     The joins make a route longer than its target by a share that differs per
     drawing (a 20 km target came out 26 to 32 km on the Nov 11 logos), so the
     target is moved by the miss, then halved in between, until the route
     lands between SHORT_MIN and MARK_MAX (or five tries are up)."""
-    target, best, lo, hi = MARK_KM, None, None, None
-    for _ in range(5):
+    target, best, lo, hi = start, None, None, None
+    for _ in range(tries):
         res = F.fit_lane(m, target, "keep", words_mask=words_mask)
         if res is None: break
         if res["km"] > MARK_MAX:
@@ -163,15 +163,29 @@ def initials_lane(mask, words_mask, text):
     return short_lane(*Z.masks_of(tmp))
 
 
-LETTERS_KM = 16.0     # the target for two to four large letters on their own; comes out 19-24 km
+LETTERS_KM = 16.0     # the target for a few large letters on their own; comes out 19-24 km
                       # (Nov 24: at a 10 km target MR came out 13 km and its M was a scribble)
+WORD_MAX = 7          # one word of this many letters still fits under 25 km ...
+WORD_CELL_M = 70.0    # ... with cells this size (TORNION 91 m, CURIOUS 73 m: rough but the word)
 
 
 def letters_text(words):
-    """a name of two or more words, as its initials (MAD RIVER -> MR); one
-    long word has no short form that is still the name"""
+    """the one word of the name to letter large on its own under 25 km (Nov 24
+    blind review 6: initials were "letters nobody recognises", the ask was
+    "one real word: GOAT, LANYON, TORNION"). Tried alone on the streets, GOAT
+    read at 21.8 km, BONES at 23.9, RIVER at 22.0, LANYON at 22.2; MAD RIVER
+    whole had 65 m cells and did not. So: the whole name when it is 6
+    characters or less, else its shortest word of 4 to 6 letters (the first
+    of equals), else a word of 7 (HOLLAND, not NEW), else one of 3; initials
+    only when no word fits."""
     ws = ["".join(c for c in w if c != " " and c in B.FONT) for w in (words or "").upper().split()]
     ws = [w for w in ws if w]
+    if not ws: return ""
+    name = " ".join(ws)
+    if len(name) <= 6: return name
+    for ok in (range(4, 7), (WORD_MAX,), (3,)):
+        fit = [w for w in ws if len(w) in ok]
+        if fit: return min(fit, key=len)
     return "".join(w[0] for w in ws)[:SHORT_CHARS] if len(ws) >= 2 else ""
 
 
@@ -193,15 +207,21 @@ def letters_lane(text):
     tmp = os.path.join(sys.argv[2], "letters_lineart.png")
     im.save(tmp)
     m, wm = Z.masks_of(tmp)
-    target, res = LETTERS_KM, None
+    # three sizes, and the one that reads best is kept, not the largest: RIVER
+    # at 23.8 km lost its R (match 0.80) where the 22.0 km try read (0.85);
+    # CURIOUS swung between 28.8 and 15.9 km on two tries
+    target, best = LETTERS_KM, None
     for _ in range(3):
         res = F.fit_lane(m, target, "keep", words_mask=wm)
-        if res is None or res["km"] <= MARK_MAX: break
-        target *= 0.9 * MARK_MAX / res["km"]
-    if res is None or res["km"] > MARK_MAX: return None
-    c = cell_m(wm, res)
-    print(f"  letters {text!r}: {res['km']} km, letter cells {c:.0f} m" + ("" if c >= LETTER_CELL_M else " - too small, left out"))
-    return res if c >= LETTER_CELL_M else None
+        if res is None: break
+        c = cell_m(wm, res)
+        print(f"  letters {text!r}: {res['km']} km, letter cells {c:.0f} m, match {match(res):.3f}")
+        if res["km"] > MARK_MAX:
+            target *= 0.9 * MARK_MAX / res["km"]
+            continue
+        if c >= WORD_CELL_M and (best is None or match(res) > match(best)): best = res
+        target *= 22.5 / res["km"] if res["km"] < SHORT_MIN - 2 else 0.88
+    return best
 
 
 def match(res):
@@ -284,8 +304,8 @@ def main():
             if res is not None and round(res["km"]) not in seen:
                 short.append(("word", res))
         if len(short) < 3:
-            # ... and the initials on their own, large: the one short version of a
-            # logo that is all name, and a plainer one beside a mark
+            # ... and one word of the name on its own, large: the short version
+            # that still says whose logo it is
             text = letters_text(name)
             res = letters_lane(text)
             if res is not None:

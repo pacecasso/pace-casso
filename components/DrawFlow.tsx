@@ -34,7 +34,7 @@ const LABEL_TEXT: Record<NonNullable<Route["label"]>, string> = {
   alt: "Another take",
   mark: "Picture only",
   initials: "Picture and initials",
-  letters: "Initials only",
+  letters: "Name only",
 };
 const SORT_TEXT: Record<DrawSort, string> = { best: "Best match", distance: "Distance" };
 /**

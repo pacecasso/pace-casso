@@ -244,7 +244,7 @@ async function geometryEngine(img: string, dir: string, lineart = false, words: 
       // "initials" (the mark with a few letters under it, in `text`) do
       ...(r.label === "mark" ? { label: "mark" as const } : {}),
       ...(r.label === "initials" && r.text ? { label: "initials" as const, text: r.text } : {}),
-      // a logo that is all name: its initials on their own, the one version under 25 km
+      // one word of the name on its own, large: the version under 25 km that still says whose logo it is
       ...(r.label === "letters" && r.text ? { label: "letters" as const, text: r.text } : {}),
     }));
   return { code, routes, note: j.note, subject };

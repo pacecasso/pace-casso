@@ -50,7 +50,7 @@ export default function HelpPage() {
             <p>
               A letter has to be several blocks tall before anyone can read it on a map, so a whole name usually needs
               a run of 40 km or more. For a run under 25 km we offer shorter versions: your picture on its own, your
-              picture with your initials, or your initials in large letters. The ★ marks the best match you can run in
+              picture with your initials, or one word of your name in large letters. The ★ marks the best match you can run in
               one go. A shorter name, or a drawing with fewer lines, makes a shorter run.
             </p>
           </Section>
